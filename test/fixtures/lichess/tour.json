@@ -1,0 +1,9 @@
+{
+  "tour": {"id": "IjDgZVUR", "name": "1. Bundesliga Austria 2026/2027", "slug": "1-bundesliga-austria-20262027", "url": "https://lichess.org/broadcast/1-bundesliga-austria-20262027/IjDgZVUR"},
+  "rounds": [
+    {"id": "L3MX2oE3", "name": "Round 1", "slug": "round-1", "ongoing": true, "startsAt": 1795611600000, "url": "https://lichess.org/broadcast/1-bundesliga-austria-20262027/round-1/L3MX2oE3"},
+    {"id": "orkSD4Rv", "name": "Round 2", "slug": "round-2", "startsAt": 1795698000000, "url": "https://lichess.org/broadcast/1-bundesliga-austria-20262027/round-2/orkSD4Rv"},
+    {"id": "AE2OT3gp", "name": "Round 3", "slug": "round-3", "startsAt": 1795784400000, "url": "https://lichess.org/broadcast/1-bundesliga-austria-20262027/round-3/AE2OT3gp"}
+  ],
+  "defaultRoundId": "L3MX2oE3"
+}

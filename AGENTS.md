@@ -37,6 +37,7 @@ Gate before commit: `npm run lint && npm run check && npm test && npm run build`
 | Pages | `web/src/pages/` (Viewer, Admin) |
 | Shared pure logic (accuracy, marks) | `shared/` |
 | UCI engine | `src/engine/` (parser, Engine), `test/fixtures/fake-uci.mjs` |
+| Lichess API | `src/lichess/api.ts` |
 | Tests | `test/` |
 | Build config | `vite.config.ts`, `vitest.config.ts`, `tsconfig.backend.json`, `web/svelte.config.js`, `web/tsconfig.json` |
 | Lint / format | `eslint.config.js`, `.prettierrc`, `.editorconfig` |
