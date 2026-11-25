@@ -34,6 +34,7 @@ Gate before commit: `npm run lint && npm run check && npm test && npm run build`
 |------|------|
 | Entry point, server setup | `src/main.ts`, `src/app.ts` |
 | HTTP routes (SSE `/api/events`, `/api/admin/*`), boot wiring | `src/routes/`, `src/app.ts` (createApp), `src/server.ts` (startServer) |
+| Top-level test (replay source + fake engine over SSE) | `test/e2e.test.ts` |
 | Frontend entry, router | `web/src/main.ts`, `web/src/App.svelte` |
 | Pages | `web/src/pages/` (Viewer, Admin) |
 | Shared pure logic (accuracy, marks) | `shared/` |
