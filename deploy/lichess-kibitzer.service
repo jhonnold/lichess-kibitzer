@@ -1,0 +1,34 @@
+# Lichess Kibitzer. Install and update: see docs/deploy.md.
+[Unit]
+Description=Lichess Kibitzer (live engine analysis of a Lichess broadcast game)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=kibitzer
+Group=kibitzer
+WorkingDirectory=/opt/lichess-kibitzer
+Environment=NODE_ENV=production
+# PORT, ADMIN_PASSWORD, DATA_FILE, DEFAULT_ENGINE (template: .env.example)
+EnvironmentFile=/opt/lichess-kibitzer/.env
+ExecStart=/usr/bin/node build/src/main.js
+Restart=on-failure
+RestartSec=5s
+# SIGTERM: close SSE clients, `quit` the engine (SIGKILL after 1s), flush the state file.
+KillSignal=SIGTERM
+# SIGTERM to Node only, so it quits the engine itself; leftovers are SIGKILLed at the timeout.
+KillMode=mixed
+TimeoutStopSec=10s
+
+# Hardening. Nothing here blocks spawning the engine binary (exec from /usr and
+# /opt stays allowed) or Node's JIT (so no MemoryDenyWriteExecute).
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+# Creates /var/lib/lichess-kibitzer owned by User and makes it writable; DATA_FILE lives here.
+StateDirectory=lichess-kibitzer
+
+[Install]
+WantedBy=multi-user.target
