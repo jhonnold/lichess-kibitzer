@@ -22,6 +22,8 @@ export interface AdminDeps {
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null;
 const h = (s: string) => createHash('sha256').update(s).digest();
 const same = (a: string, b: string) => timingSafeEqual(h(a), h(b));
+/** Admin text that goes onto a UCI command line: a CR/LF would inject a second command. */
+const oneLine = (s: unknown): s is string => typeof s === 'string' && !/[\r\n]/.test(s);
 /** Lichess errors keep their HTTP status (429, 404); anything else is the Admin's input (bad link, not UCI). */
 const fail = (res: Response) => (err: unknown) =>
   res
@@ -71,10 +73,21 @@ export function adminRouter(deps: AdminDeps): Router {
   r.post('/engine/probe', (req, res) => {
     probe(String(req.body?.path ?? '')).then((p) => res.json(p), fail(res));
   });
+  /** A `button` option (e.g. Clear Hash) for the running engine; queued, so it is sent between searches. */
+  r.post('/engine/button', (req, res) => {
+    const name: unknown = req.body?.name;
+    if (!oneLine(name) || !name) return void res.status(400).json({ error: 'expected { name }' });
+    if (!kibitzer.engine) return void res.status(409).json({ error: 'no engine running' });
+    kibitzer.engine.setOption(name);
+    res.sendStatus(204);
+  });
   r.put('/config', (req, res) => {
     const { path, options } = req.body ?? {};
     const ok =
-      typeof path === 'string' && path && isObj(options) && Object.values(options).every((v) => typeof v === 'string');
+      typeof path === 'string' &&
+      path &&
+      isObj(options) &&
+      Object.entries(options).every(([k, v]) => k && oneLine(k) && oneLine(v));
     if (!ok) return void res.status(400).json({ error: 'expected { path, options: { name: value } }' });
     state.setEngine({ path, options: options as Record<string, string> }); // applied on the next pick
     res.sendStatus(204);
