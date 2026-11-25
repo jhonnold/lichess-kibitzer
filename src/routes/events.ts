@@ -1,0 +1,51 @@
+import { Router } from 'express';
+import type { SseEvent } from '../../shared/types.js';
+import type { State } from '../state.js';
+
+export interface SseOpts {
+  throttleMs?: number; // min gap between `info` events per client; default 250 (~4/s)
+  heartbeatMs?: number; // comment line that keeps proxies from closing an idle stream; default 25 s
+}
+
+/**
+ * GET /api/events: one unnamed `data: <SseEvent JSON>` frame per event (clients use `onmessage`).
+ * A `snapshot` first, then every State event. `info` is coalesced per client (latest wins); a pending `info` is
+ * flushed before any other event, so order is kept and the last `info` (even `null`) is never dropped.
+ */
+export function eventsRouter(state: State, opts: SseOpts = {}): Router {
+  const { throttleMs = 250, heartbeatMs = 25_000 } = opts;
+  return Router().get('/api/events', (_req, res) => {
+    res.set({
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no', // no proxy buffering
+    });
+    res.flushHeaders();
+    const send = (e: SseEvent) => res.write(`data: ${JSON.stringify(e)}\n\n`);
+    let pending: SseEvent | null = null;
+    let timer: NodeJS.Timeout | undefined;
+    let last = -Infinity;
+    const flush = () => {
+      clearTimeout(timer);
+      timer = undefined;
+      if (!pending) return;
+      last = Date.now();
+      send(pending);
+      pending = null;
+    };
+    const onEvent = (e: SseEvent) => {
+      if (e.type !== 'info') return (flush(), send(e));
+      pending = e;
+      timer ??= setTimeout(flush, Math.max(0, last + throttleMs - Date.now()));
+    };
+    const heartbeat = setInterval(() => res.write(': hb\n\n'), heartbeatMs);
+    state.on('event', onEvent);
+    send({ type: 'snapshot', snapshot: state.snapshot() });
+    res.on('close', () => {
+      state.off('event', onEvent);
+      clearInterval(heartbeat);
+      clearTimeout(timer);
+    });
+  });
+}
