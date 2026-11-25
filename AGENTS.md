@@ -40,6 +40,7 @@ Gate before commit: `npm run lint && npm run check && npm test && npm run build`
 | Viewer SSE state (pure reducer, EventSource store) | `shared/live.ts`, `web/src/lib/live.svelte.ts` |
 | Viewer pure helpers (replay/PV end, legal dests, eval graph series) | `shared/viewer.ts` |
 | Viewer components, tokens | `web/src/components/`, `web/src/styles/tokens.css` |
+| Admin page (API helper, UCI options form helpers) | `web/src/pages/Admin.svelte`, `web/src/lib/admin-api.ts`, `shared/engine-form.ts` |
 | Shared pure logic (accuracy, marks) | `shared/` |
 | UCI engine | `src/engine/` (parser, Engine), `test/fixtures/fake-uci.mjs` |
 | Lichess API | `src/lichess/api.ts` |

@@ -2,7 +2,7 @@ import { fileURLToPath } from 'node:url';
 import request from 'supertest';
 import { describe, expect, it, vi } from 'vitest';
 import { createApp } from '../../src/app.js';
-import { probeEngine } from '../../src/engine/engine.js';
+import { probeEngine, type Engine } from '../../src/engine/engine.js';
 import { LichessError, type EventInfo } from '../../src/lichess/api.js';
 import { State } from '../../src/state.js';
 
@@ -12,7 +12,11 @@ const event: EventInfo = { id: 't', name: 'Event', rounds: [] };
 
 function setup(adminPassword = 'pw') {
   const state = new State({ load: async () => null, save: async () => {} });
-  const kibitzer = { engine: null, pick: vi.fn(async () => state.pick(ref)), clear: vi.fn(async () => state.clear()) };
+  const kibitzer = {
+    engine: null as Engine | null,
+    pick: vi.fn(async () => state.pick(ref)),
+    clear: vi.fn(async () => state.clear()),
+  };
   const fetchEvent = vi.fn(async (link: string) => {
     if (link === 'busy') throw new LichessError(429, 'rate limited');
     if (link !== 'ok') throw new Error('Not a URL');
@@ -73,6 +77,17 @@ describe('admin routes', () => {
     expect((await agent.post('/api/admin/engine/probe').send({ path: '/nonexistent' })).status).toBe(400);
   });
 
+  it('sends a button option to the running engine only', async () => {
+    const { agent, kibitzer } = setup();
+    await login(agent);
+    expect((await agent.post('/api/admin/engine/button').send({ name: 'Clear Hash' })).status).toBe(409);
+    const setOption = vi.fn();
+    kibitzer.engine = { setOption } as unknown as Engine;
+    expect((await agent.post('/api/admin/engine/button').send({ name: 'Clear Hash\ngo' })).status).toBe(400);
+    expect((await agent.post('/api/admin/engine/button').send({ name: 'Clear Hash' })).status).toBe(204);
+    expect(setOption.mock.calls).toEqual([['Clear Hash']]);
+  });
+
   it('answers malformed JSON with a 400 JSON error, no stack', async () => {
     const { agent } = setup();
     await login(agent);
@@ -93,6 +108,10 @@ describe('admin routes', () => {
       game: null,
     });
     expect((await agent.put('/api/admin/config').send({ path: '/e', options: { Hash: 1 } })).status).toBe(400);
+    expect((await agent.put('/api/admin/config').send({ path: '/e', options: { 'Hash\nquit': '1' } })).status).toBe(
+      400,
+    );
+    expect((await agent.put('/api/admin/config').send({ path: '/e', options: { Hash: '1\nquit' } })).status).toBe(400);
     expect((await agent.put('/api/admin/config').send({ path: '/e', options: { MultiPV: '3' } })).status).toBe(204);
     expect(state.engine).toEqual({ path: '/e', options: { MultiPV: '3' } });
     expect((await agent.post('/api/admin/pick').send(ref)).status).toBe(204);
