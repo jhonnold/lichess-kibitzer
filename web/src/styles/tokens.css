@@ -1,0 +1,33 @@
+/* Dark, stream-friendly palette. Colours only via these tokens. */
+:root {
+  --bg: #161512;
+  --surface: #262421;
+  --surface2: #1e1d1a;
+  --line: #3a3835;
+  --text: #e8e6e3;
+  --muted: #9a9894;
+  --accent: #6fa8dc;
+  --warn: #e0a030;
+  --evalW: #f0f0f0;
+  --evalB: #3a3835;
+  --inaccuracy: #56b4e9;
+  --mistake: #e69f00;
+  --blunder: #df5353;
+  --barH: 44px;
+  --fontUi: system-ui, sans-serif;
+  --fontMono: ui-monospace, 'JetBrains Mono', monospace;
+  color-scheme: dark;
+}
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+html,
+body {
+  margin: 0;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.4 var(--fontUi);
+}
