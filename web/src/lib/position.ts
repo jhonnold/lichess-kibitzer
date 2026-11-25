@@ -1,14 +1,10 @@
 import { Chess } from 'chess.js';
 import type { Key } from 'chessground/types';
 import type { Color } from '$shared/accuracy';
+import type { Position } from '$shared/viewer';
 import type { Ply } from '$shared/types';
 
-export interface Position {
-  fen: string;
-  turn: Color;
-  check: boolean;
-  lastMove: Key[] | undefined;
-}
+export type { Position };
 
 /** Position after the last ply. Plies carry no FEN, so the moves are replayed (games start from the start position). */
 export function positionOf(plies: Ply[]): Position {

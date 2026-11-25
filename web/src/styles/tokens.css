@@ -10,6 +10,7 @@
   --warn: #e0a030;
   --evalW: #f0f0f0;
   --evalB: #3a3835;
+  --graphW: #f0f0f033; /* eval graph fill where White is ahead */
   --inaccuracy: #56b4e9;
   --mistake: #e69f00;
   --blunder: #df5353;

@@ -38,6 +38,7 @@ Gate before commit: `npm run lint && npm run check && npm test && npm run build`
 | Frontend entry, router | `web/src/main.ts`, `web/src/App.svelte` |
 | Pages | `web/src/pages/` (Viewer, Admin) |
 | Viewer SSE state (pure reducer, EventSource store) | `shared/live.ts`, `web/src/lib/live.svelte.ts` |
+| Viewer pure helpers (replay/PV end, legal dests, eval graph series) | `shared/viewer.ts` |
 | Viewer components, tokens | `web/src/components/`, `web/src/styles/tokens.css` |
 | Shared pure logic (accuracy, marks) | `shared/` |
 | UCI engine | `src/engine/` (parser, Engine), `test/fixtures/fake-uci.mjs` |
