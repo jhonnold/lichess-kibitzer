@@ -5,10 +5,12 @@
   import Board from '../components/Board.svelte';
   import EnginePanel from '../components/EnginePanel.svelte';
   import EvalBar from '../components/EvalBar.svelte';
+  import EvalGraph from '../components/EvalGraph.svelte';
   import MoveList from '../components/MoveList.svelte';
   import PlayerBar from '../components/PlayerBar.svelte';
   import { LiveStore } from '$lib/live.svelte';
-  import { clockOf, positionOf } from '$lib/position';
+  import { clockOf, positionOf, type Position } from '$lib/position';
+  import { play } from '$shared/viewer';
 
   const store = new LiveStore();
   onMount(() => store.connect());
@@ -21,6 +23,17 @@
   const score = $derived<Score | null>(
     snap?.live?.lines[0]?.score ?? game?.plies.findLast((p) => p.eval)?.eval?.score ?? null,
   );
+
+  // The Viewer's own line, local to this tab. Live updates don't move the board meanwhile; a new game drops it.
+  let explore = $state.raw<{ gameId: string; plies: number; position: Position } | null>(null);
+  const exploring = $derived(explore && explore.gameId === game?.id ? explore : null);
+  const liveMoved = $derived(!!exploring && exploring.plies !== game?.plies.length);
+
+  function onMove(from: string, to: string) {
+    if (!game || !position) return;
+    const base = exploring ?? { gameId: game.id, plies: game.plies.length, position };
+    explore = { ...base, position: play(base.position.fen, [{ from, to, promotion: 'q' }]) };
+  }
 </script>
 
 {#if !snap}
@@ -30,7 +43,7 @@
 {:else}
   <main class="viewer">
     <div class="boardCol">
-      <EvalBar {score} />
+      <EvalBar score={exploring ? null : score} />
       <div class="stack">
         <PlayerBar
           player={game.black}
@@ -38,7 +51,7 @@
           accuracy={analysis.black}
           toMove={snap.site === 'live' && position.turn === 'black'}
         />
-        <Board {position} />
+        <Board position={exploring?.position ?? position} {onMove} />
         <PlayerBar
           player={game.white}
           clock={clockOf(game.plies, 'white')}
@@ -51,7 +64,14 @@
       {#if snap.site === 'finished'}<div class="banner">Game over · {game.result.replace('1/2', '½')}</div>{/if}
       {#if !store.connected}<div class="warn">Reconnecting to server…</div>{/if}
       {#if snap.stream === 'reconnecting'}<div class="warn">Lichess stream reconnecting…</div>{/if}
-      <EnginePanel live={snap.live} />
+      {#if exploring}
+        <div class="explore" class:moved={liveMoved}>
+          {liveMoved ? 'Live game moved' : 'Exploring · no engine'}
+          <button onclick={() => (explore = null)}>Back to live</button>
+        </div>
+      {/if}
+      <EnginePanel live={snap.live} fen={position.fen} />
+      <EvalGraph plies={game.plies} live={snap.live?.lines[0]?.score ?? null} />
       <MoveList plies={game.plies} marks={analysis.marks} />
       <p class="from">
         {analysis.fromMove === null ? 'Accuracy: no scored moves yet' : `Accuracy from move ${analysis.fromMove}`}
@@ -105,6 +125,26 @@
   .warn {
     background: var(--warn);
     color: var(--bg);
+  }
+  .explore {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 12px;
+    font-size: 18px;
+    background: var(--surface);
+  }
+  .explore.moved {
+    color: var(--warn);
+  }
+  button {
+    padding: 6px 14px;
+    border: 0;
+    font: inherit;
+    font-weight: 700;
+    color: var(--bg);
+    background: var(--accent);
+    cursor: pointer;
   }
   .from {
     margin: auto 0 0;
