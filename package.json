@@ -32,8 +32,8 @@
     "check": "svelte-check --tsconfig ./web/tsconfig.json --fail-on-warnings",
     "dev-public": "vite build --watch",
     "dev-server": "TS_NODE_PROJECT=tsconfig.backend.json nodemon --watch src -x node --loader ts-node/esm src/main.ts",
-    "format": "prettier --write \"{src,test,web}/**/*.{ts,svelte,css,html}\"",
-    "lint": "eslint --fix src test web",
+    "format": "prettier --write \"{src,shared,test,web}/**/*.{ts,svelte,css,html}\"",
+    "lint": "eslint --fix src shared test web",
     "start": "node build/src/main.js",
     "test": "vitest run"
   },

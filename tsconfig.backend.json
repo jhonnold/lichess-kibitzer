@@ -9,5 +9,5 @@
     "outDir": "build",
     "removeComments": true
   },
-  "include": ["src/**/*"]
+  "include": ["src/**/*", "shared/**/*"]
 }

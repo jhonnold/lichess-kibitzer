@@ -9,7 +9,7 @@ npm install && npm run build    # Install + compile (prebuild runs vite build)
 npm run dev-server              # Backend (nodemon, auto-restart on src/ changes)
 npm run dev-public              # Frontend (vite build --watch → build/public)
 npm run start                   # Production build (port 8080, or $PORT)
-npm run lint                    # ESLint + fix (src, test, web)
+npm run lint                    # ESLint + fix (src, shared, test, web)
 npm run check                   # svelte-check (web/)
 npm run format                  # Prettier
 npm test                        # Vitest (test/)
@@ -35,6 +35,7 @@ Gate before commit: `npm run lint && npm run check && npm test && npm run build`
 | Entry point, server setup | `src/main.ts`, `src/app.ts` |
 | Frontend entry, router | `web/src/main.ts`, `web/src/App.svelte` |
 | Pages | `web/src/pages/` (Viewer, Admin) |
+| Shared pure logic (accuracy, marks) | `shared/` |
 | Tests | `test/` |
 | Build config | `vite.config.ts`, `vitest.config.ts`, `tsconfig.backend.json`, `web/svelte.config.js`, `web/tsconfig.json` |
 | Lint / format | `eslint.config.js`, `.prettierrc`, `.editorconfig` |
