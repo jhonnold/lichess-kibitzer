@@ -3,7 +3,9 @@
   import { analyse } from '$shared/analysis';
   import type { Score } from '$shared/accuracy';
   import Board from '../components/Board.svelte';
+  import EnginePanel from '../components/EnginePanel.svelte';
   import EvalBar from '../components/EvalBar.svelte';
+  import MoveList from '../components/MoveList.svelte';
   import PlayerBar from '../components/PlayerBar.svelte';
   import { LiveStore } from '$lib/live.svelte';
   import { clockOf, positionOf } from '$lib/position';
@@ -49,6 +51,8 @@
       {#if snap.site === 'finished'}<div class="banner">Game over · {game.result.replace('1/2', '½')}</div>{/if}
       {#if !store.connected}<div class="warn">Reconnecting to server…</div>{/if}
       {#if snap.stream === 'reconnecting'}<div class="warn">Lichess stream reconnecting…</div>{/if}
+      <EnginePanel live={snap.live} />
+      <MoveList plies={game.plies} marks={analysis.marks} />
       <p class="from">
         {analysis.fromMove === null ? 'Accuracy: no scored moves yet' : `Accuracy from move ${analysis.fromMove}`}
       </p>
