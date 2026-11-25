@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "moduleResolution": "node",
+    "skipLibCheck": true,
+    "allowJs": false,
+    "sourceMap": true,
+    "rootDir": ".",
+    "outDir": "build",
+    "removeComments": true
+  },
+  "include": ["src/**/*"]
+}
