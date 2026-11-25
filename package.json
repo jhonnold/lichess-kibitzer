@@ -1,0 +1,43 @@
+{
+  "name": "lichess-kibitzer",
+  "version": "0.1.0",
+  "description": "Full-screen live engine analysis of a Lichess broadcast game.",
+  "engines": { "node": "^20.19.0 || >=22.12.0" },
+  "dependencies": { "express": "^4.22.3" },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@sveltejs/vite-plugin-svelte": "^7.3.1",
+    "@types/express": "^4.17.13",
+    "@types/node": "^20.19.43",
+    "@types/supertest": "^7.2.1",
+    "eslint": "^10.8.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-svelte": "^3.23.1",
+    "globals": "^17.8.0",
+    "nodemon": "^3.1.14",
+    "prettier": "^3.9.10",
+    "prettier-plugin-svelte": "^4.1.1",
+    "supertest": "^7.3.2",
+    "svelte": "^5.57.2",
+    "svelte-check": "^4.7.7",
+    "ts-node": "^10.9.1",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.65.0",
+    "vite": "^8.3.5",
+    "vitest": "^4.1.12"
+  },
+  "scripts": {
+    "prebuild": "vite build",
+    "build": "tsc -p tsconfig.backend.json",
+    "check": "svelte-check --tsconfig ./web/tsconfig.json --fail-on-warnings",
+    "dev-public": "vite build --watch",
+    "dev-server": "TS_NODE_PROJECT=tsconfig.backend.json nodemon --watch src -x node --loader ts-node/esm src/main.ts",
+    "format": "prettier --write \"{src,test,web}/**/*.{ts,svelte,css,html}\"",
+    "lint": "eslint --fix src test web",
+    "start": "node build/src/main.js",
+    "test": "vitest run"
+  },
+  "author": "Jay Honnold",
+  "license": "MIT",
+  "type": "module"
+}
