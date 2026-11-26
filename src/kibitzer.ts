@@ -1,10 +1,12 @@
 import { Chess } from 'chess.js';
-import type { Score } from '../shared/accuracy.js';
 import type { EngineConfig, EvalKind, GameRef, PvLine, Result } from '../shared/types.js';
 import { Engine, type SearchResult } from './engine/engine.js';
-import type { UciInfo, UciScore } from './engine/uci-parser.js';
+import type { UciInfo } from './engine/uci-parser.js';
 import { lichessSource, type GameUpdate, type Source, type SourceFactory } from './lichess/stream.js';
+import { pvToSan, toScore } from './pv.js';
 import type { State } from './state.js';
+
+export { pvToSan, toScore } from './pv.js';
 
 export const BACKFILL_MS = 100;
 
@@ -23,27 +25,6 @@ interface Session {
   busy: boolean; // worker running
   tried: Set<number>; // positions backfilled this session (a null result is not retried)
   live: { ply: number; epoch: number; fen: string; lines: PvLine[]; nps: number | null } | null;
-}
-
-/** UCI score (side to move at position `ply`) → White POV. Mate 0 = no eval (mated / stalemated). */
-export function toScore(s: UciScore, ply: number): Score | null {
-  const sign = ply % 2 === 0 ? 1 : -1;
-  if (s.unit === 'mate') return s.value === 0 ? null : { mate: sign * s.value };
-  return { cp: sign * s.value };
-}
-
-/** PV in UCI → SAN from `fen`; stops at the first illegal move. */
-export function pvToSan(fen: string, pv: string[]): string[] {
-  const chess = new Chess(fen);
-  const san: string[] = [];
-  for (const m of pv) {
-    try {
-      san.push(chess.move({ from: m.slice(0, 2), to: m.slice(2, 4), promotion: m[4] }).san);
-    } catch {
-      break;
-    }
-  }
-  return san;
 }
 
 const log = (err: unknown) => console.error('kibitzer:', err);
