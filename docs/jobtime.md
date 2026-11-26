@@ -1,7 +1,8 @@
 # Default job time
 
 Answers the PRD open question "Default job time": how long should one Job (one position, MultiPV 5) search?
-The default is **15 000 ms** (`DEFAULT_JOB_TIME_MS` in `shared/types.ts`). It only applies to a fresh state file;
+The default is **15 000 ms** (`DEFAULT_JOB_TIME_MS` in `shared/types.ts`). Measured before the engine ran as two copies:
+the main copy (MultiPV 1, the eval) now reaches deeper than these MultiPV 5 numbers in the same time; not re-measured. It only applies to a fresh state file;
 existing state keeps its value (a saved "unset" stays unset). The Admin page changes or unsets it at any time.
 
 ## Run it

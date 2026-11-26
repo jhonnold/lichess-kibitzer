@@ -14,9 +14,12 @@
   };
   const { status, snap, now, busy, onDead }: Props = $props();
 
-  const engine = $derived(
-    status.engineState === 'up' ? 'up' : status.engineState === 'restarting' ? 'restarting' : '– (no Round)',
-  );
+  const COPIES = [
+    ['main', 'Main line'],
+    ['multi', 'Lines'],
+  ] as const;
+  const stateLabel = (s: AdminStatus['copies']['main']['state']) =>
+    s === 'up' ? 'Up' : s === 'restarting' ? 'Restarting' : '– (no Round)';
   const boardNo = (id: string) => status.round?.boards.find((b) => b.id === id)?.board ?? '?';
   const queued = $derived(snap?.queue.current ?? status.queue.current);
   const deferred = $derived(snap?.queue.deferred ?? status.queue.deferred);
@@ -38,6 +41,13 @@
   const sec = (ms: number) => (ms / 1000).toFixed(1);
   const t = $derived(status.timing);
   const elapsed = $derived(search ? now - search.startedAt : null);
+  // One string: Svelte drops the space at the start of an {#if} block ("4.0 sof 15 s").
+  const runLabel = $derived(
+    [
+      `depth ${search?.depth ?? '–'}${search?.multi ? ` (Lines ${search.multi.depth})` : ''}`,
+      `${elapsed === null ? '–' : `${sec(elapsed)} s`}${status.jobTimeMs ? ` of ${status.jobTimeMs / 1000} s` : ''}`,
+    ].join(' · '),
+  );
   const progress = $derived(
     elapsed === null || !status.jobTimeMs ? null : Math.min(100, (100 * elapsed) / status.jobTimeMs),
   );
@@ -46,11 +56,14 @@
 <!-- Cards in the Admin status grid (the parent lays them out). -->
 <article>
   <h2>Engine</h2>
-  <p class="big">
-    <i class={status.engineState === 'up' ? 'ok' : status.engineState === 'restarting' ? 'warn' : ''}></i>
-    {engine === 'up' ? 'Up' : engine === 'restarting' ? 'Restarting' : engine}
-  </p>
-  <p>{status.restarts} {status.restarts === 1 ? 'restart' : 'restarts'} since start</p>
+  {#each COPIES as [role, label] (role)}
+    {@const c = status.copies[role]}
+    <p class="big">
+      <i class={c.state === 'up' ? 'ok' : c.state === 'restarting' ? 'warn' : ''}></i>
+      {label}: {stateLabel(c.state)}
+    </p>
+    <p>{c.restarts} {c.restarts === 1 ? 'restart' : 'restarts'} since start</p>
+  {/each}
   <p class="mono" title={status.engine.path}>{status.engine.path}</p>
 </article>
 
@@ -61,8 +74,7 @@
       <span class="big"><i class="busy"></i>Board {boardNo(status.running.boardId)} · ply {status.running.ply}</span>
       <span class="chip">{status.running.tier}</span>
       <span class="muted">
-        depth {search?.depth ?? '–'} · {elapsed === null ? '–' : `${sec(elapsed)} s`}{#if status.jobTimeMs}
-          of {status.jobTimeMs / 1000} s{/if}
+        {runLabel}
       </span>
     </div>
     {#if progress !== null}

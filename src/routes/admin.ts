@@ -1,6 +1,14 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { Router, type NextFunction, type Request, type Response } from 'express';
-import type { EngineConfig, Player, QueueView, RegisteredEvent, Result, StreamStatus } from '../../shared/types.js';
+import type {
+  EngineConfig,
+  EngineRole,
+  Player,
+  QueueView,
+  RegisteredEvent,
+  Result,
+  StreamStatus,
+} from '../../shared/types.js';
 import type { DeadJob, EvictedJob, Job } from '../../shared/queue.js';
 import type { JobTiming } from '../../shared/timing.js';
 import { COPY_OPTIONS, MAX_MULTI_PV } from '../../shared/engine-config.js';
@@ -27,8 +35,9 @@ export interface AdminDeps {
     | 'setEngine'
     | 'requeueDead'
     | 'discardDead'
-    | 'engineState'
-    | 'restarts'
+    | 'engines'
+    | 'copyState'
+    | 'copyRestarts'
     | 'timing'
     | 'evictions'
   >;
@@ -48,9 +57,8 @@ export interface AdminStatus {
   } | null;
   stream: StreamStatus | null;
   engine: EngineConfig; // saved, else the default
-  engineRunning: boolean;
-  engineState: EngineState;
-  restarts: number;
+  engineRunning: boolean; // the main copy
+  copies: Record<EngineRole, { state: EngineState; restarts: number }>;
   timing: JobTiming;
   jobTimeMs: number | null;
   topN: number;
@@ -126,12 +134,12 @@ export function adminRouter(deps: AdminDeps): Router {
   r.post('/engine/probe', (req, res) => {
     probe(String(req.body?.path ?? '')).then((p) => res.json(p), fail(res));
   });
-  /** A `button` option (e.g. Clear Hash) for the running engine; queued, so it is sent between searches. */
+  /** A `button` option (e.g. Clear Hash) for every running copy; queued, so it is sent between searches. */
   r.post('/engine/button', (req, res) => {
     const name: unknown = req.body?.name;
     if (!oneLine(name) || !name) return void res.status(400).json({ error: 'expected { name }' });
-    if (!scheduler.engine) return void res.status(409).json({ error: 'no engine running' });
-    scheduler.engine.setOption(name);
+    if (!scheduler.engines.length) return void res.status(409).json({ error: 'no engine running' });
+    for (const e of scheduler.engines) e.setOption(name);
     res.sendStatus(204);
   });
   r.put('/config', (req, res) => {
@@ -227,8 +235,10 @@ export function adminRouter(deps: AdminDeps): Router {
       stream: state.stream,
       engine: state.settings.engine ?? defaultEngine,
       engineRunning: scheduler.engine !== null,
-      engineState: scheduler.engineState,
-      restarts: scheduler.restarts,
+      copies: {
+        main: { state: scheduler.copyState('main'), restarts: scheduler.copyRestarts('main') },
+        multi: { state: scheduler.copyState('multi'), restarts: scheduler.copyRestarts('multi') },
+      },
       timing: scheduler.timing,
       jobTimeMs: state.settings.jobTimeMs,
       topN: state.settings.topN,

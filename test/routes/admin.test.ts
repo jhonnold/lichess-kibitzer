@@ -8,7 +8,7 @@ import { LichessError, type RoundInfo } from '../../src/lichess/api.js';
 import { RoundState } from '../../src/round-state.js';
 import type { EngineState } from '../../src/scheduler.js';
 import type { JobTiming } from '../../shared/timing.js';
-import { DEFAULT_JOB_TIME_MS } from '../../shared/types.js';
+import { DEFAULT_JOB_TIME_MS, type EngineRole } from '../../shared/types.js';
 import { engineConfig } from '../../shared/engine-config.js';
 
 const FAKE = fileURLToPath(new URL('../fixtures/fake-uci.mjs', import.meta.url));
@@ -41,8 +41,9 @@ function setup(adminPassword = 'pw') {
     setEngine: vi.fn(async () => {}),
     requeueDead: vi.fn(async (_boardId: string, ply: number) => ply === 1),
     discardDead: vi.fn(async (_boardId: string, ply: number) => ply === 1),
-    engineState: 'up' as EngineState,
-    restarts: 2,
+    engines: [] as Engine[],
+    copyState: (): EngineState => 'up',
+    copyRestarts: (role: EngineRole) => (role === 'main' ? 2 : 1),
     timing: { jobs: 0, provisional: 0, ms: null, depth: null } as JobTiming,
     evictions: [],
   };
@@ -125,15 +126,15 @@ describe('admin routes', () => {
     expect((await agent.post('/api/admin/engine/probe').send({ path: '/nonexistent' })).status).toBe(400);
   });
 
-  it('sends a button option to the running engine only', async () => {
+  it('sends a button option to every running copy only', async () => {
     const { agent, scheduler } = setup();
     await login(agent);
     expect((await agent.post('/api/admin/engine/button').send({ name: 'Clear Hash' })).status).toBe(409);
-    const setOption = vi.fn();
-    scheduler.engine = { setOption } as unknown as Engine;
+    const [main, multi] = [vi.fn(), vi.fn()];
+    scheduler.engines = [{ setOption: main }, { setOption: multi }] as unknown as Engine[];
     expect((await agent.post('/api/admin/engine/button').send({ name: 'Clear Hash\ngo' })).status).toBe(400);
     expect((await agent.post('/api/admin/engine/button').send({ name: 'Clear Hash' })).status).toBe(204);
-    expect(setOption.mock.calls).toEqual([['Clear Hash']]);
+    expect([main.mock.calls, multi.mock.calls]).toEqual([[['Clear Hash']], [['Clear Hash']]]);
   });
 
   it('answers malformed JSON with a 400 JSON error, no stack', async () => {
@@ -244,8 +245,7 @@ describe('admin routes', () => {
       stream: null,
       engine: defaultEngine,
       engineRunning: false,
-      engineState: 'up',
-      restarts: 2,
+      copies: { main: { state: 'up', restarts: 2 }, multi: { state: 'up', restarts: 1 } },
       timing: { jobs: 0, provisional: 0, ms: null, depth: null },
       jobTimeMs: DEFAULT_JOB_TIME_MS,
       topN: 8,

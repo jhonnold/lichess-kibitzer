@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Lichess Kibitzer: full-screen live engine analysis of a Lichess broadcast Event, followed Round by Round: the top N Boards of each Round are Tracked, one UCI engine works through a Queue of Jobs, Viewers step a Cursor through the game, and finished Rounds stay in an Archive. Plan: [docs/plans/live-analysis.md](./docs/plans/live-analysis.md). v2 plan: [docs/plans/v2.md](./docs/plans/v2.md).
+Lichess Kibitzer: full-screen live engine analysis of a Lichess broadcast Event, followed Round by Round: the top N Boards of each Round are Tracked, two copies of one UCI engine (main: MultiPV 1, the eval, accuracy and marks; multi: MultiPV N, the Lines) work through a Queue of Jobs together, Viewers step a Cursor through the game, and finished Rounds stay in an Archive. Plan: [docs/plans/live-analysis.md](./docs/plans/live-analysis.md). v2 plan: [docs/plans/v2.md](./docs/plans/v2.md).
 
 ## Commands
 
@@ -56,7 +56,8 @@ Gate before commit: `npm run lint && npm run check && npm test && npm run build`
 | Prometheus metrics (`GET /api/admin/metrics`, basic auth; list in `docs/deploy.md`) | `src/metrics.ts`, HTTP middleware in `src/app.ts`, build sha `scripts/rev.mjs` |
 | Admin status timing (Job duration spread) and panel | `shared/timing.ts`, `web/src/components/StatusPanel.svelte` |
 | Opening name (PGN tags, explorer fallback) | `src/opening.ts`, `src/lichess/api.ts` (`fetchOpening`) |
-| Orchestrator (Queue + Jobs over RoundState); derived accuracy/marks | `src/scheduler.ts`, `src/round-state.ts`, `src/pv.ts`, `shared/analysis.ts` |
+| Orchestrator (Queue + paired Jobs on both engine copies over RoundState); derived accuracy/marks, `multiOf` | `src/scheduler.ts`, `src/round-state.ts`, `src/pv.ts`, `shared/analysis.ts` |
+| Engine config (per-copy Threads/Hash/MultiPV, legacy migration, launch order) | `shared/engine-config.ts` |
 | Event following (poll, Round rollover) | `src/follower.ts`, `shared/rollover.ts` |
 | Job time benchmark and the default job time | `scripts/bench-jobtime.mjs`, `docs/jobtime.md` |
 | Demo server (`npm run demo`; fake engine, synthesized Round; flags in file header) | `scripts/demo.ts` |
