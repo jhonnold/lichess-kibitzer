@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { DeadJob } from '$shared/queue';
+  import type { DeadJob, EvictedJob, Eviction } from '$shared/queue';
   import type { Snapshot } from '$shared/types';
   import type { AdminStatus } from '$lib/admin-api';
   import { formatJobTime } from '$shared/admin-form';
@@ -19,13 +19,19 @@
   );
   const boardNo = (id: string) => status.round?.boards.find((b) => b.id === id)?.board ?? '?';
   const queued = $derived(snap?.queue.current ?? status.queue.current);
+  const deferred = $derived(snap?.queue.deferred ?? status.queue.deferred);
+  const REASON: Record<Eviction, string> = {
+    stale: 'its Board moved on',
+    live: 'another live position waited',
+    backfill: 'a live position waited',
+  };
   const search = $derived(
     status.running && snap?.search?.boardId === status.running.boardId && snap.search.ply === status.running.ply
       ? snap.search
       : null,
   );
-  /** "21... Nc6": the Dead-letter queue entry's move when the Board is in the Snapshot (Tracked), else the ply. */
-  const moveLabel = (d: DeadJob) => {
+  /** "21... Nc6": the position's move when the Board is in the Snapshot (Tracked), else the ply. */
+  const moveLabel = (d: DeadJob | EvictedJob) => {
     const san = snap?.round?.boards.find((b) => b.id === d.boardId)?.plies[d.ply]?.move?.san;
     return san ? formatLine(d.ply - 1, [san]) : `ply ${d.ply}`;
   };
@@ -87,6 +93,14 @@
       {/each}
     </ol>
   {/if}
+  {#if deferred.length}
+    <p class="muted">Full search queued (latest position, evicted) for</p>
+    <ol>
+      {#each deferred as j (j.boardId + ':' + j.ply)}
+        <li>Board {boardNo(j.boardId)} · ply {j.ply}</li>
+      {/each}
+    </ol>
+  {/if}
 </article>
 
 <article>
@@ -121,6 +135,25 @@
     </ul>
   {:else}
     <p class="muted">Empty. Failed Jobs land here with Requeue and Discard.</p>
+  {/if}
+</article>
+
+<article>
+  <h2>Recent evictions</h2>
+  {#if status.evictions.length}
+    <ul>
+      {#each status.evictions as v, i (i)}
+        <li>
+          <span>
+            <b>Board {v.board}</b> · ply {v.ply} ({moveLabel(v)}) · depth {v.depth ?? '–'}<br /><small>
+              {new Date(v.at).toLocaleTimeString()} · {REASON[v.reason]}
+            </small>
+          </span>
+        </li>
+      {/each}
+    </ul>
+  {:else}
+    <p class="muted">None yet. A Job stopped early, and why, shows here.</p>
   {/if}
 </article>
 

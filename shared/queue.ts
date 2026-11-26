@@ -26,6 +26,16 @@ export const MIN_LIVE_SLICE_MS = 3000;
  *  up; backfill: a live position waits. */
 export type Eviction = 'stale' | 'live' | 'backfill';
 
+/** A Job that was evicted, for the Admin status page. depth = the eval it kept (null: none). */
+export interface EvictedJob {
+  boardId: string;
+  board: number;
+  ply: number;
+  reason: Eviction;
+  depth: number | null;
+  at: number;
+}
+
 const key = (boardId: string, ply: number) => `${boardId}:${ply}`;
 
 /** Current tier: longest-waiting first, then lower board. Backfill: most recently queued first, then higher ply. */

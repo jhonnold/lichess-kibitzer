@@ -236,11 +236,16 @@ describe('Scheduler', () => {
     expect(evalOf('g1', 0)?.kind).toBe('provisional');
     expect(queueView().current).toEqual([]);
     expect(queueView().backfill).toBe(1); // g1's latest ply, waiting for a full search
+    expect(queueView().deferred).toEqual([{ boardId: 'g1', ply: 0 }]);
+    expect(sched.evictions).toMatchObject([{ boardId: 'g1', board: 1, ply: 0, reason: 'live', depth: 3 }]);
+    expect(state.snapshot().search?.tier).toBe('current');
     expect((await val(evictions, { reason: 'live' })) - live0).toBe(1);
     await sched.setJobTime(15);
     await sched.engine!.stop(); // cut short g2's search, started at 5000 ms
+    await until(() => searching('g1', 0));
+    expect(state.snapshot().search?.tier).toBe('backfill');
     await until(() => complete('g1', 0));
-    expect(sched.running).toBeNull();
+    expect(queueView().deferred).toEqual([]);
   });
 
   it('gives no slice when the job time is the slice or shorter', async () => {
@@ -367,7 +372,7 @@ describe('Scheduler', () => {
     src.push(upd('g1', E4.slice(0, 1)));
     src.push(upd('g2', D4));
     await sched.setTracked(['g1']);
-    expect(queueView()).toEqual({ current: [{ boardId: 'g1', ply: 1 }], backfill: 1 });
+    expect(queueView()).toEqual({ current: [{ boardId: 'g1', ply: 1 }], backfill: 1, deferred: [] });
     await sched.setJobTime(15);
     await idle();
     expect(complete('g1', 1)).toBe(true);
@@ -407,7 +412,7 @@ describe('Scheduler', () => {
     setup({ jobTimeMs: null, init: { state: { version: 2, settings, current: null, dead: [] }, round } });
     await sched.resume();
     expect(sourceIds).toEqual(['R1']);
-    expect(queueView()).toEqual({ current: [{ boardId: 'g1', ply: 2 }], backfill: 1 });
+    expect(queueView()).toEqual({ current: [{ boardId: 'g1', ply: 2 }], backfill: 1, deferred: [] });
     await sched.setJobTime(15);
     await idle();
     expect(complete('g1', 1) && complete('g1', 2)).toBe(true);
@@ -525,7 +530,7 @@ describe('Scheduler', () => {
       const dead = [{ boardId: 'g1', board: 1, ply: 1, at: 5 }];
       setup({ jobTimeMs: null, init: { state: { version: 2, settings, current: null, dead }, round } });
       await sched.resume();
-      expect(queueView()).toEqual({ current: [], backfill: 1 });
+      expect(queueView()).toEqual({ current: [], backfill: 1, deferred: [] });
       expect(state.dead).toEqual(dead);
       await sched.setJobTime(15);
       await idle();

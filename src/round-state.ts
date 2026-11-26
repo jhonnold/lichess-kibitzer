@@ -5,7 +5,7 @@ import type { DataStore } from './store.js';
 
 type Events = { event: [T.SseEvent] };
 
-const EMPTY_QUEUE: T.QueueView = { current: [], backfill: 0 };
+const EMPTY_QUEUE: T.QueueView = { current: [], backfill: 0, deferred: [] };
 const newBoard = (b: RoundInfo['boards'][number], i: number, tracked: boolean): T.Board => ({
   id: b.id,
   board: i + 1,

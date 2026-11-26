@@ -149,10 +149,17 @@ export function statusLine(board: Board, ply: number, search: SearchInfo | null,
   const latest = board.plies.length - 1;
   const e = board.plies[ply]?.eval ?? null;
   if (e?.kind === 'complete') return { state: 'done', text: `Done · depth ${e.depth}` };
-  if (search?.boardId === board.id && search.ply === ply)
-    return { state: 'searching', text: search.depth ? `Searching · depth ${search.depth}` : 'Searching' };
+  if (search?.boardId === board.id && search.ply === ply) {
+    const what = search.tier === 'backfill' ? 'Backfill' : 'Searching';
+    return { state: 'searching', text: search.depth ? `${what} · depth ${search.depth}` : what };
+  }
   const i = queue.current.findIndex((j) => j.boardId === board.id && j.ply === ply);
   if (i >= 0) return { state: 'queued', text: `Queued · ${ordinal(i + 1)}` };
+  if (queue.deferred.some((j) => j.boardId === board.id && j.ply === ply))
+    return {
+      state: 'queued',
+      text: e ? `Provisional · depth ${e.depth} · full search queued` : 'Queued · full search',
+    };
   if (ply < latest && queue.backfill > 0) return { state: 'queued', text: 'Queued · backfill' };
   if (ply === latest && board.result !== '*' && !e) return { state: 'none', text: 'Game over' };
   if (e) return { state: 'none', text: `Provisional · depth ${e.depth}` };
