@@ -9,6 +9,7 @@ import { RoundState } from '../../src/round-state.js';
 import type { EngineState } from '../../src/scheduler.js';
 import type { JobTiming } from '../../shared/timing.js';
 import { DEFAULT_JOB_TIME_MS } from '../../shared/types.js';
+import { engineConfig } from '../../shared/engine-config.js';
 
 const FAKE = fileURLToPath(new URL('../fixtures/fake-uci.mjs', import.meta.url));
 const roundInfo = (id: string): RoundInfo => ({
@@ -23,7 +24,7 @@ const roundInfo = (id: string): RoundInfo => ({
     result: '*',
   })),
 });
-const defaultEngine = { path: 'berserk', options: { Hash: '1024' } };
+const defaultEngine = engineConfig('berserk');
 
 function setup(adminPassword = 'pw') {
   const state = new RoundState({
@@ -148,14 +149,24 @@ describe('admin routes', () => {
     const { agent, scheduler } = setup();
     await login(agent);
     const put = (body: object) => agent.put('/api/admin/config').send(body);
-    expect((await put({ path: '/e', options: { Hash: 1 } })).status).toBe(400);
-    expect((await put({ path: '/e', options: { 'Hash\nquit': '1' } })).status).toBe(400);
-    expect((await put({ path: '/e', options: { Hash: '1\nquit' } })).status).toBe(400);
+    const copies = { main: { threads: 2, hash: 64 }, multi: { threads: 1, hash: 32, multiPv: 3 } };
+    expect((await put({ path: '/e', options: { Style: 1 }, ...copies })).status).toBe(400);
+    expect((await put({ path: '/e', options: { 'Style\nquit': '1' }, ...copies })).status).toBe(400);
+    expect((await put({ path: '/e', options: { Style: '1\nquit' }, ...copies })).status).toBe(400);
+    expect((await put({ path: '/e', options: { MultiPV: '3' }, ...copies })).status).toBe(400); // a copy's own
+    expect((await put({ path: '/e', options: {} })).status).toBe(400); // no copies
+    expect((await put({ path: '/e', options: {}, ...copies, main: { threads: 0, hash: 64 } })).status).toBe(400);
+    expect(
+      (await put({ path: '/e', options: {}, ...copies, multi: { threads: 1, hash: 32, multiPv: 1 } })).status,
+    ).toBe(400);
     expect(scheduler.setEngine).not.toHaveBeenCalled();
-    expect((await put({ path: '/e', options: { MultiPV: '3' } })).status).toBe(204);
-    expect(scheduler.setEngine.mock.calls).toEqual([[{ path: '/e', options: { MultiPV: '3' } }]]);
+    expect((await put({ path: '/e', options: { Style: 'Risky' }, ...copies, extra: 1 })).status).toBe(204);
+    expect(scheduler.setEngine.mock.calls).toEqual([[{ path: '/e', options: { Style: 'Risky' }, ...copies }]]);
     scheduler.setEngine.mockRejectedValueOnce(new Error('spawn failed'));
-    expect(await put({ path: '/e', options: {} })).toMatchObject({ status: 400, body: { error: 'spawn failed' } });
+    expect(await put({ path: '/e', options: {}, ...copies })).toMatchObject({
+      status: 400,
+      body: { error: 'spawn failed' },
+    });
   });
 
   it('registers an Event through the Follower: validates, passes Lichess errors through', async () => {

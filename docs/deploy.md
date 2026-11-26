@@ -46,7 +46,7 @@ All set in `/opt/lichess-kibitzer/.env` (template: [`.env.example`](../.env.exam
 | `PORT` | `8080` | HTTP port. |
 | `ADMIN_PASSWORD` | unset | Unset or empty refuses every login. Also the basic-auth password of `/api/admin/metrics` (user `admin`). |
 | `DATA_FILE` | `data/state.json` (relative to the working dir) | Set to `/var/lib/lichess-kibitzer/state.json`: the only writable dir under `ProtectSystem=strict`. |
-| `DEFAULT_ENGINE` | `berserk` (PATH lookup) | Engine path prefilled on the Admin page, with Threads=1, Hash=1024, MultiPV=5. |
+| `DEFAULT_ENGINE` | `berserk` (PATH lookup) | Engine path prefilled on the Admin page; each copy Threads=1, Hash=1024, the Lines copy MultiPV=5. |
 
 The Archive is the Round files under `<dir of DATA_FILE>/rounds/<tourId>/<roundId>.json` (with the default
 `DATA_FILE`, `/var/lib/lichess-kibitzer/rounds/`). Back that directory up with `state.json`; never edit the files by hand.

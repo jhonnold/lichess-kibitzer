@@ -13,6 +13,7 @@ import { dataStore, type DataStore } from '../src/store.js';
 import { followerPolls } from '../src/metrics.js';
 import { val } from './helpers/metric.js';
 import { ReplaySource } from './helpers/replay-source.js';
+import { engineConfig } from '../shared/engine-config.js';
 
 const FAKE = fileURLToPath(new URL('./fixtures/fake-uci.mjs', import.meta.url));
 const T0 = 1_700_000_000_000;
@@ -46,7 +47,7 @@ const roundInfo = (id: string): RoundInfo => ({
 
 function build(s: RoundState) {
   const sc = new Scheduler(s, {
-    defaultEngine: { path: 'fake', options: {} },
+    defaultEngine: engineConfig('fake'),
     launch: () => Engine.start(process.execPath, { args: [FAKE, '--ply-score'] }),
     source: (id) => (sourceIds.push(id), new ReplaySource([])),
     now: () => t,

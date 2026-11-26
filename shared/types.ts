@@ -11,10 +11,23 @@ export interface Player {
   rating?: number;
 }
 
-/** Kibitzer settings from the Admin page. Values as sent in `setoption name X value V`; buttons are not stored. */
+/** The two copies of the Kibitzer's binary: main (MultiPV 1, its line is the best move for accuracy and marks) and
+ *  multi (MultiPV N, more Lines for Viewers). */
+export type EngineRole = 'main' | 'multi';
+
+/** One copy's own UCI options (Threads, Hash). */
+export interface EngineCopy {
+  threads: number;
+  hash: number; // MB
+}
+
+/** Kibitzer settings from the Admin page. options: shared by both copies, as sent in `setoption name X value V`, never
+ *  Threads/Hash/MultiPV (each copy sets those); buttons are not stored. */
 export interface EngineConfig {
   path: string;
   options: Record<string, string>;
+  main: EngineCopy;
+  multi: EngineCopy & { multiPv: number };
 }
 
 export interface Move {

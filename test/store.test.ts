@@ -72,6 +72,18 @@ describe('dataStore', () => {
     await expect(s.load()).rejects.toThrow(/not a lichess-kibitzer state file/);
   });
 
+  it('migrates a pre-copies engine config on load', async () => {
+    const path = join(dir, 'state.json');
+    const settings = { ...state.settings, engine: { path: '/e', options: { Threads: '2', Hash: '64', MultiPV: '5' } } };
+    writeFileSync(path, JSON.stringify({ ...state, settings }));
+    expect((await dataStore(path).load())?.settings.engine).toEqual({
+      path: '/e',
+      options: {},
+      main: { threads: 2, hash: 64 },
+      multi: { threads: 2, hash: 64, multiPv: 5 },
+    });
+  });
+
   it('round-trips a Round under rounds/<tourId>/<roundId>.json without its version', async () => {
     const s = dataStore(join(dir, 'state.json'));
     expect(await s.loadRound('T', 'R')).toBeNull();

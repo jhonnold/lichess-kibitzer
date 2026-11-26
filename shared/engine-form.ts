@@ -4,7 +4,7 @@ export type { UciOption };
 
 /**
  * Admin form start values, as UCI strings: the engine's own defaults, overlaid with the current config (the saved
- * one, else the server default: Threads=1, Hash=1024). Buttons have no value; config keys the engine lacks are dropped.
+ * one, else the server default). Buttons have no value; config keys the engine lacks are dropped.
  */
 export function initialValues(options: UciOption[], config: Record<string, string>): Record<string, string> {
   return Object.fromEntries(

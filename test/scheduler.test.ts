@@ -13,6 +13,7 @@ import { RESTART_MIN_MS, Scheduler } from '../src/scheduler.js';
 import { val } from './helpers/metric.js';
 import { ReplaySource } from './helpers/replay-source.js';
 import { evictions, jobDepth, jobDuration, jobNps, jobs } from '../src/metrics.js';
+import { engineConfig } from '../shared/engine-config.js';
 
 /** kibitzer_jobs_total for `outcome`, summed over both tiers. */
 const outcomes = async (outcome: string) =>
@@ -68,7 +69,7 @@ function setup(
   engineArgs = opts.engineArgs ?? [];
   const real = () => Engine.start(process.execPath, { args: [FAKE, '--log', logFile, '--ply-score', ...engineArgs] });
   sched = new Scheduler(state, {
-    defaultEngine: { path: 'fake', options: { MultiPV: '3' } },
+    defaultEngine: engineConfig('fake', {}, 3),
     launch: () => (opts.launch ? opts.launch(real) : real()),
     after: (ms, fn) => {
       delays.push(ms);
@@ -436,7 +437,7 @@ describe('Scheduler', () => {
     await sched.startRound(roundInfo('R1', ['g1']), null);
     await until(() => searching('g1', 0));
     await sched.setJobTime(null); // keep the requeued Job from starting on the new engine
-    await sched.setEngine({ path: 'fake', options: { MultiPV: '2' } });
+    await sched.setEngine(engineConfig('fake', {}, 2));
     expect(count('uci')).toBe(2);
     expect(readLog()).toContain('setoption name MultiPV value 2');
     expect(sched.running).toBeNull();
@@ -486,7 +487,7 @@ describe('Scheduler', () => {
     it('searches a requeued entry again', async () => {
       await crashing();
       engineArgs = [];
-      await sched.setEngine({ path: 'fake', options: {} });
+      await sched.setEngine(engineConfig('fake'));
       expect(await sched.requeueDead('g1', 1)).toBe(true);
       await until(() => complete('g1', 1));
       expect(state.dead).toEqual([]);
@@ -613,7 +614,7 @@ describe('Scheduler', () => {
       await sched.engine!.quit();
       await poll(() => fire.length === 1);
       expect(sched.engineState).toBe('restarting');
-      await sched.setEngine({ path: 'fake', options: {} });
+      await sched.setEngine(engineConfig('fake'));
       expect(sched.engineState).toBe('up');
       fire[0]();
       await sched.setJobTime(null); // waits for the timer's turn on the serial chain

@@ -1,4 +1,5 @@
 import { Chess } from 'chess.js';
+import { copyOptions } from '../shared/engine-config.js';
 import { MIN_LIVE_SLICE_MS, Queue, type EvictedJob, type Eviction, type Job } from '../shared/queue.js';
 import { jobTiming, type JobSample, type JobTiming } from '../shared/timing.js';
 import type * as T from '../shared/types.js';
@@ -532,7 +533,7 @@ export class Scheduler {
     let started: Engine | undefined;
     try {
       started = await (this.opts.launch ?? ((c) => Engine.start(c.path)))(cfg);
-      for (const [k, v] of Object.entries(cfg.options)) started.setOption(k, v);
+      for (const [k, v] of copyOptions(cfg, 'multi')) started.setOption(k, v);
       await started.isReady();
     } catch (err) {
       void started?.quit();

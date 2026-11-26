@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
   import { changedOptions, initialValues, type UciOption } from '$shared/engine-form';
+  import { COPY_OPTIONS, DEFAULT_COPY, DEFAULT_MULTI_PV, MAX_MULTI_PV } from '$shared/engine-config';
+  import type { EngineConfig } from '$shared/types';
   import { adminApi, ApiError, type AdminStatus, type Probe } from '$lib/admin-api';
   import StatusPanel from '../components/StatusPanel.svelte';
   import type { LiveStore } from '$lib/live.svelte';
@@ -20,7 +22,12 @@
   let path = $state('');
   let config: Record<string, string> = {};
   let engineName = $state('');
-  let options = $state<UciOption[]>([]);
+  let options = $state<UciOption[]>([]); // the shared ones: not Threads/Hash/MultiPV
+  let limits = $state<Record<string, UciOption | undefined>>({}); // the engine's Threads/Hash/MultiPV spins
+  let copies = $state<Pick<EngineConfig, 'main' | 'multi'>>({
+    main: { ...DEFAULT_COPY },
+    multi: { ...DEFAULT_COPY, multiPv: DEFAULT_MULTI_PV },
+  });
   let values = $state<Record<string, string>>({});
   let saved = $state(false);
   let status = $state<AdminStatus | null>(null);
@@ -69,6 +76,7 @@
     const s = await refresh();
     authed = true;
     ({ path, options: config } = s.engine);
+    copies = { main: { ...s.engine.main }, multi: { ...s.engine.multi } };
     await run('engine', probe); // form prefilled with the current (or default) config
   }
   const login = () =>
@@ -86,11 +94,13 @@
 
   async function probe(): Promise<void> {
     const p = await adminApi<Probe>('POST', '/engine/probe', { path });
-    [engineName, options, values, saved] = [p.name, p.options, initialValues(p.options, config), false];
+    const shared = p.options.filter((o) => !COPY_OPTIONS.includes(o.name));
+    limits = Object.fromEntries(COPY_OPTIONS.map((n) => [n, p.options.find((o) => o.name === n)]));
+    [engineName, options, values, saved] = [p.name, shared, initialValues(shared, config), false];
   }
   const save = () =>
     run('engine', async () => {
-      const cfg = { path, options: changedOptions(options, values) };
+      const cfg: EngineConfig = { path, options: changedOptions(options, values), ...$state.snapshot(copies) };
       await adminApi('PUT', '/config', cfg);
       [config, saved] = [cfg.options, true];
     });
@@ -322,6 +332,35 @@
             <form onsubmit={(e) => (e.preventDefault(), save())}>
               <p class="label">{engineName}</p>
               <div class="options">
+                <p class="label span">Main line: MultiPV 1, sets the eval, accuracy and marks</p>
+                <label class="field">
+                  <span>Threads</span>
+                  <input type="number" min="1" max={limits.Threads?.max} required bind:value={copies.main.threads} />
+                </label>
+                <label class="field">
+                  <span>Hash (MB)</span>
+                  <input type="number" min="1" max={limits.Hash?.max} required bind:value={copies.main.hash} />
+                </label>
+                <p class="label span">Lines: a second copy of the engine, for the other moves</p>
+                <label class="field">
+                  <span>Threads</span>
+                  <input type="number" min="1" max={limits.Threads?.max} required bind:value={copies.multi.threads} />
+                </label>
+                <label class="field">
+                  <span>Hash (MB)</span>
+                  <input type="number" min="1" max={limits.Hash?.max} required bind:value={copies.multi.hash} />
+                </label>
+                <label class="field">
+                  <span>MultiPV</span>
+                  <input
+                    type="number"
+                    min="2"
+                    max={Math.min(MAX_MULTI_PV, limits.MultiPV?.max ?? MAX_MULTI_PV)}
+                    required
+                    bind:value={copies.multi.multiPv}
+                  />
+                </label>
+                <p class="label span">Options of both copies</p>
                 {#each options as o (o.name)}
                   {#if o.type === 'button'}
                     <div class="field">
@@ -685,6 +724,10 @@
     grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
     gap: 12px 16px;
     margin-top: 8px;
+  }
+  .options .span {
+    grid-column: 1 / -1;
+    margin: 8px 0 0;
   }
   .options .field button {
     align-self: flex-start;
