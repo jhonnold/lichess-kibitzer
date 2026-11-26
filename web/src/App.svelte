@@ -105,7 +105,7 @@
     {#if route.page === 'admin'}
       <Admin {store} />
     {:else if route.page === 'round'}
-      <Overview {store} {back} {layout} {query} />
+      <Overview {store} {layout} {query} />
     {:else if route.page === 'archive'}
       <Archive />
     {:else if route.page === 'archive-round'}
@@ -113,7 +113,7 @@
       {#if archive.error}
         <main class="message"><p>{archive.error} · <a href={ARCHIVE_HASH}>Archive</a></p></main>
       {:else if route.board === null}
-        <Overview store={archive} back={archiveBack} {ctx} {layout} {query} />
+        <Overview store={archive} {ctx} {layout} {query} />
       {:else}
         <Viewer store={archive} board={route.board} ply={route.ply} {layout} {query} {ctx} />
       {/if}

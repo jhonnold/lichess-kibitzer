@@ -2,7 +2,7 @@
   import { MARK_GLYPH } from '$shared/analysis';
   import { tileView } from '$shared/overview';
   import type { Board as BoardData, QueueView, SearchInfo } from '$shared/types';
-  import { archivedResult, barScore, shortName, statusLine, tickingClock } from '$shared/viewer';
+  import { archivedResult, barScore, shortName, statusLine, tickingClock, type JobState } from '$shared/viewer';
   import { formatClock } from '$lib/format';
   import Board from './Board.svelte';
   import EvalBar from './EvalBar.svelte';
@@ -24,6 +24,10 @@
   const latest = $derived(board.plies.length - 1);
   const bar = $derived(barScore(board, latest, search));
   const dot = $derived(statusLine(board, latest, search, queue));
+  const QUEUE: Record<JobState, string> = { searching: 'Analysing', queued: 'Queued', done: 'Up to date', none: '' };
+  const state = $derived(
+    archived ? archivedResult(board) : t.state === 'live' ? 'LIVE' : t.state === 'upcoming' ? 'UPCOMING' : t.result,
+  );
 </script>
 
 {#snippet row(color: 'white' | 'black')}
@@ -39,57 +43,109 @@
 {/snippet}
 
 <a href={t.href} class="tile">
+  <div class="top">
+    <span class="n">{t.board}</span>
+    {#if state}<span class="state" class:live={!archived && t.state === 'live'}>{state}</span>{/if}
+    {#if t.mark}<span class="mark {t.mark}" title={t.mark}>{MARK_GLYPH[t.mark]}</span>{/if}
+    {#if !archived && QUEUE[dot.state]}
+      <span class="queue" title={dot.text}><i class={dot.state}></i>{QUEUE[dot.state]}</span>
+    {/if}
+  </div>
   {@render row('black')}
   <div class="mid">
     <EvalBar score={bar.score} dim={bar.dim} />
     <Board position={t.position} coordinates={false} />
   </div>
   {@render row('white')}
-  <div class="foot">
-    <b>{t.board}</b>
-    {#if t.mark}<span class={t.mark}>{MARK_GLYPH[t.mark]}</span>{/if}
-    <span class="muted">
-      {archived ? archivedResult(board) : (t.result ?? (t.state === 'upcoming' ? 'upcoming' : ''))}
-    </span>
-    {#if !archived}<span class="dot {dot.state}" title={dot.text} aria-label={dot.text}></span>{/if}
-  </div>
 </a>
 
 <style>
   .tile {
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: 6px;
     min-width: 0;
-    padding: 4px;
+    padding: 10px 10px 12px;
+    border: 1px solid var(--surface3);
+    border-radius: 10px;
+    background: var(--surface2);
     color: var(--text);
     text-decoration: none;
-    background: var(--surface2);
   }
   .tile:hover {
-    outline: 1px solid var(--accent);
+    border-color: var(--accent);
+  }
+  .top {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 24px;
+  }
+  .n {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 24px;
+    height: 22px;
+    padding: 0 6px;
+    border-radius: 5px;
+    background: var(--surface3);
+    font: 600 12px var(--fontMono);
+  }
+  .state {
+    padding: 1px 8px;
+    border-radius: 999px;
+    background: var(--surface3);
+    color: var(--text2);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+  }
+  .state.live {
+    background: var(--liveBg);
+    color: var(--liveText);
+  }
+  .queue {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: auto;
+    color: var(--muted);
+    font-size: 12px;
+  }
+  i {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--muted);
+  }
+  i.searching {
+    background: var(--accent);
+  }
+  i.queued {
+    background: var(--warn);
   }
   .mid {
     display: flex;
     gap: 6px;
   }
   .mid :global(.bar) {
-    width: 18px;
+    width: 8px;
     flex: none;
+    border-radius: 3px;
   }
   .mid :global(.bar span) {
-    display: none; /* the score label does not fit in 18 px */
+    display: none; /* the score label does not fit in 8 px */
   }
   .mid :global(.board) {
     flex: 1;
+    min-width: 0;
   }
   .player {
     display: flex;
     align-items: center;
     gap: 6px;
     min-width: 0;
-    font-size: 15px;
-    line-height: 1.3;
   }
   .name {
     min-width: 0;
@@ -100,29 +156,26 @@
   }
   .title {
     color: var(--accent);
+    font-size: 13px;
     font-weight: 700;
   }
   .muted {
     color: var(--muted);
-    font-size: 13px;
+    font-size: 12px;
   }
   .clock {
     margin-left: auto;
-    padding: 0 6px;
-    font: 600 16px var(--fontMono);
+    padding: 1px 7px;
+    border-radius: 4px;
     background: var(--surface);
+    font: 600 15px var(--fontMono);
   }
   .clock.toMove {
-    color: var(--accent);
+    background: var(--evalW);
+    color: var(--onLight);
   }
-  .foot {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 14px;
-  }
-  .foot .muted {
-    flex: 1;
+  .mark {
+    font-weight: 700;
   }
   .inaccuracy {
     color: var(--inaccuracy);
@@ -133,21 +186,26 @@
   .blunder {
     color: var(--blunder);
   }
-  .dot {
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-  }
-  .dot.searching {
-    background: var(--accent);
-  }
-  .dot.queued {
-    background: var(--warn);
-  }
-  .dot.done {
-    background: var(--muted);
-  }
-  .dot.none {
-    visibility: hidden;
+  @media (max-width: 699px) {
+    .tile {
+      gap: 4px;
+      padding: 6px 6px 8px;
+    }
+    .top {
+      gap: 6px;
+    }
+    .queue {
+      font-size: 0; /* dot only */
+    }
+    .muted {
+      display: none;
+    }
+    .player {
+      font-size: 13px;
+    }
+    .clock {
+      padding: 0 5px;
+      font-size: 13px;
+    }
   }
 </style>

@@ -1,26 +1,38 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import type { SnapSource } from '$lib/live.svelte';
-  import type { ArchiveCtx } from '$shared/archive';
+  import { outcomeOf, type ArchiveCtx } from '$shared/archive';
   import type { Layout } from '$shared/route';
   import { archiveHash, boardHash } from '$shared/route';
-  import { viewerMessage } from '$shared/viewer';
+  import { boardState, viewerMessage } from '$shared/viewer';
   import BoardTile from '../components/BoardTile.svelte';
 
-  // back: the Viewer hash `o` returns to. ctx: an archived Round (no Queue dots, links stay in the Archive).
+  // ctx: an archived Round (no Queue dots, links stay in the Archive).
   const {
     store,
-    back,
     layout,
     query = '',
     ctx = null,
-  }: { store: SnapSource; back: string; layout: Layout; query?: string; ctx?: ArchiveCtx | null } = $props();
+  }: { store: SnapSource; layout: Layout; query?: string; ctx?: ArchiveCtx | null } = $props();
   const href = $derived((n: number) => (ctx ? archiveHash(ctx.tourId, ctx.roundId, n) : boardHash(n)) + query);
   const snap = $derived(store.snap);
   let now = $state(Date.now());
   onMount(() => {
     const tick = setInterval(() => (now = Date.now()), 1000);
     return () => clearInterval(tick);
+  });
+
+  /** "6 live · 1 finished": how many Boards are in each state, zero counts left out. */
+  const summary = $derived.by(() => {
+    const boards = snap?.round?.boards ?? [];
+    const count = (names: string[], of: (b: (typeof boards)[number]) => string) =>
+      names
+        .map((n) => [n, boards.filter((b) => of(b) === n).length] as const)
+        .filter(([, k]) => k > 0)
+        .map(([n, k]) => ({ text: `${k} ${n === 'notPlayed' ? 'not played' : n}`, live: n === 'live' }));
+    return ctx
+      ? count(['finished', 'unfinished', 'notPlayed'], outcomeOf)
+      : count(['live', 'finished', 'upcoming'], boardState);
   });
 </script>
 
@@ -32,8 +44,22 @@
   <main>
     {#if layout.chrome}
       <header>
-        <h1>{ctx ? 'Archive · ' : ''}{snap.event?.name} · {snap.round.name}</h1>
-        <a href={back}>Board view (o)</a>
+        <div>
+          {#if snap.event}<p class="event">{snap.event.name}</p>{/if}
+          <h1>{snap.round.name}</h1>
+        </div>
+        <p class="summary">
+          <span>{snap.round.boards.length} {ctx ? 'boards' : 'tracked boards'}</span>
+          {#each summary as part (part.text)}<span class:live={part.live}>{part.text}</span>{/each}
+          {#if ctx}<span>analysis as of the swap</span>{/if}
+        </p>
+        {#if !ctx}
+          <p class="legend">
+            <span><i class="searching"></i>Analysing</span>
+            <span><i class="queued"></i>Queued</span>
+            <span><i></i>Up to date</span>
+          </p>
+        {/if}
       </header>
     {/if}
     <div class="grid">
@@ -46,34 +72,92 @@
 
 <style>
   main {
-    --b: max(160px, min(calc((100vh - 236px) / 2), calc((100vw - 80px) / 4 - 34px)));
     height: 100%;
-    padding: 12px 16px;
+    padding: 20px 16px 32px;
     overflow-y: auto;
   }
   .message {
     display: grid;
     place-items: center;
-    font-size: 32px;
+    font-size: 24px;
     color: var(--muted);
+    text-align: center;
   }
   header {
     display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    margin-bottom: 8px;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 12px 24px;
+    max-width: 1440px;
+    margin: 0 auto 16px;
+  }
+  .event {
+    margin: 0 0 2px;
+    color: var(--muted);
+    font-size: 13px;
   }
   h1 {
     margin: 0;
-    font-size: 20px;
+    font-size: 26px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
   }
-  header a {
-    color: var(--accent);
+  .summary {
+    margin: 0 0 3px;
+    color: var(--text2);
+  }
+  .summary .live {
+    color: var(--liveText);
+  }
+  .summary span + span::before {
+    content: ' · ';
+    color: var(--muted);
+  }
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+    margin: 0 0 3px auto;
+    color: var(--muted);
+    font-size: 12px;
+  }
+  .legend span {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  i {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--muted);
+  }
+  i.searching {
+    background: var(--accent);
+  }
+  i.queued {
+    background: var(--warn);
   }
   .grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, calc(var(--b) + 34px));
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
     gap: 16px;
-    justify-content: center;
+    max-width: 1440px;
+    margin: 0 auto;
+  }
+  @media (max-width: 699px) {
+    main {
+      padding: 12px 12px 24px;
+    }
+    h1 {
+      font-size: 22px;
+    }
+    .legend {
+      margin-left: 0;
+    }
+    .grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
   }
 </style>
