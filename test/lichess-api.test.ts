@@ -12,7 +12,7 @@ import {
   USER_AGENT,
   type Fetch,
 } from '../src/lichess/api.js';
-import { openingLookups, rateLimited } from '../src/metrics.js';
+import { lichessDuration, lichessRequests, openingLookups, rateLimited } from '../src/metrics.js';
 import { val } from './helpers/metric.js';
 
 const FIX = 'test/fixtures/lichess/';
@@ -185,5 +185,57 @@ describe('rate limiting and serialisation', () => {
     release();
     await Promise.all([a, b]);
     expect(calls).toBe(2);
+  });
+});
+
+describe('request metrics', () => {
+  const reqs = (endpoint: string, outcome: string) => val(lichessRequests, { endpoint, outcome });
+  const timed = (endpoint: string) =>
+    val(lichessDuration, { endpoint }, 'kibitzer_lichess_request_duration_seconds_count');
+  /** Deltas of [requests{endpoint,outcome}, duration count{endpoint}] across `run`. */
+  async function delta(endpoint: string, outcome: string, run: () => Promise<unknown>) {
+    const [n, t] = [await reqs(endpoint, outcome), await timed(endpoint)];
+    await run().catch(() => {});
+    return [(await reqs(endpoint, outcome)) - n, (await timed(endpoint)) - t];
+  }
+  const round = (f: Fetch) => () => fetchRound('L3MX2oE3', f);
+  const status =
+    (n: number, body = '{}') =>
+    async () =>
+      new Response(body, { status: n });
+
+  it('labels the endpoint: a round link looks up its round, then the event', async () => {
+    const { f } = fakeFetch({
+      '/api/broadcast/-/-/L3MX2oE3': json('round.json'),
+      '/api/broadcast/IjDgZVUR': json('tour.json'),
+    });
+    const [r, e] = [await reqs('round', 'ok'), await reqs('event', 'ok')];
+    await fetchEvent('https://lichess.org/broadcast/s/r/L3MX2oE3', f);
+    expect([await reqs('round', 'ok'), await reqs('event', 'ok')]).toEqual([r + 1, e + 1]);
+  });
+
+  it('times only requests that got a response', async () => {
+    expect(
+      await delta(
+        'round',
+        'ok',
+        round(async () => new Response(readFileSync(FIX + 'round.json', 'utf8'))),
+      ),
+    ).toEqual([1, 1]);
+    expect(await delta('round', 'http_error', round(status(500)))).toEqual([1, 1]);
+    expect(await delta('round', 'rate_limited', round(status(429)))).toEqual([1, 1]);
+    expect(await delta('round', 'paused', round(status(200)))).toEqual([1, 0]); // refused locally, no request
+    _resetForTests();
+    const down: Fetch = async () => {
+      throw new TypeError('fetch failed');
+    };
+    expect(await delta('round', 'network', round(down))).toEqual([1, 0]);
+    expect(await delta('round', 'network', round(status(200, 'not json')))).toEqual([1, 0]);
+  });
+
+  it('counts a timed-out explorer lookup as timeout', async () => {
+    const hung: Fetch = (_url, init) =>
+      new Promise<Response>((_, reject) => init?.signal?.addEventListener('abort', () => reject(init.signal?.reason)));
+    expect(await delta('explorer', 'timeout', () => fetchOpening(['e2e4'], hung, 20))).toEqual([1, 0]);
   });
 });

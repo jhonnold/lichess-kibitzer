@@ -2,13 +2,15 @@ import { mkdir, readdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { isLichessId, roundMeta, type RoundMeta } from '../shared/archive.js';
 import type { PersistedRound, PersistedState, Round } from '../shared/types.js';
+import { storeLastSave, storeWrites } from './metrics.js';
 
 export const DEFAULT_DATA_FILE = 'data/state.json';
 
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null;
 
-/** Serialised + coalesced (latest wins) JSON writes to one path; tmp + rename with flush. */
-function jsonWriter(path: string): (data: unknown) => Promise<void> {
+/** Serialised + coalesced (latest wins) JSON writes to one path; tmp + rename with flush. Each write is counted in
+ *  kibitzer_store_writes_total under `store`. */
+function jsonWriter(path: string, store: 'state' | 'round'): (data: unknown) => Promise<void> {
   let pending: { data: unknown } | null = null;
   let flushing: Promise<void> | null = null;
   const flush = async () => {
@@ -16,9 +18,16 @@ function jsonWriter(path: string): (data: unknown) => Promise<void> {
       while (pending) {
         const text = JSON.stringify(pending.data);
         pending = null;
-        await mkdir(dirname(path), { recursive: true });
-        await writeFile(`${path}.tmp`, text, { flush: true });
-        await rename(`${path}.tmp`, path);
+        try {
+          await mkdir(dirname(path), { recursive: true });
+          await writeFile(`${path}.tmp`, text, { flush: true });
+          await rename(`${path}.tmp`, path);
+        } catch (err) {
+          storeWrites.inc({ store, outcome: 'error' });
+          throw err;
+        }
+        storeWrites.inc({ store, outcome: 'ok' });
+        storeLastSave.setToCurrentTime({ store });
       }
     } finally {
       flushing = null;
@@ -56,7 +65,7 @@ export interface DataStore {
 
 /** state.json at `file`; Round files at `<dirname(file)>/rounds/<tourId>/<roundId>.json`. */
 export function dataStore(file = process.env.DATA_FILE || DEFAULT_DATA_FILE): DataStore {
-  const writeState = jsonWriter(file);
+  const writeState = jsonWriter(file, 'state');
   const writers = new Map<string, (data: unknown) => Promise<void>>();
   const roundPath = (tourId: string, roundId: string) => join(dirname(file), 'rounds', tourId, `${roundId}.json`);
   // Round metas by `${tourId}/${roundId}`: `scanned` once from the files on the first listRounds; `saved` (every
@@ -113,7 +122,7 @@ export function dataStore(file = process.env.DATA_FILE || DEFAULT_DATA_FILE): Da
       saved.set(`${r.tourId}/${r.roundId}`, roundMeta(r));
       const path = roundPath(r.tourId, r.roundId);
       let write = writers.get(path);
-      if (!write) writers.set(path, (write = jsonWriter(path)));
+      if (!write) writers.set(path, (write = jsonWriter(path, 'round')));
       return write({ version: 2, ...r });
     },
     async listRounds() {

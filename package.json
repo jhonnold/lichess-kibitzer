@@ -37,6 +37,7 @@
   "scripts": {
     "prebuild": "vite build",
     "build": "tsc -p tsconfig.backend.json",
+    "postbuild": "node scripts/rev.mjs",
     "check": "svelte-check --tsconfig ./web/tsconfig.json --fail-on-warnings",
     "demo": "TS_NODE_PROJECT=tsconfig.backend.json node --loader ts-node/esm scripts/demo.ts",
     "dev-public": "vite build --watch",

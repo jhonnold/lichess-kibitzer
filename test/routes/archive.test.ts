@@ -10,6 +10,8 @@ import { archiveRouter } from '../../src/routes/archive.js';
 import { dataStore } from '../../src/store.js';
 import type { Board, Eval, Round } from '../../shared/types.js';
 import { roundMeta } from '../../shared/archive.js';
+import { archiveReads } from '../../src/metrics.js';
+import { val } from '../helpers/metric.js';
 
 let dir: string;
 beforeEach(() => {
@@ -74,14 +76,26 @@ describe('GET /api/archive/:tourId/:roundId', () => {
 
   it('404s the Current Round and a missing file; 500s a corrupt one', async () => {
     const { app, store } = setup();
+    const reads = async () => [
+      await val(archiveReads, { outcome: 'ok' }),
+      await val(archiveReads, { outcome: 'error' }),
+    ];
+    const [ok, err] = await reads();
     expect((await request(app).get('/api/archive/abcdefgh/current1')).status).toBe(404);
     expect(store.loadRound).not.toHaveBeenCalled();
-    expect((await request(app).get('/api/archive/abcdefgh/nofile000')).status).toBe(404);
+    expect(await reads()).toEqual([ok, err]); // no read
+    expect((await request(app).get('/api/archive/abcdefgh/nofile00')).status).toBe(404);
+    expect(await reads()).toEqual([ok + 1, err]); // a missing file is a successful read
     vi.spyOn(console, 'error').mockImplementation(() => {});
     store.loadRound.mockRejectedValueOnce(new Error('invalid JSON'));
     const res = await request(app).get('/api/archive/abcdefgh/round001');
     expect(res.status).toBe(500);
     expect(res.body).toEqual({ error: 'archive read failed' });
+    expect(await reads()).toEqual([ok + 1, err + 1]);
+    store.listRounds.mockRejectedValueOnce(new Error('EACCES'));
+    expect((await request(app).get('/api/archive')).status).toBe(500);
+    expect((await request(app).get('/api/archive')).status).toBe(200);
+    expect(await reads()).toEqual([ok + 2, err + 2]);
   });
 
   it.each([

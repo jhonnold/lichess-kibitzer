@@ -12,7 +12,11 @@ import { MAX_CRASHES, MIN_LIVE_SLICE_MS } from '../shared/queue.js';
 import { RESTART_MIN_MS, Scheduler } from '../src/scheduler.js';
 import { val } from './helpers/metric.js';
 import { ReplaySource } from './helpers/replay-source.js';
-import { evictions, jobDepth, jobDuration } from '../src/metrics.js';
+import { evictions, jobDepth, jobDuration, jobNps, jobs } from '../src/metrics.js';
+
+/** kibitzer_jobs_total for `outcome`, summed over both tiers. */
+const outcomes = async (outcome: string) =>
+  (await val(jobs, { tier: 'current', outcome })) + (await val(jobs, { tier: 'backfill', outcome }));
 
 const FAKE = fileURLToPath(new URL('./fixtures/fake-uci.mjs', import.meta.url));
 const E4 = ['e2e4', 'e7e5', 'g1f3'];
@@ -147,12 +151,17 @@ describe('Scheduler', () => {
     expect(complete('g1', 0) && complete('g1', 1) && complete('g2', 0) && complete('g2', 1)).toBe(true);
   });
 
-  it('observes job duration and depth for each recorded Eval', async () => {
-    const count = async (m: typeof jobDuration | typeof jobDepth) => {
+  it('observes job duration, depth and nps for each recorded Eval', async () => {
+    const count = async (m: typeof jobDuration | typeof jobDepth | typeof jobNps) => {
       const one = (tier: string) => val(m, { tier, kind: 'complete' }, `${m.name}_count`);
       return (await one('current')) + (await one('backfill'));
     };
-    const [d0, p0] = [await count(jobDuration), await count(jobDepth)];
+    const [d0, p0, n0, r0] = [
+      await count(jobDuration),
+      await count(jobDepth),
+      await count(jobNps),
+      await outcomes('recorded'),
+    ];
     setup();
     await sched.startRound(roundInfo('R1', ['g1']), null);
     src.push(upd('g1', E4));
@@ -161,6 +170,8 @@ describe('Scheduler', () => {
     expect(done).toBeGreaterThanOrEqual(1);
     expect((await count(jobDuration)) - d0).toBeGreaterThanOrEqual(done);
     expect((await count(jobDepth)) - p0).toBeGreaterThanOrEqual(done);
+    expect((await count(jobNps)) - n0).toBeGreaterThanOrEqual(done); // the fake engine sends nps
+    expect((await outcomes('recorded')) - r0).toBeGreaterThanOrEqual((await count(jobDuration)) - d0); // + Provisional
   });
 
   it('keeps Job timing over Complete Jobs', async () => {
@@ -420,6 +431,7 @@ describe('Scheduler', () => {
   });
 
   it('setEngine restarts the engine and requeues the running Job', async () => {
+    const interrupted = await outcomes('interrupted');
     setup({ topN: 1, jobTimeMs: 5000 });
     await sched.startRound(roundInfo('R1', ['g1']), null);
     await until(() => searching('g1', 0));
@@ -429,6 +441,7 @@ describe('Scheduler', () => {
     expect(readLog()).toContain('setoption name MultiPV value 2');
     expect(sched.running).toBeNull();
     expect(queueView().current).toEqual([{ boardId: 'g1', ply: 0 }]);
+    expect((await outcomes('interrupted')) - interrupted).toBe(1);
     await sched.setJobTime(15);
     await until(() => complete('g1', 0));
     expect(evalOf('g1', 0)!.lines).toHaveLength(2);
@@ -457,7 +470,12 @@ describe('Scheduler', () => {
     }
 
     it('takes a position that crashed the engine three times, and moves on', async () => {
+      const [crashed, dead] = [await outcomes('crashed'), await outcomes('dead_lettered')];
       await crashing();
+      expect([(await outcomes('crashed')) - crashed, (await outcomes('dead_lettered')) - dead]).toEqual([
+        MAX_CRASHES - 1,
+        1,
+      ]);
       expect(state.dead.map(({ boardId, ply }) => ({ boardId, ply }))).toEqual([{ boardId: 'g1', ply: 1 }]);
       expect(evalOf('g1', 1)).toBeNull();
       expect(queueView().current).toEqual([]);

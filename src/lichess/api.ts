@@ -1,5 +1,5 @@
 import { LICHESS_ID } from '../../shared/archive.js';
-import { openingLookups, rateLimited } from '../metrics.js';
+import { lichessDuration, lichessRequests, openingLookups, rateLimited } from '../metrics.js';
 
 export const USER_AGENT = 'lichess-kibitzer';
 const BASE = 'https://lichess.org';
@@ -93,19 +93,51 @@ export function parseEventLink(link: string): EventRef {
 // 429 pause is shared.
 const queues = { api: Promise.resolve() as Promise<unknown>, explorer: Promise.resolve() as Promise<unknown> };
 let pausedUntil = 0;
-function getJson<T>(url: string, f: Fetch, lane: keyof typeof queues = 'api', timeoutMs?: number): Promise<T> {
+export type Endpoint = 'event' | 'round' | 'explorer';
+export type Outcome = 'ok' | 'http_error' | 'rate_limited' | 'timeout' | 'network' | 'paused';
+function getJson<T>(
+  url: string,
+  f: Fetch,
+  endpoint: Endpoint,
+  lane: keyof typeof queues = 'api',
+  timeoutMs?: number,
+): Promise<T> {
   const run = async () => {
-    if (Date.now() < pausedUntil) throw new LichessError(429, 'Lichess rate limit; retry in a minute');
-    const res = await f(url, {
-      headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' },
-      signal: timeoutMs === undefined ? undefined : AbortSignal.timeout(timeoutMs),
-    });
+    const count = (outcome: Outcome) => lichessRequests.inc({ endpoint, outcome });
+    if (Date.now() < pausedUntil) {
+      count('paused');
+      throw new LichessError(429, 'Lichess rate limit; retry in a minute');
+    }
+    const end = lichessDuration.startTimer({ endpoint }); // after the lane wait: latency, not queueing
+    let res: Response;
+    try {
+      res = await f(url, {
+        headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' },
+        signal: timeoutMs === undefined ? undefined : AbortSignal.timeout(timeoutMs),
+      });
+    } catch (err) {
+      count((err as Error | undefined)?.name === 'TimeoutError' ? 'timeout' : 'network');
+      throw err;
+    }
     if (res.status === 429) {
       rateLimited.inc({ source: 'api' });
       pausedUntil = Date.now() + RATE_LIMIT_MS;
     }
-    if (!res.ok) throw new LichessError(res.status, `Lichess ${new URL(url).pathname} → HTTP ${res.status}`);
-    return (await res.json()) as T;
+    if (!res.ok) {
+      end();
+      count(res.status === 429 ? 'rate_limited' : 'http_error');
+      throw new LichessError(res.status, `Lichess ${new URL(url).pathname} → HTTP ${res.status}`);
+    }
+    try {
+      const body = (await res.json()) as T;
+      end();
+      count('ok');
+      return body;
+    } catch (err) {
+      // The body broke off (or timed out) mid-read, or is not JSON.
+      count((err as Error | undefined)?.name === 'TimeoutError' ? 'timeout' : 'network');
+      throw err;
+    }
   };
   const p = queues[lane].then(run, run);
   queues[lane] = p.catch(() => undefined);
@@ -116,10 +148,10 @@ export async function fetchEvent(link: string, f: Fetch = fetch): Promise<EventI
   const ref = parseEventLink(link);
   let tourId = ref.id;
   if (ref.kind === 'round') {
-    const r = await getJson<RoundJson>(`${BASE}/api/broadcast/-/-/${ref.id}`, f);
+    const r = await getJson<RoundJson>(`${BASE}/api/broadcast/-/-/${ref.id}`, f, 'round');
     tourId = r.tour.id;
   }
-  const t = await getJson<TourJson>(`${BASE}/api/broadcast/${tourId}`, f);
+  const t = await getJson<TourJson>(`${BASE}/api/broadcast/${tourId}`, f, 'event');
   return {
     id: t.tour.id,
     name: t.tour.name,
@@ -141,7 +173,7 @@ const player = (p: RoundJson['games'][number]['players'][number]): Player => ({
 });
 
 export async function fetchRound(roundId: string, f: Fetch = fetch): Promise<RoundInfo> {
-  const r = await getJson<RoundJson>(`${BASE}/api/broadcast/-/-/${roundId}`, f);
+  const r = await getJson<RoundJson>(`${BASE}/api/broadcast/-/-/${roundId}`, f, 'round');
   return {
     id: r.round.id,
     name: r.round.name,
@@ -168,6 +200,7 @@ export async function fetchOpening(
   const r = await getJson<{ opening?: { eco: string; name: string } | null }>(
     `${EXPLORER}/masters?play=${uci.join(',')}`,
     f,
+    'explorer',
     'explorer',
     timeoutMs,
   );

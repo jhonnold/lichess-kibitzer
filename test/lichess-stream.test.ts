@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import { val } from './helpers/metric.js';
 import { ReplaySource } from './helpers/replay-source.js';
-import { rateLimited, streamReconnects } from '../src/metrics.js';
+import { rateLimited, streamConnected, streamReconnects } from '../src/metrics.js';
 import { parseGame, pgnSplitter, RoundStream, type GameUpdate, type StreamStatus } from '../src/lichess/stream.js';
 import { type Fetch, USER_AGENT } from '../src/lichess/api.js';
 
@@ -101,6 +101,7 @@ describe('parseGame', () => {
 
 describe('RoundStream', () => {
   it('streams every Board in stream order, then backs off once', async () => {
+    const eof = await val(streamReconnects, { reason: 'eof' });
     const f = vi.fn<Fetch>(async () => new Response(body(slices(PGN, 500)), { status: 200 }));
     const { stream, games, statuses, delays } = make(f, 1);
     await stream.done;
@@ -118,6 +119,16 @@ describe('RoundStream', () => {
     ]);
     expect(statuses).toEqual(['connected', 'reconnecting']);
     expect(delays).toEqual([1000]);
+    expect(await val(streamReconnects, { reason: 'eof' })).toBe(eof + 1);
+    expect(await val(streamConnected)).toBe(0);
+  });
+
+  it('counts an HTTP error as a reconnect with reason http_error', async () => {
+    const n = await val(streamReconnects, { reason: 'http_error' });
+    const { stream, statuses } = make(async () => new Response('down', { status: 503 }), 1);
+    await stream.done;
+    expect(statuses).toEqual(['reconnecting']);
+    expect(await val(streamReconnects, { reason: 'http_error' })).toBe(n + 1);
   });
 
   it('dedupes a reconnect that resends the latest state of each Board', async () => {
@@ -151,7 +162,12 @@ describe('RoundStream', () => {
     expect(f).toHaveBeenCalledTimes(8);
     expect(statuses).not.toContain('connected');
 
-    const [limited, reconnects] = [await val(rateLimited, { source: 'stream' }), await val(streamReconnects)];
+    const limited = await val(rateLimited, { source: 'stream' });
+    const reconnects = async () => [
+      await val(streamReconnects, { reason: 'rate_limited' }),
+      await val(streamReconnects, { reason: 'network' }),
+    ];
+    const [r429, rNet] = await reconnects();
     let n = 0;
     const g: Fetch = async () => {
       n++;
@@ -162,7 +178,7 @@ describe('RoundStream', () => {
     await r.stream.done;
     expect(r.delays).toEqual([60000, 1000]);
     expect(await val(rateLimited, { source: 'stream' })).toBe(limited + 1);
-    expect(await val(streamReconnects)).toBe(reconnects + 2);
+    expect(await reconnects()).toEqual([r429 + 1, rNet + 1]);
   });
 
   it('keeps following every Board after one finishes, until stop()', async () => {
@@ -172,8 +188,10 @@ describe('RoundStream', () => {
     await vi.waitFor(() => expect(games).toHaveLength(7));
     expect(games[1].status).toBe('finished');
     expect(statuses).toEqual(['connected']);
+    expect(await val(streamConnected)).toBe(1);
     stream.stop();
     await stream.done;
+    expect(await val(streamConnected)).toBe(0); // the abort path, which skips 'reconnecting'
     expect(statuses).toEqual(['connected']);
     expect(delays).toEqual([]);
   });

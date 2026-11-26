@@ -1,4 +1,8 @@
+import { readFileSync } from 'node:fs';
+import { basename } from 'node:path';
 import { collectDefaultMetrics, Counter, Gauge, Histogram, Registry } from 'prom-client';
+import type { EngineConfig } from '../shared/types.js';
+import type { Follower } from './follower.js';
 import type { RoundState } from './round-state.js';
 import type { Scheduler } from './scheduler.js';
 
@@ -8,13 +12,39 @@ collectDefaultMetrics({ register, prefix: 'kibitzer_' });
 
 /** What the scrape-time metrics read. Set by createApp; before that they report nothing. */
 export interface MetricSources {
-  state: Pick<RoundState, 'queue' | 'dead'>;
+  state: Pick<RoundState, 'queue' | 'dead' | 'settings'>;
   scheduler: Pick<Scheduler, 'engineState' | 'restarts'>;
+  follower: Pick<Follower, 'status'>;
+  defaultEngine: EngineConfig;
 }
 let src: MetricSources | null = null;
 export function bindMetrics(sources: MetricSources): void {
   src = sources;
 }
+
+/** The git sha written to build/rev by `npm run build` (scripts/rev.mjs); else $GIT_REV; else "unknown". */
+function buildRev(): string {
+  try {
+    const rev = readFileSync(new URL('../rev', import.meta.url), 'utf8').trim(); // build/src/metrics.js → build/rev
+    if (rev) return rev;
+  } catch {
+    /* not built (dev, tests) */
+  }
+  return process.env.GIT_REV || 'unknown';
+}
+const rev = buildRev();
+
+export const buildInfo = new Gauge({
+  name: 'kibitzer_build_info',
+  help: 'Always 1. rev = git sha of the build, engine = file name of the configured engine path',
+  labelNames: ['rev', 'engine'],
+  registers: [register],
+  collect() {
+    this.reset();
+    if (!src) return;
+    this.set({ rev, engine: basename((src.state.settings.engine ?? src.defaultEngine).path) }, 1);
+  },
+});
 
 /** Jobs waiting per tier, read at scrape time (the running Job is not counted). */
 export const queueDepth = new Gauge({
@@ -46,6 +76,27 @@ export const engineUp = new Gauge({
     this.reset();
     if (src) this.set(src.scheduler.engineState === 'up' ? 1 : 0);
   },
+});
+/** `idle`: no engine wanted (no Round, or stopped). Every state is exported, the current one as 1. */
+export const engineState = new Gauge({
+  name: 'kibitzer_engine_state',
+  help: '1 for the engine state: up, restarting, or idle (no Round)',
+  labelNames: ['state'],
+  registers: [register],
+  collect() {
+    this.reset();
+    if (!src) return;
+    const now = src.scheduler.engineState ?? 'idle';
+    for (const state of ['up', 'restarting', 'idle']) this.set({ state }, state === now ? 1 : 0);
+  },
+});
+/** One outcome per Job run: recorded (an Eval, evicted Provisional ones included), empty (no scored line), dropped,
+ *  interrupted (engine restart), crashed (requeued) or dead_lettered (its last crash). */
+export const jobs = new Counter({
+  name: 'kibitzer_jobs_total',
+  help: 'Jobs run, by tier and outcome (recorded, empty, dropped, interrupted, crashed, dead_lettered)',
+  labelNames: ['tier', 'outcome'],
+  registers: [register],
 });
 export const evictions = new Counter({
   name: 'kibitzer_evictions_total',
@@ -80,15 +131,101 @@ export const jobDepth = new Histogram({
   buckets: [5, 10, 15, 20, 25, 30, 35, 40, 50],
   registers: [register],
 });
-export const streamReconnects = new Counter({
-  name: 'kibitzer_lichess_stream_reconnects_total',
-  help: 'Times the Lichess Round stream dropped and was reconnected',
+export const jobNps = new Histogram({
+  name: 'kibitzer_job_nps',
+  help: 'Engine nodes per second at the end of Jobs that recorded an Eval',
+  labelNames: ['tier', 'kind'],
+  // Berserk benches ~1.95M nps on one thread (docs/jobtime.md).
+  buckets: [1e5, 2.5e5, 5e5, 1e6, 1.5e6, 2e6, 2.5e6, 3e6, 4e6, 6e6],
   registers: [register],
 });
+export const streamReconnects = new Counter({
+  name: 'kibitzer_lichess_stream_reconnects_total',
+  help: 'Times the Lichess Round stream ended and was reopened, by reason (eof, http_error, rate_limited, network)',
+  labelNames: ['reason'],
+  registers: [register],
+});
+export const streamConnected = new Gauge({
+  name: 'kibitzer_lichess_stream_connected',
+  help: '1 while the Lichess Round stream is open and receiving',
+  registers: [register],
+});
+/** Every Lichess API call (src/lichess/api.ts getJson); `paused` = refused locally during the 60 s pause after a 429. */
+export const lichessRequests = new Counter({
+  name: 'kibitzer_lichess_requests_total',
+  help: 'Lichess API requests by endpoint (event, round, explorer) and outcome',
+  labelNames: ['endpoint', 'outcome'],
+  registers: [register],
+});
+export const lichessDuration = new Histogram({
+  name: 'kibitzer_lichess_request_duration_seconds',
+  help: 'Duration of Lichess API requests that got a response, by endpoint',
+  labelNames: ['endpoint'],
+  buckets: [0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10],
+  registers: [register],
+});
+/** Deprecated: kibitzer_lichess_requests_total{outcome="rate_limited"} and reconnects{reason="rate_limited"}. */
 export const rateLimited = new Counter({
   name: 'kibitzer_lichess_rate_limited_total',
-  help: 'HTTP 429 responses from Lichess',
+  help: 'Deprecated (use kibitzer_lichess_requests_total): HTTP 429 responses from Lichess',
   labelNames: ['source'],
+  registers: [register],
+});
+/** `route` is the matched Express pattern (bounded cardinality: never the raw path). See routeLabel in app.ts. */
+export const httpRequests = new Counter({
+  name: 'kibitzer_http_requests_total',
+  help: 'HTTP requests by route pattern, method and status (GET /api/events counted when its stream closes)',
+  labelNames: ['route', 'method', 'status'],
+  registers: [register],
+});
+export const httpDuration = new Histogram({
+  name: 'kibitzer_http_request_duration_seconds',
+  help: 'HTTP request duration by route pattern, method and status; not observed for GET /api/events (SSE)',
+  labelNames: ['route', 'method', 'status'],
+  registers: [register],
+});
+export const followerPolls = new Counter({
+  name: 'kibitzer_follower_polls_total',
+  help: 'Event polls by outcome (error: the Event fetch or the Round swap failed)',
+  labelNames: ['outcome'],
+  registers: [register],
+});
+export const followerLastSuccess = new Gauge({
+  name: 'kibitzer_follower_last_success_timestamp_seconds',
+  help: 'When the Event was last fetched (even if the Round swap after it failed); 0 before the first fetch',
+  registers: [register],
+  collect() {
+    this.reset();
+    const at = src?.follower.status.polledAt;
+    if (at != null) this.set(at / 1000);
+  },
+});
+export const following = new Gauge({
+  name: 'kibitzer_following',
+  help: '1 while an Event is registered',
+  registers: [register],
+  collect() {
+    this.reset();
+    if (src) this.set(src.state.settings.event ? 1 : 0);
+  },
+});
+/** One per file write, not per save request: writes are coalesced (src/store.ts jsonWriter). */
+export const storeWrites = new Counter({
+  name: 'kibitzer_store_writes_total',
+  help: 'State and Round file writes, by store (state, round) and outcome (ok, error)',
+  labelNames: ['store', 'outcome'],
+  registers: [register],
+});
+export const storeLastSave = new Gauge({
+  name: 'kibitzer_store_last_save_timestamp_seconds',
+  help: 'When a file of the store (state, round) was last written',
+  labelNames: ['store'],
+  registers: [register],
+});
+export const archiveReads = new Counter({
+  name: 'kibitzer_archive_reads_total',
+  help: 'Archive list and Round reads, by outcome (ok, error; a missing Round file is ok)',
+  labelNames: ['outcome'],
   registers: [register],
 });
 export const viewers = new Gauge({
@@ -96,8 +233,9 @@ export const viewers = new Gauge({
   help: 'Open GET /api/events streams (the Admin page counts as a Viewer)',
   registers: [register],
 });
+/** Deprecated: kibitzer_lichess_requests_total{endpoint="explorer"}. */
 export const openingLookups = new Counter({
   name: 'kibitzer_opening_lookups_total',
-  help: 'Masters-explorer opening lookups (a lookup paused locally by a rate limit is counted too)',
+  help: 'Deprecated (use kibitzer_lichess_requests_total): Masters-explorer opening lookups, paused ones included',
   registers: [register],
 });

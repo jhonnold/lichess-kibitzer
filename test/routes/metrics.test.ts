@@ -1,8 +1,13 @@
+import { once } from 'node:events';
+import type { AddressInfo } from 'node:net';
 import request from 'supertest';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createApp } from '../../src/app.js';
+import { httpDuration, httpRequests } from '../../src/metrics.js';
 import { RoundState } from '../../src/round-state.js';
 import type { EngineState } from '../../src/scheduler.js';
+import { val } from '../helpers/metric.js';
+import { sse } from '../helpers/sse.js';
 
 function setup(...pw: [string | undefined] | []) {
   const adminPassword = pw.length ? pw[0] : 'pw';
@@ -25,7 +30,7 @@ function setup(...pw: [string | undefined] | []) {
     timing: { jobs: 0, provisional: 0, ms: null, depth: null },
   };
   const follower = {
-    status: { next: null, swapAt: null, polledAt: null, error: null },
+    status: { next: null, swapAt: null, polledAt: null as number | null, error: null },
     register: async () => {},
     clear: async () => {},
   };
@@ -37,7 +42,7 @@ function setup(...pw: [string | undefined] | []) {
     adminPassword,
     defaultEngine: { path: 'berserk', options: {} },
   });
-  return { state, scheduler, app };
+  return { state, scheduler, follower, app };
 }
 const basic = (s: string) => `Basic ${Buffer.from(s).toString('base64')}`;
 const scrape = (app: ReturnType<typeof setup>['app'], auth?: string) => {
@@ -78,6 +83,23 @@ describe('GET /api/admin/metrics', () => {
       'kibitzer_lichess_stream_reconnects_total',
       'kibitzer_lichess_rate_limited_total',
       'kibitzer_viewers',
+      'kibitzer_opening_lookups_total',
+      'kibitzer_evictions_total',
+      'kibitzer_build_info{rev="',
+      'kibitzer_engine_state{state="up"}',
+      'kibitzer_jobs_total',
+      'kibitzer_job_nps',
+      'kibitzer_lichess_requests_total',
+      'kibitzer_lichess_request_duration_seconds',
+      'kibitzer_lichess_stream_connected',
+      'kibitzer_http_requests_total',
+      'kibitzer_http_request_duration_seconds',
+      'kibitzer_following',
+      'kibitzer_follower_polls_total',
+      'kibitzer_follower_last_success_timestamp_seconds',
+      'kibitzer_store_writes_total',
+      'kibitzer_store_last_save_timestamp_seconds',
+      'kibitzer_archive_reads_total',
       'kibitzer_process_cpu_user_seconds_total',
     ])
       expect(res.text).toContain(name);
@@ -97,7 +119,80 @@ describe('GET /api/admin/metrics', () => {
     expect(body).toContain('kibitzer_dead_letter_queue_size 1');
     expect(body).toContain('kibitzer_engine_up 1');
     expect(body).toContain('kibitzer_engine_restarts_total 2');
+    expect(body).toContain('kibitzer_engine_state{state="up"} 1');
     scheduler.engineState = 'restarting';
     expect((await scrape(app, basic('admin:pw'))).text).toContain('kibitzer_engine_up 0');
+    for (const [engineState, on] of [
+      ['restarting', 'restarting'],
+      [null, 'idle'],
+    ] as const) {
+      scheduler.engineState = engineState;
+      const text = (await scrape(app, basic('admin:pw'))).text;
+      for (const st of ['up', 'restarting', 'idle'])
+        expect(text).toContain(`kibitzer_engine_state{state="${st}"} ${st === on ? 1 : 0}`);
+    }
+  });
+
+  it('reports whether an Event is followed and when it was last fetched', async () => {
+    const { app, state, follower } = setup();
+    let body = (await scrape(app, basic('admin:pw'))).text;
+    expect(body).toContain('kibitzer_following 0');
+    expect(body).toContain('kibitzer_follower_last_success_timestamp_seconds 0');
+    state.setEvent({ tourId: 'T', name: 'E', link: 'https://lichess.org/broadcast/x/T' });
+    follower.status.polledAt = 1_700_000_000_000;
+    body = (await scrape(app, basic('admin:pw'))).text;
+    expect(body).toContain('kibitzer_following 1');
+    expect(body).toContain('kibitzer_follower_last_success_timestamp_seconds 1700000000');
+  });
+
+  it('reports the build and the configured engine, which follows the saved config', async () => {
+    const { app, state } = setup();
+    expect((await scrape(app, basic('admin:pw'))).text).toMatch(
+      /^kibitzer_build_info\{rev="[^"]+",engine="berserk"\} 1$/m,
+    );
+    state.setEngine({ path: '/usr/local/bin/stockfish', options: {} });
+    expect((await scrape(app, basic('admin:pw'))).text).toMatch(
+      /^kibitzer_build_info\{rev="[^"]+",engine="stockfish"\} 1$/m,
+    );
+  });
+});
+
+describe('HTTP metrics', () => {
+  const reqs = (route: string, method: string, status: string) => val(httpRequests, { route, method, status });
+  const timed = (route: string, method: string, status: string) =>
+    val(httpDuration, { route, method, status }, 'kibitzer_http_request_duration_seconds_count');
+
+  it('labels requests by route pattern, never by raw path', async () => {
+    const { app } = setup();
+    const cases: [string, string, string, string][] = [
+      ['/healthz', '/healthz', 'GET', '200'],
+      ['/api/archive/abcdefgh/ijklmnop', '/api/archive/:tourId/:roundId', 'GET', '404'],
+      ['/api/admin/metrics', '/api/admin/metrics', 'GET', '401'],
+      ['/api/admin/status', '/api/admin/*', 'GET', '401'], // the cookie check answers before any route
+      ['/no/such/path', '<unmatched>', 'GET', '404'],
+    ];
+    for (const [path, ...labels] of cases) {
+      const [n, t] = [await reqs(...labels), await timed(...labels)];
+      await request(app).get(path);
+      expect([path, await reqs(...labels), await timed(...labels)]).toEqual([path, n + 1, t + 1]);
+    }
+  });
+
+  it('counts an SSE stream when it closes, without a duration sample', async () => {
+    const server = setup().app.listen(0);
+    await once(server, 'listening');
+    try {
+      const labels = ['/api/events', 'GET', '200'] as const;
+      const [n, t] = [await reqs(...labels), await timed(...labels)];
+      const c = await sse(`http://127.0.0.1:${(server.address() as AddressInfo).port}/api/events`);
+      await vi.waitFor(() => expect(c.events.length).toBeGreaterThan(0));
+      expect(await reqs(...labels)).toBe(n);
+      await c.close();
+      await vi.waitFor(async () => expect(await reqs(...labels)).toBe(n + 1));
+      expect(await timed(...labels)).toBe(t);
+    } finally {
+      server.closeAllConnections();
+      server.close();
+    }
   });
 });

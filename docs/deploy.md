@@ -89,10 +89,39 @@ the Admin cookie; with no `ADMIN_PASSWORD` it always answers 401.
 
 - `kibitzer_queue_depth{tier}`: Jobs waiting, `current` and `backfill`
 - `kibitzer_dead_letter_queue_size`: Jobs in the Dead-letter queue
-- `kibitzer_engine_up`: 1 while the engine is up; `kibitzer_engine_restarts_total`: restarts since boot
-- `kibitzer_job_duration_seconds` and `kibitzer_job_depth` (histograms, `tier` and `kind` labels): Jobs that recorded an Eval
-- `kibitzer_lichess_stream_reconnects_total`, `kibitzer_lichess_rate_limited_total{source}` (`stream` or `api`)
+- `kibitzer_engine_state{state}`: 1 for the current state (`up`, `restarting`, or `idle` with no Round), 0 for the
+  others. `kibitzer_engine_up`: 1 while up (0 both while restarting and when idle); `kibitzer_engine_restarts_total`:
+  restarts since boot
+- `kibitzer_jobs_total{tier,outcome}`: one outcome per Job run. `recorded` (an Eval, evicted Provisional ones
+  included), `empty` (the search gave no scored line), `dropped` (a Round swap, an untrack or a stop),
+  `interrupted` (engine restart), `crashed` (the engine died; requeued) or `dead_lettered` (its last crash)
+- `kibitzer_job_duration_seconds`, `kibitzer_job_depth` and `kibitzer_job_nps` (histograms, `tier` and `kind`
+  labels): Jobs that recorded an Eval; nps is the engine's last report
+- `kibitzer_lichess_requests_total{endpoint,outcome}`: every Lichess API call. `endpoint` is `event`, `round` or
+  `explorer`; `outcome` is `ok`, `http_error`, `rate_limited` (a 429), `timeout`, `network` (no response, or a broken
+  or non-JSON body) or `paused` (refused locally during the minute after a 429).
+  `kibitzer_lichess_request_duration_seconds{endpoint}` (histogram): calls that got a response.
+- `kibitzer_lichess_stream_connected`: 1 while the Round stream is open and receiving.
+  `kibitzer_lichess_stream_reconnects_total{reason}`: the stream ended and was reopened; `reason` is `eof` (Lichess
+  closed it, about once a minute after a Round finishes), `http_error`, `rate_limited` or `network`
+- Deprecated, to be removed: `kibitzer_lichess_rate_limited_total{source}` (`stream` or `api`) and
+  `kibitzer_opening_lookups_total`; use `kibitzer_lichess_requests_total` and the reconnect `reason`
+- `kibitzer_evictions_total{reason}`: running Jobs stopped early (`stale`, `live`, `backfill`)
+- `kibitzer_following`: 1 while an Event is registered. `kibitzer_follower_polls_total{outcome}`: Event polls (every
+  60 s), `ok` or `error` (the Event fetch or the Round swap failed). `kibitzer_follower_last_success_timestamp_seconds`:
+  when the Event was last fetched, 0 before the first fetch; with `kibitzer_following == 1`, a value more than 5 min
+  old means the follower is stale
+- `kibitzer_store_writes_total{store,outcome}`: state file (`state`) and Round file (`round`) writes, `ok` or `error`
+  (one per write: quick saves are coalesced). `kibitzer_store_last_save_timestamp_seconds{store}`: the last write
+- `kibitzer_archive_reads_total{outcome}`: Archive list and Round reads, `ok` (a missing Round file included) or `error`
 - `kibitzer_viewers`: open live streams (the Admin page counts as one)
+- `kibitzer_http_requests_total{route,method,status}` and `kibitzer_http_request_duration_seconds` (histogram, same
+  labels): `route` is the Express pattern (`/api/archive/:tourId/:roundId`), `<static>` for the SPA, `/api/admin/*`
+  for the Admin cookie check's 401, `<unmatched>` for other 404s and 400s. `GET /api/events` is counted when the
+  stream closes and has no duration sample. Scrapes appear as `route="/api/admin/metrics"`.
+- `kibitzer_build_info{rev,engine}`: always 1; `rev` is the git sha `npm run build` ran on (`unknown` outside a
+  checkout, or set `GIT_REV`), `engine` the file name of the configured engine path. Changes on a deploy or an
+  engine swap.
 - `kibitzer_process_*`, `kibitzer_nodejs_*`: Node defaults
 
 ```yaml
