@@ -1,6 +1,6 @@
 import { Chess } from 'chess.js';
 import { winPercent, type Color, type Score } from './accuracy.js';
-import type { Board, PvLine, Ply, QueueView, Result, SearchInfo } from './types.js';
+import type { Board, PvLine, Ply, QueueView, Result, SearchInfo, Snapshot } from './types.js';
 
 /** A board position as the Viewer draws it. lastMove = [from, to] of the move into it. */
 export interface Position {
@@ -122,4 +122,24 @@ export function statusLine(board: Board, ply: number, search: SearchInfo | null,
   if (ply === latest && board.result !== '*' && !e) return { state: 'none', text: 'Game over' };
   if (e) return { state: 'none', text: `Provisional · depth ${e.depth}` };
   return { state: 'none', text: 'Waiting' };
+}
+
+/** Time left until startsAt: null when startsAt is null; under a second left → 'starting'; < 1 h → 'm:ss';
+ *  < 24 h → 'Hh MMm'; else 'Dd Hh'. Never negative. */
+export function countdown(startsAt: number | null, now: number): string | null {
+  if (startsAt === null) return null;
+  const s = Math.floor((startsAt - now) / 1000);
+  if (s <= 0) return 'starting';
+  const [m, h, d] = [Math.floor(s / 60), Math.floor(s / 3600), Math.floor(s / 86400)];
+  if (h < 1) return `${m}:${String(s % 60).padStart(2, '0')}`;
+  if (d < 1) return `${h}h ${String(m % 60).padStart(2, '0')}m`;
+  return `${d}d ${h % 24}h`;
+}
+
+/** Full-page message when no Board can be shown, else null. */
+export function viewerMessage(snap: Snapshot): string | null {
+  const { event, round } = snap;
+  if (!event) return 'Nothing live right now';
+  if (!round) return `${event.name} · waiting for the first Round`;
+  return round.boards.length ? null : `${event.name} · ${round.name} · no pairings yet`;
 }

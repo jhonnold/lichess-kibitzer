@@ -1,6 +1,5 @@
 import type { UciOption } from '$shared/engine-form';
 
-export type { EventInfo } from '../../../src/lichess/api';
 export type { AdminStatus } from '../../../src/routes/admin';
 export type Probe = { name: string; options: UciOption[] };
 

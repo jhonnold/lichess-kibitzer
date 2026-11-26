@@ -1,9 +1,10 @@
 import { DEFAULT_POSITION } from 'chess.js';
 import { describe, expect, it } from 'vitest';
 import { winPercent } from '../shared/accuracy.js';
-import type { Board, Eval, Ply, QueueView, Result, SearchInfo } from '../shared/types.js';
+import type { Board, Eval, Ply, QueueView, Result, SearchInfo, Snapshot } from '../shared/types.js';
 import {
   boardState,
+  countdown,
   evalSeries,
   formatResult,
   legalDests,
@@ -13,6 +14,7 @@ import {
   selectedBoard,
   shortName,
   statusLine,
+  viewerMessage,
 } from '../shared/viewer.js';
 
 describe('play', () => {
@@ -244,5 +246,50 @@ describe('statusLine', () => {
       state: 'queued',
       text: 'Queued · 4th',
     });
+  });
+});
+
+describe('countdown', () => {
+  const S = 1000;
+  const [M, H] = [60 * S, 3600 * S];
+  it.each([
+    [null, null],
+    [-5 * S, 'starting'],
+    [0, 'starting'],
+    [59 * S, '0:59'],
+    [9 * M + 5 * S, '9:05'],
+    [59 * M + 59 * S, '59:59'],
+    [H + 5 * M, '1h 05m'],
+    [23 * H + 59 * M, '23h 59m'],
+    [50 * H, '2d 2h'],
+  ])('%j ms ahead is %j', (ahead, text) => {
+    expect(countdown(ahead === null ? null : 1_000_000 + ahead, 1_000_000)).toBe(text);
+  });
+});
+
+describe('viewerMessage', () => {
+  const event = { tourId: 't', name: 'Event', link: 'x' };
+  const round = (boards: Board[]) => ({
+    tourId: 't',
+    roundId: 'r',
+    name: 'Round 2',
+    eventName: 'Event',
+    startsAt: null,
+    boards,
+  });
+  const snap = (e: Snapshot['event'], r: Snapshot['round']): Snapshot => ({
+    event: e,
+    round: r,
+    search: null,
+    queue: { current: [], backfill: 0 },
+    stream: null,
+  });
+  it('explains why there is nothing to show', () => {
+    expect(viewerMessage(snap(null, null))).toBe('Nothing live right now');
+    expect(viewerMessage(snap(event, null))).toBe('Event · waiting for the first Round');
+    expect(viewerMessage(snap(event, round([])))).toBe('Event · Round 2 · no pairings yet');
+  });
+  it('is null while a Board can be shown', () => {
+    expect(viewerMessage(snap(event, round([mk(1, 0)])))).toBeNull();
   });
 });

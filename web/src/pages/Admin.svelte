@@ -1,12 +1,12 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import { changedOptions, initialValues, type UciOption } from '$shared/engine-form';
-  import { adminApi, ApiError, type AdminStatus, type EventInfo, type Probe } from '$lib/admin-api';
+  import { adminApi, ApiError, type AdminStatus, type Probe } from '$lib/admin-api';
   import { LiveStore } from '$lib/live.svelte';
   import { formatJobTime, jobTimeMs } from '$shared/admin-form';
-  import { formatResult } from '$shared/viewer';
+  import { countdown, formatResult } from '$shared/viewer';
 
-  type Section = 'login' | 'round' | 'engine' | 'status' | 'tracking';
+  type Section = 'login' | 'event' | 'engine' | 'status' | 'tracking';
 
   const store = new LiveStore(); // site state + Lichess stream status, same feed as the Viewer
   let authed = $state<boolean | null>(null); // null: checking the cookie
@@ -14,8 +14,7 @@
   const errors = $state<Partial<Record<Section, string>>>({});
   let password = $state('');
   let link = $state('');
-  let event = $state<EventInfo | null>(null);
-  let roundId = $state('');
+  let now = $state(Date.now()); // for the countdowns; ticks once a second
   let path = $state('');
   let config: Record<string, string> = {};
   let engineName = $state('');
@@ -62,14 +61,9 @@
       await loadStatus();
     });
 
-  const loadEvent = () =>
-    run('round', async () => {
-      event = await adminApi<EventInfo>('GET', `/event?link=${encodeURIComponent(link)}`);
-      roundId = event.defaultRoundId ?? event.rounds[0]?.id ?? '';
-    });
-  const track = () =>
-    run('round', async () => {
-      await adminApi('POST', '/round', { link, roundId });
+  const register = () =>
+    run('event', async () => {
+      await adminApi('POST', '/event', { link });
       await refresh();
     });
 
@@ -107,11 +101,23 @@
       authed = false;
       if (!(e instanceof ApiError && e.status === 401)) errors.login = e instanceof Error ? e.message : String(e);
     });
-    return store.connect();
+    const tick = setInterval(() => (now = Date.now()), 1000);
+    const disconnect = store.connect();
+    return () => (clearInterval(tick), disconnect());
   });
 
   const snap = $derived(store.snap);
   const running = $derived(!!snap?.round); // an engine runs while there is a Current Round
+
+  // A swap (or a new Event) changes the Current Round: re-read the follow status without a reload.
+  $effect(() => {
+    void [snap?.event?.tourId, snap?.round?.roundId];
+    if (authed) untrack(() => run('status', async () => void (await refresh())));
+  });
+  const when = (ms: number) => {
+    const left = countdown(ms, now);
+    return `${new Date(ms).toLocaleString()}${left === 'starting' ? '' : ` · in ${left}`}`;
+  };
 </script>
 
 <main class="admin">
@@ -125,11 +131,28 @@
   {:else if authed}
     <section>
       <h2>Status</h2>
-      <p>Event: <b>{snap?.event?.name ?? '–'}</b></p>
+      <p>
+        Event:
+        {#if snap?.event}<a href={snap.event.link}><b>{snap.event.name}</b></a>{:else}<b>–</b>{/if}
+      </p>
       <p>
         Current Round: <b>{snap?.round?.name ?? '–'}</b>
         {#if snap?.round}· {snap.round.boards.length} Tracked boards{/if}
       </p>
+      {#if status && snap?.event}
+        {@const { next, swapAt, error } = status.follow}
+        <p>
+          Next Round:
+          {#if next}<b>{next.name}</b> · starts {next.startsAt === null
+              ? 'when Lichess reports it'
+              : when(next.startsAt)}
+          {:else}<b>– (last Round)</b>{/if}
+        </p>
+        {#if next}
+          <p>Swap: <b>{swapAt === null ? 'when Lichess reports it live' : when(swapAt)}</b></p>
+        {/if}
+        {#if error}<p class="error">{error}</p>{/if}
+      {/if}
       <p>
         Lichess stream: <b>{snap?.stream ?? '–'}</b> · Server: <b>{store.connected ? 'connected' : 'reconnecting…'}</b>
       </p>
@@ -138,28 +161,15 @@
     </section>
 
     <section>
-      <h2>Round</h2>
-      <form onsubmit={(e) => (e.preventDefault(), loadEvent())}>
+      <h2>Event</h2>
+      <form onsubmit={(e) => (e.preventDefault(), register())}>
         <label>
           Event link
           <input bind:value={link} placeholder="https://lichess.org/broadcast/…" required />
         </label>
-        <button disabled={busy}>Load</button>
+        <button disabled={busy}>Register Event</button>
       </form>
-      {#if event}
-        <form onsubmit={(e) => (e.preventDefault(), track())}>
-          <label>
-            Round
-            <select bind:value={roundId} disabled={busy}>
-              {#each event.rounds as r (r.id)}
-                <option value={r.id}>{r.name}{r.ongoing ? ' (live)' : r.finished ? ' (finished)' : ''}</option>
-              {/each}
-            </select>
-          </label>
-          <button disabled={busy || !roundId}>Track this Round</button>
-        </form>
-      {/if}
-      {#if errors.round}<p class="error">{errors.round}</p>{/if}
+      {#if errors.event}<p class="error">{errors.event}</p>{/if}
     </section>
 
     {#if status}

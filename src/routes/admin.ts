@@ -4,8 +4,8 @@ import type { EngineConfig, Player, QueueView, RegisteredEvent, Result, StreamSt
 import type { DeadJob, Job } from '../../shared/queue.js';
 import { probeEngine } from '../engine/engine.js';
 import type { UciOption } from '../engine/uci-parser.js';
-import type { Follower, FollowStatus, LichessClient } from '../follower.js';
-import { fetchEvent, LichessError } from '../lichess/api.js';
+import type { Follower, FollowStatus } from '../follower.js';
+import { LichessError } from '../lichess/api.js';
 import type { RoundState } from '../round-state.js';
 import type { EngineState, Scheduler } from '../scheduler.js';
 
@@ -31,7 +31,6 @@ export interface AdminDeps {
   defaultEngine: EngineConfig; // shown (and used) while no config is saved
   adminPassword?: string; // unset or empty: every login is refused
   probe?: (path: string) => Promise<{ name: string; options: UciOption[] }>; // default probeEngine
-  lichess?: Pick<LichessClient, 'fetchEvent'>; // the GET /event preview; default the real one
 }
 
 export interface AdminStatus {
@@ -68,15 +67,7 @@ const fail = (res: Response) => (err: unknown) =>
 
 /** /api/admin/*: login sets an HMAC-signed `<expiry>.<sig>` cookie; every other route needs it. */
 export function adminRouter(deps: AdminDeps): Router {
-  const {
-    state,
-    scheduler,
-    follower,
-    defaultEngine,
-    adminPassword,
-    probe = probeEngine,
-    lichess = { fetchEvent },
-  } = deps;
+  const { state, scheduler, follower, defaultEngine, adminPassword, probe = probeEngine } = deps;
   const secret = randomBytes(32); // per process: a restart logs Admins out
   const sign = (exp: string) => createHmac('sha256', secret).update(exp).digest('base64url');
   const r = Router();
@@ -101,9 +92,6 @@ export function adminRouter(deps: AdminDeps): Router {
     res.sendStatus(401);
   });
 
-  r.get('/event', (req, res) => {
-    lichess.fetchEvent(String(req.query.link ?? '')).then((e) => res.json(e), fail(res));
-  });
   r.post('/engine/probe', (req, res) => {
     probe(String(req.body?.path ?? '')).then((p) => res.json(p), fail(res));
   });

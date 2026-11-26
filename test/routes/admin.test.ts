@@ -4,17 +4,12 @@ import { describe, expect, it, vi } from 'vitest';
 import { createApp } from '../../src/app.js';
 import { probeEngine, type Engine } from '../../src/engine/engine.js';
 import type { FollowStatus } from '../../src/follower.js';
-import { LichessError, type EventInfo, type RoundInfo } from '../../src/lichess/api.js';
+import { LichessError, type RoundInfo } from '../../src/lichess/api.js';
 import { RoundState } from '../../src/round-state.js';
 import type { EngineState } from '../../src/scheduler.js';
 import { DEFAULT_JOB_TIME_MS } from '../../shared/types.js';
 
 const FAKE = fileURLToPath(new URL('../fixtures/fake-uci.mjs', import.meta.url));
-const event: EventInfo = {
-  id: 't',
-  name: 'Event',
-  rounds: [{ id: 'r1', name: 'Round 1', ongoing: true, finished: false, startsAt: 1000 }],
-};
 const roundInfo = (id: string): RoundInfo => ({
   id,
   name: 'Round 1',
@@ -57,11 +52,6 @@ function setup(adminPassword = 'pw') {
     }),
     clear: vi.fn(async () => state.setEvent(null)),
   };
-  const fetchEvent = vi.fn(async (link: string) => {
-    if (link === 'busy') throw new LichessError(429, 'rate limited');
-    if (link !== 'ok') throw new Error('Not a URL');
-    return event;
-  });
   const app = createApp({
     state,
     scheduler,
@@ -69,7 +59,6 @@ function setup(adminPassword = 'pw') {
     adminPassword,
     defaultEngine,
     probe: (path) => probeEngine(process.execPath, { args: [path] }), // fake-uci.mjs has no shebang
-    lichess: { fetchEvent },
   });
   return { state, scheduler, follower, status, app, agent: request.agent(app) };
 }
@@ -100,7 +89,6 @@ describe('admin auth', () => {
   it('refuses every route but login without the cookie, changing nothing', async () => {
     const { app, state, scheduler, follower } = setup();
     const calls: ['get' | 'post' | 'put', string, object?][] = [
-      ['get', '/event?link=ok'],
       ['post', '/engine/probe', { path: FAKE }],
       ['post', '/engine/button', { name: 'Clear Hash' }],
       ['put', '/config', { path: 'x', options: {} }],
@@ -123,14 +111,6 @@ describe('admin auth', () => {
 });
 
 describe('admin routes', () => {
-  it('previews events, passing Lichess errors through', async () => {
-    const { agent } = setup();
-    await login(agent);
-    expect((await agent.get('/api/admin/event').query({ link: 'ok' })).body).toEqual(event);
-    expect((await agent.get('/api/admin/event').query({ link: 'busy' })).status).toBe(429);
-    expect((await agent.get('/api/admin/event').query({ link: 'x' })).body).toEqual({ error: 'Not a URL' });
-  });
-
   it('probes an engine; rejects a non-UCI one', async () => {
     const { agent } = setup();
     await login(agent);
