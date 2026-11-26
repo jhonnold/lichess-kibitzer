@@ -1,9 +1,13 @@
 <script lang="ts">
-  import type { LiveStore } from '$lib/live.svelte';
+  import type { SnapSource } from '$lib/live.svelte';
+  import type { ArchiveCtx } from '$shared/archive';
+  import { archiveHash } from '$shared/route';
   import { viewerMessage } from '$shared/viewer';
   import BoardTile from '../components/BoardTile.svelte';
 
-  const { store, back }: { store: LiveStore; back: string } = $props(); // back: the Viewer hash `o` returns to
+  // back: the Viewer hash `o` returns to. ctx: an archived Round (no Queue dots, links stay in the Archive).
+  const { store, back, ctx = null }: { store: SnapSource; back: string; ctx?: ArchiveCtx | null } = $props();
+  const href = $derived(ctx ? (n: number) => archiveHash(ctx.tourId, ctx.roundId, n) : undefined);
   const snap = $derived(store.snap);
 </script>
 
@@ -14,12 +18,12 @@
 {:else}
   <main>
     <header>
-      <h1>{snap.event?.name} · {snap.round.name}</h1>
+      <h1>{ctx ? 'Archive · ' : ''}{snap.event?.name} · {snap.round.name}</h1>
       <a href={back}>Board view (o)</a>
     </header>
     <div class="grid">
       {#each snap.round.boards as b (b.id)}
-        <BoardTile board={b} search={snap.search} queue={snap.queue} />
+        <BoardTile board={b} search={snap.search} queue={snap.queue} {href} archived={!!ctx} />
       {/each}
     </div>
   </main>

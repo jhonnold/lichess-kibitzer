@@ -1,22 +1,35 @@
 <script lang="ts">
   import { MARK_GLYPH, latestMark } from '$shared/analysis';
-  import { boardHash, ROUND_HASH } from '$shared/route';
+  import type { ArchiveCtx } from '$shared/archive';
+  import { ARCHIVE_HASH, archiveHash, boardHash, ROUND_HASH } from '$shared/route';
   import type { Board } from '$shared/types';
-  import { boardState, formatResult, shortName } from '$shared/viewer';
+  import { archivedResult, boardState, formatResult, shortName } from '$shared/viewer';
 
-  type Props = { boards: Board[]; selected: number };
-  const { boards, selected }: Props = $props();
+  type Props = { boards: Board[]; selected: number; ctx?: ArchiveCtx | null };
+  const { boards, selected, ctx = null }: Props = $props();
+  const href = (n: number) => (ctx ? archiveHash(ctx.tourId, ctx.roundId, n) : boardHash(n));
 </script>
 
-<a class="overview" href={ROUND_HASH}>Overview (o)</a>
+<div class="links">
+  {#if ctx}
+    <a href={archiveHash(ctx.tourId, ctx.roundId)}>Overview (o)</a>
+    <a href={ARCHIVE_HASH}>All Rounds</a>
+    <a href="#/">Back to live</a>
+  {:else}
+    <a href={ROUND_HASH}>Overview (o)</a>
+    <a href={ARCHIVE_HASH}>Archive</a>
+  {/if}
+</div>
 <nav>
   {#each boards as b (b.id)}
     {@const st = boardState(b)}
     {@const mark = latestMark(b.plies)}
-    <a href={boardHash(b.board)} aria-current={b.board === selected ? 'page' : undefined}>
+    <a href={href(b.board)} aria-current={b.board === selected ? 'page' : undefined}>
       <span class="names"><b>{b.board}</b> {shortName(b.white.name)} – {shortName(b.black.name)}</span>
       {#if mark}<span class={mark}>{MARK_GLYPH[mark]}</span>{/if}
-      {#if st === 'finished'}
+      {#if ctx}
+        <span class="state">{archivedResult(b)}</span>
+      {:else if st === 'finished'}
         <span class="state">{formatResult(b.result)}</span>
       {:else if st === 'live'}
         <span class="state live">● live</span>
@@ -28,12 +41,16 @@
 </nav>
 
 <style>
-  .overview {
+  .links {
+    display: flex;
+    justify-content: flex-end;
+    gap: 12px;
     padding: 4px 8px 0;
     font-size: 14px;
-    text-align: right;
-    color: var(--accent);
     background: var(--surface);
+  }
+  .links a {
+    color: var(--accent);
   }
   nav {
     display: grid;
