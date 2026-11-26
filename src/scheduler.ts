@@ -1,12 +1,12 @@
 import { Chess } from 'chess.js';
-import { Queue, type Job } from '../shared/queue.js';
+import { MIN_LIVE_SLICE_MS, Queue, type Eviction, type Job } from '../shared/queue.js';
 import { jobTiming, type JobSample, type JobTiming } from '../shared/timing.js';
 import type * as T from '../shared/types.js';
 import { Engine, type SearchResult } from './engine/engine.js';
 import type { UciInfo } from './engine/uci-parser.js';
 import type { RoundInfo } from './lichess/api.js';
 import { lichessSource, type GameUpdate, type Source, type SourceFactory } from './lichess/stream.js';
-import { jobDepth, jobDuration } from './metrics.js';
+import { evictions, jobDepth, jobDuration } from './metrics.js';
 import { OpeningFallback, type OpeningFetch } from './opening.js';
 import { pvToSan, toScore } from './pv.js';
 import type { RoundState } from './round-state.js';
@@ -23,11 +23,13 @@ export interface SchedulerOpts {
   launch?: (cfg: T.EngineConfig) => Promise<Engine>; // default Engine.start(cfg.path); tests spawn the fake
   source?: SourceFactory; // default lichessSource
   now?: () => number; // default Date.now
-  after?: (ms: number, fn: () => void) => () => void; // default setTimeout(unref) → cancel; tests inject
+  after?: (ms: number, fn: () => void) => () => void; // restart backoff; default setTimeout(unref) → cancel; tests inject
+  afterSlice?: (ms: number, fn: () => void) => () => void; // live slice timer; same default as `after`
   fetchOpening?: OpeningFetch; // masters explorer for untagged Boards; undefined = no fallback (tests, demo)
 }
 
-/** The Job being searched. stop = why it was told to stop (null = it ran its full time). */
+/** The Job being searched. stop = why it was told to stop (null = it ran its full time); evicted = why, for 'preempt'.
+ *  sliceMs = how long before another live position may evict it (Infinity: never). */
 interface Run {
   job: Job;
   epoch: number;
@@ -35,8 +37,16 @@ interface Run {
   lines: T.PvLine[];
   nps: number | null;
   startedAt: number;
+  sliceMs: number;
   stop: null | 'preempt' | 'restart' | 'drop';
+  evicted: Eviction | null;
 }
+
+const timeout = (ms: number, fn: () => void) => {
+  const h = setTimeout(fn, ms);
+  h.unref();
+  return () => clearTimeout(h);
+};
 
 const toLine = (i: UciInfo, ply: number, fen: string): T.PvLine | null => {
   const score = i.score && toScore(i.score, ply);
@@ -317,15 +327,18 @@ export class Scheduler {
     this.queue.addBackfill(b.id, missing, this.now);
   }
 
-  /** After every Queue change: publish it, then pre-empt a backfill Job for a waiting current one, or start the loop. */
+  /** After every Queue change: publish it, then evict the running Job if the Queue says so, or start the loop. */
   private wake(): void {
     this.publishQueue();
     const run = this.run;
     if (!run) return this.kick();
-    if (!run.stop && this.engine_ && this.queue.shouldPreempt(run.job)) {
-      run.stop = 'preempt';
-      void this.engine_.stop().catch(() => {});
-    }
+    if (run.stop || !this.engine_) return;
+    const why = this.queue.preempt(run.job, this.now - run.startedAt, run.sliceMs);
+    if (!why) return;
+    run.stop = 'preempt';
+    run.evicted = why;
+    evictions.inc({ reason: why });
+    void this.engine_.stop().catch(() => {});
   }
 
   private publishQueue(): void {
@@ -368,6 +381,7 @@ export class Scheduler {
       .map((p) => p.move!.uci);
     const chess = new Chess();
     for (const m of moves) play(chess, m);
+    const slice = Math.min(MIN_LIVE_SLICE_MS, ms);
     const run: Run = {
       job,
       epoch: this.state.epoch(boardId),
@@ -375,9 +389,14 @@ export class Scheduler {
       lines: [],
       nps: null,
       startedAt: this.now,
+      sliceMs: job.tier === 'current' && slice < ms ? slice : Infinity,
       stop: null,
+      evicted: null,
     };
     this.run = run;
+    // At the end of the slice, a live position that waits evicts this Job: wake() looks again then.
+    const cancelSlice =
+      run.sliceMs === Infinity ? () => {} : (this.opts.afterSlice ?? timeout)(run.sliceMs, () => this.wake());
     this.publishQueue(); // after `run` is set: a Job is never in neither place
     this.state.setSearch({
       boardId,
@@ -392,6 +411,7 @@ export class Scheduler {
     try {
       r = await engine.search(moves, { movetime: ms });
     } catch {
+      cancelSlice();
       // The search rejected: the engine died. A Job we quit the engine under (restart) is not its crash.
       this.run = null;
       if (run.stop === 'restart') this.queue.requeue(job, this.now);
@@ -399,6 +419,7 @@ export class Scheduler {
       this.publishQueue();
       return;
     }
+    cancelSlice();
     this.run = null;
     this.backoff = RESTART_MIN_MS;
     if (run.stop === 'drop') return;
@@ -406,11 +427,15 @@ export class Scheduler {
       const e = toEval(r, ply, run.fen, run.stop ? 'provisional' : 'complete');
       if (e) {
         this.recordJob(job, this.now - run.startedAt, e);
-        this.state.setEval(boardId, ply, e, run.epoch);
+        // A short eviction (stale) must not replace a deeper Provisional eval of the same ply.
+        const prev = this.state.board(boardId)?.plies[ply]?.eval;
+        if (e.kind === 'complete' || !prev || prev.depth <= e.depth) this.state.setEval(boardId, ply, e, run.epoch);
       }
     }
+    // Evicted for another live position: a full search later, from the top of backfill.
+    if (run.stop === 'preempt' && run.evicted === 'live') this.queue.evict(job, this.now);
     // Stopped, or a correction bumped the epoch (eval refused): search it again if the ply still exists.
-    if (run.stop || run.epoch !== this.state.epoch(boardId)) this.queue.requeue(job, this.now);
+    else if (run.stop || run.epoch !== this.state.epoch(boardId)) this.queue.requeue(job, this.now);
   }
 
   private recordJob(job: Job, ms: number, e: T.Eval): void {
@@ -452,14 +477,7 @@ export class Scheduler {
     const delay = this.backoff;
     this.backoff = Math.min(2 * delay, RESTART_MAX_MS);
     this.restarts_++;
-    const after =
-      this.opts.after ??
-      ((ms, fn) => {
-        const h = setTimeout(fn, ms);
-        h.unref();
-        return () => clearTimeout(h);
-      });
-    this.cancelRestart = after(delay, () => {
+    this.cancelRestart = (this.opts.after ?? timeout)(delay, () => {
       this.cancelRestart = null;
       void this.serial(async () => {
         if (!this.wanted || this.engine_) return;

@@ -47,6 +47,12 @@ export const engineUp = new Gauge({
     if (src) this.set(src.scheduler.engineState === 'up' ? 1 : 0);
   },
 });
+export const evictions = new Counter({
+  name: 'kibitzer_evictions_total',
+  help: 'Running Jobs stopped early, by reason (stale, live, backfill)',
+  labelNames: ['reason'],
+  registers: [register],
+});
 /** The Scheduler's restart count is already monotonic for the process, so the counter mirrors it at scrape time. */
 export const engineRestarts = new Counter({
   name: 'kibitzer_engine_restarts_total',

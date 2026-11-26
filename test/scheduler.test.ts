@@ -8,11 +8,11 @@ import { Engine } from '../src/engine/engine.js';
 import type { RoundInfo } from '../src/lichess/api.js';
 import type { GameUpdate } from '../src/lichess/stream.js';
 import { RoundState } from '../src/round-state.js';
-import { MAX_CRASHES } from '../shared/queue.js';
+import { MAX_CRASHES, MIN_LIVE_SLICE_MS } from '../shared/queue.js';
 import { RESTART_MIN_MS, Scheduler } from '../src/scheduler.js';
 import { val } from './helpers/metric.js';
 import { ReplaySource } from './helpers/replay-source.js';
-import { jobDepth, jobDuration } from '../src/metrics.js';
+import { evictions, jobDepth, jobDuration } from '../src/metrics.js';
 
 const FAKE = fileURLToPath(new URL('./fixtures/fake-uci.mjs', import.meta.url));
 const E4 = ['e2e4', 'e7e5', 'g1f3'];
@@ -42,6 +42,7 @@ let state: RoundState, sched: Scheduler, src: ReplaySource, sources: ReplaySourc
 let engineArgs: string[]; // read per launch
 let delays: number[]; // restart delays asked of `after`
 let fire: (() => void)[]; // manual mode: timers waiting to be fired by hand
+let slices: { ms: number; fn: () => void }[]; // live slice timers, fired by hand
 
 function setup(
   opts: {
@@ -71,6 +72,7 @@ function setup(
       const h = setTimeout(fn, 0);
       return () => clearTimeout(h);
     },
+    afterSlice: (ms, fn) => (slices.push({ ms, fn }), () => {}),
     source: (id) => (sourceIds.push(id), sources.push((src = new ReplaySource([]))), src),
     now: () => t,
     fetchOpening: opts.fetchOpening,
@@ -121,6 +123,7 @@ beforeEach(() => {
   t = 1000;
   delays = [];
   fire = [];
+  slices = [];
   vi.spyOn(console, 'error').mockImplementation(() => {});
 });
 afterEach(async () => {
@@ -203,15 +206,48 @@ describe('Scheduler', () => {
     expect(complete('g1', 3)).toBe(true);
   });
 
-  it('never interrupts a current-tier Job', async () => {
-    setup({ topN: 1, jobTimeMs: 150 });
+  it('evicts a live Job at once when its Board moves, and searches the old position again in full', async () => {
+    setup({ topN: 1, jobTimeMs: 5000 });
     await sched.startRound(roundInfo('R1', ['g1']), null);
     src.push(upd('g1', E4.slice(0, 1)));
     await until(() => searching('g1', 1));
+    const stale0 = await val(evictions, { reason: 'stale' });
     src.push(upd('g1', E4.slice(0, 2)));
-    await until(() => complete('g1', 1));
-    await until(() => complete('g1', 2));
-    expect(readLog()).not.toContain('stop');
+    await until(() => searching('g1', 2));
+    expect(evalOf('g1', 1)?.kind).toBe('provisional');
+    expect((await val(evictions, { reason: 'stale' })) - stale0).toBe(1);
+    await sched.setJobTime(15);
+    await sched.engine!.stop(); // cut short the ply 2 search, started at 5000 ms
+    await until(() => complete('g1', 1) && complete('g1', 2));
+  });
+
+  it('lets a live Job run its slice, then evicts it for another live position', async () => {
+    const live0 = await val(evictions, { reason: 'live' });
+    setup({ topN: 2, jobTimeMs: 5000 });
+    await sched.startRound(roundInfo('R1', ['g1', 'g2']), null);
+    await until(() => searching('g1', 0));
+    expect(slices.at(-1)?.ms).toBe(MIN_LIVE_SLICE_MS);
+    t += MIN_LIVE_SLICE_MS - 1;
+    slices.at(-1)!.fn(); // g2's live position waits, but the slice is not up yet
+    expect(searching('g1', 0)).toBe(true);
+    t += 1;
+    slices.at(-1)!.fn();
+    await until(() => searching('g2', 0));
+    expect(evalOf('g1', 0)?.kind).toBe('provisional');
+    expect(queueView().current).toEqual([]);
+    expect(queueView().backfill).toBe(1); // g1's latest ply, waiting for a full search
+    expect((await val(evictions, { reason: 'live' })) - live0).toBe(1);
+    await sched.setJobTime(15);
+    await sched.engine!.stop(); // cut short g2's search, started at 5000 ms
+    await until(() => complete('g1', 0));
+    expect(sched.running).toBeNull();
+  });
+
+  it('gives no slice when the job time is the slice or shorter', async () => {
+    setup({ topN: 2, jobTimeMs: MIN_LIVE_SLICE_MS });
+    await sched.startRound(roundInfo('R1', ['g1', 'g2']), null);
+    await until(() => searching('g1', 0));
+    expect(slices).toEqual([]);
   });
 
   it('records the engine lines White POV', async () => {
