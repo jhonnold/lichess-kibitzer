@@ -1,11 +1,26 @@
 import request from 'supertest';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createApp } from '../src/app.js';
-import { State } from '../src/state.js';
+import { RoundState } from '../src/round-state.js';
+import type { DataStore } from '../src/store.js';
 
+const store: DataStore = {
+  load: async () => null,
+  save: async () => {},
+  loadRound: async () => null,
+  saveRound: async () => {},
+};
 const app = createApp({
-  state: new State({ load: async () => null, save: async () => {} }),
-  kibitzer: { engine: null, pick: async () => {}, clear: async () => {} },
+  state: new RoundState(store),
+  scheduler: {
+    engine: null,
+    running: null,
+    startRound: vi.fn(),
+    setJobTime: vi.fn(),
+    setTracked: vi.fn(),
+    setEngine: vi.fn(),
+    stop: vi.fn(),
+  },
   defaultEngine: { path: 'berserk', options: {} },
 });
 

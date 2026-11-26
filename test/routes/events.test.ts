@@ -3,17 +3,36 @@ import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import express from 'express';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { LiveInfo } from '../../shared/types.js';
+import type { Eval, SearchInfo } from '../../shared/types-v2.js';
+import { RoundState } from '../../src/round-state.js';
 import { eventsRouter } from '../../src/routes/events.js';
-import { State } from '../../src/state.js';
 import { sse } from '../helpers/sse.js';
 
-const ref = { tourId: 't', roundId: 'r', id: 'g', white: { name: 'W' }, black: { name: 'B' } };
-const live = (depth: number): LiveInfo => ({ ply: 0, engine: 'E', depth, nps: null, lines: [] });
-let state: State, server: Server, url: string;
+const round = {
+  id: 'r',
+  name: 'R1',
+  tourId: 't',
+  boards: [{ id: 'g', name: 'b', white: { name: 'W' }, black: { name: 'B' }, result: '*' as const }],
+};
+const search = (depth: number): SearchInfo => ({
+  boardId: 'g',
+  ply: 0,
+  engine: 'E',
+  depth,
+  nps: null,
+  lines: [],
+  startedAt: 0,
+});
+const ev: Eval = { score: { cp: 1 }, depth: 1, kind: 'complete', bestmove: null, lines: [] };
+let state: RoundState, server: Server, url: string;
 
 beforeEach(async () => {
-  state = new State({ load: async () => null, save: async () => {} });
+  state = new RoundState({
+    load: async () => null,
+    save: async () => {},
+    loadRound: async () => null,
+    saveRound: async () => {},
+  });
   server = express()
     .use(eventsRouter(state, { throttleMs: 50, heartbeatMs: 20 }))
     .listen(0);
@@ -34,19 +53,19 @@ describe('GET /api/events', () => {
     await c.close();
   });
 
-  it('coalesces info (latest wins), keeps order, and heartbeats', async () => {
+  it('coalesces search (latest wins), keeps order, and heartbeats', async () => {
     const c = await sse(url);
-    state.pick(ref);
-    for (let d = 1; d <= 10; d++) state.setLive(live(d));
-    state.setEval(0, { score: { cp: 1 }, depth: 1, kind: 'final', bestmove: null }, state.epoch);
+    state.startRound(round, null);
+    for (let d = 1; d <= 10; d++) state.setSearch(search(d));
+    state.setEval('g', 0, ev, state.epoch('g'));
     await vi.waitFor(() => expect(c.events.at(-1)?.type).toBe('ply'));
-    for (let d = 11; d <= 20; d++) state.setLive(live(d));
-    await vi.waitFor(() => expect(c.events.at(-1)).toEqual({ type: 'info', live: live(20) }));
+    for (let d = 11; d <= 20; d++) state.setSearch(search(d));
+    await vi.waitFor(() => expect(c.events.at(-1)).toEqual({ type: 'search', search: search(20) }));
     const types = c.events.map((e) => e.type);
     expect(types.slice(0, 2)).toEqual(['snapshot', 'snapshot']);
     expect(types.slice(2, -1)).toContain('ply');
-    expect(types.filter((t) => t === 'info').length).toBeLessThanOrEqual(4); // 20 sent
-    expect(c.events[types.indexOf('ply') - 1]).toEqual({ type: 'info', live: live(10) }); // flushed before ply
+    expect(types.filter((t) => t === 'search').length).toBeLessThanOrEqual(4); // 20 sent
+    expect(c.events[types.indexOf('ply') - 1]).toEqual({ type: 'search', search: search(10) }); // flushed before ply
     await vi.waitFor(() => expect(c.frames).toContain(': hb'));
     await c.close();
   });

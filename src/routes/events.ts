@@ -1,18 +1,18 @@
 import { Router } from 'express';
-import type { SseEvent } from '../../shared/types.js';
-import type { State } from '../state.js';
+import type { SseEvent } from '../../shared/types-v2.js';
+import type { RoundState } from '../round-state.js';
 
 export interface SseOpts {
-  throttleMs?: number; // min gap between `info` events per client; default 250 (~4/s)
+  throttleMs?: number; // min gap between `search` events per client; default 250 (~4/s)
   heartbeatMs?: number; // comment line that keeps proxies from closing an idle stream; default 25 s
 }
 
 /**
  * GET /api/events: one unnamed `data: <SseEvent JSON>` frame per event (clients use `onmessage`).
- * A `snapshot` first, then every State event. `info` is coalesced per client (latest wins); a pending `info` is
- * flushed before any other event, so order is kept and the last `info` (even `null`) is never dropped.
+ * A `snapshot` first, then every RoundState event. `search` is coalesced per client (latest wins); a pending
+ * `search` is flushed before any other event, so order is kept and the last `search` (even `null`) is never dropped.
  */
-export function eventsRouter(state: State, opts: SseOpts = {}): Router {
+export function eventsRouter(state: RoundState, opts: SseOpts = {}): Router {
   const { throttleMs = 250, heartbeatMs = 25_000 } = opts;
   return Router().get('/api/events', (_req, res) => {
     res.set({
@@ -35,7 +35,7 @@ export function eventsRouter(state: State, opts: SseOpts = {}): Router {
       pending = null;
     };
     const onEvent = (e: SseEvent) => {
-      if (e.type !== 'info') return (flush(), send(e));
+      if (e.type !== 'search') return (flush(), send(e));
       pending = e;
       timer ??= setTimeout(flush, Math.max(0, last + throttleMs - Date.now()));
     };

@@ -1,10 +1,13 @@
 import { startServer } from './server.js';
-import { fileStore } from './store.js';
+import { dataStore } from './store.js';
 
 const running = await startServer({
   port: Number(process.env.PORT ?? 8080),
-  store: fileStore(),
-  defaultEngine: { path: process.env.DEFAULT_ENGINE || 'berserk', options: { Threads: '1', Hash: '1024' } },
+  store: dataStore(),
+  defaultEngine: {
+    path: process.env.DEFAULT_ENGINE || 'berserk',
+    options: { Threads: '1', Hash: '1024', MultiPV: '5' },
+  },
   adminPassword: process.env.ADMIN_PASSWORD,
 });
 console.log(`Listening on port ${running.port}`);

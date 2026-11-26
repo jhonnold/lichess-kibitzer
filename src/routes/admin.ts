@@ -1,22 +1,43 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { Router, type NextFunction, type Request, type Response } from 'express';
-import type { EngineConfig, GameRef } from '../../shared/types.js';
+import type { DeadJob } from '../../shared/queue.js';
+import type { EngineConfig, Player, QueueView, RegisteredEvent, Result, StreamStatus } from '../../shared/types-v2.js';
+import type { Job } from '../../shared/queue.js';
 import { probeEngine } from '../engine/engine.js';
 import type { UciOption } from '../engine/uci-parser.js';
-import type { Kibitzer } from '../kibitzer.js';
 import { fetchEvent, fetchRound, LichessError, type EventInfo, type RoundInfo } from '../lichess/api.js';
-import type { State } from '../state.js';
+import type { RoundState } from '../round-state.js';
+import type { Scheduler } from '../scheduler.js';
 
 export const COOKIE = 'kibitzer_admin';
 const MAX_AGE_MS = 7 * 24 * 3600_000;
+const MAX_JOB_MS = 3600_000; // keeps `go movetime` a plain integer
 
 export interface AdminDeps {
-  state: State;
-  kibitzer: Pick<Kibitzer, 'pick' | 'clear' | 'engine'>;
+  state: RoundState;
+  scheduler: Pick<Scheduler, 'engine' | 'running' | 'startRound' | 'setJobTime' | 'setTracked' | 'setEngine' | 'stop'>;
   defaultEngine: EngineConfig; // shown (and used) while no config is saved
   adminPassword?: string; // unset or empty: every login is refused
   probe?: (path: string) => Promise<{ name: string; options: UciOption[] }>; // default probeEngine
   lichess?: { fetchEvent(link: string): Promise<EventInfo>; fetchRound(roundId: string): Promise<RoundInfo> };
+}
+
+export interface AdminStatus {
+  event: RegisteredEvent | null;
+  round: {
+    tourId: string;
+    roundId: string;
+    name: string;
+    boards: { id: string; board: number; white: Player; black: Player; result: Result; tracked: boolean }[];
+  } | null;
+  stream: StreamStatus | null;
+  engine: EngineConfig; // saved, else the default
+  engineRunning: boolean;
+  jobTimeMs: number | null;
+  topN: number;
+  running: Job | null;
+  queue: QueueView;
+  dead: readonly DeadJob[];
 }
 
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null;
@@ -34,7 +55,7 @@ const fail = (res: Response) => (err: unknown) =>
 export function adminRouter(deps: AdminDeps): Router {
   const {
     state,
-    kibitzer,
+    scheduler,
     defaultEngine,
     adminPassword,
     probe = probeEngine,
@@ -77,8 +98,8 @@ export function adminRouter(deps: AdminDeps): Router {
   r.post('/engine/button', (req, res) => {
     const name: unknown = req.body?.name;
     if (!oneLine(name) || !name) return void res.status(400).json({ error: 'expected { name }' });
-    if (!kibitzer.engine) return void res.status(409).json({ error: 'no engine running' });
-    kibitzer.engine.setOption(name);
+    if (!scheduler.engine) return void res.status(409).json({ error: 'no engine running' });
+    scheduler.engine.setOption(name);
     res.sendStatus(204);
   });
   r.put('/config', (req, res) => {
@@ -89,27 +110,88 @@ export function adminRouter(deps: AdminDeps): Router {
       isObj(options) &&
       Object.entries(options).every(([k, v]) => k && oneLine(k) && oneLine(v));
     if (!ok) return void res.status(400).json({ error: 'expected { path, options: { name: value } }' });
-    state.setEngine({ path, options: options as Record<string, string> }); // applied on the next pick
-    res.sendStatus(204);
+    scheduler
+      .setEngine({ path, options: options as Record<string, string> })
+      .then(() => res.sendStatus(204), fail(res));
   });
-  r.post('/pick', (req, res) => {
-    const ref = req.body as GameRef;
-    if (typeof ref?.roundId !== 'string' || typeof ref.id !== 'string')
-      return void res.status(400).json({ error: 'expected a GameRef' });
-    kibitzer.pick(ref).then(() => res.sendStatus(204), fail(res));
+  /** Track a Round (manual until the Event poller): a new Event stops the old Round first. */
+  r.post('/round', async (req, res) => {
+    const { link, roundId } = req.body ?? {};
+    if (typeof link !== 'string' || !link || typeof roundId !== 'string' || !roundId)
+      return void res.status(400).json({ error: 'expected { link, roundId }' });
+    try {
+      const ev = await lichess.fetchEvent(link);
+      const summary = ev.rounds.find((x) => x.id === roundId);
+      if (!summary) return void res.status(400).json({ error: 'round not in event' });
+      if (roundId === state.round?.roundId) return void res.status(409).json({ error: 'already the Current Round' });
+      const info = await lichess.fetchRound(roundId);
+      if (state.settings.event?.tourId !== ev.id) {
+        await scheduler.stop();
+        state.setEvent({ tourId: ev.id, name: ev.name, link });
+      }
+      await scheduler.startRound(info, summary.startsAt ?? null);
+      res.sendStatus(204);
+    } catch (err) {
+      fail(res)(err);
+    }
   });
   r.post('/clear', (_req, res) => {
-    kibitzer.clear().then(() => res.sendStatus(204), fail(res));
+    scheduler
+      .stop()
+      .then(() => state.setEvent(null))
+      .then(() => res.sendStatus(204), fail(res));
+  });
+  /** The next Round's default; the Scheduler has no topN. */
+  r.put('/topn', (req, res) => {
+    const n: unknown = req.body?.n;
+    if (!Number.isInteger(n) || (n as number) < 1 || (n as number) > 64)
+      return void res.status(400).json({ error: 'expected { n: integer 1-64 }' });
+    state.setTopN(n as number);
+    res.sendStatus(204);
+  });
+  r.put('/jobtime', (req, res) => {
+    const ms: unknown = req.body?.ms;
+    if (ms !== null && (!Number.isInteger(ms) || (ms as number) <= 0 || (ms as number) > MAX_JOB_MS))
+      return void res.status(400).json({ error: `expected { ms: integer 1-${MAX_JOB_MS} | null }` });
+    scheduler.setJobTime(ms as number | null).then(() => res.sendStatus(204), fail(res));
+  });
+  r.put('/tracked', (req, res) => {
+    const ids: unknown = req.body?.boardIds;
+    if (!Array.isArray(ids) || !ids.every((x) => typeof x === 'string'))
+      return void res.status(400).json({ error: 'expected { boardIds: string[] }' });
+    if (!state.round) return void res.status(409).json({ error: 'no Current Round' });
+    const known = new Set(state.round.boards.map((b) => b.id));
+    if (!ids.every((id) => known.has(id)))
+      return void res.status(400).json({ error: 'not a Board of the Current Round' });
+    scheduler.setTracked(ids as string[]).then(() => res.sendStatus(204), fail(res));
   });
   r.get('/status', (_req, res) => {
-    const g = state.game;
-    res.json({
-      site: state.site,
+    const round = state.round;
+    const body: AdminStatus = {
+      event: state.settings.event,
+      round: round && {
+        tourId: round.tourId,
+        roundId: round.roundId,
+        name: round.name,
+        boards: round.boards.map(({ id, board, white, black, result, tracked }) => ({
+          id,
+          board,
+          white,
+          black,
+          result,
+          tracked,
+        })),
+      },
       stream: state.snapshot().stream,
-      engine: state.engine ?? defaultEngine,
-      engineRunning: kibitzer.engine !== null,
-      game: g && { tourId: g.tourId, roundId: g.roundId, id: g.id, white: g.white, black: g.black, result: g.result },
-    });
+      engine: state.settings.engine ?? defaultEngine,
+      engineRunning: scheduler.engine !== null,
+      jobTimeMs: state.settings.jobTimeMs,
+      topN: state.settings.topN,
+      running: scheduler.running,
+      queue: state.snapshot().queue,
+      dead: state.dead,
+    };
+    res.json(body);
   });
   return r;
 }

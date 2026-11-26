@@ -3,35 +3,60 @@ import request from 'supertest';
 import { describe, expect, it, vi } from 'vitest';
 import { createApp } from '../../src/app.js';
 import { probeEngine, type Engine } from '../../src/engine/engine.js';
-import { LichessError, type EventInfo } from '../../src/lichess/api.js';
-import { State } from '../../src/state.js';
+import { LichessError, type EventInfo, type RoundInfo } from '../../src/lichess/api.js';
+import { RoundState } from '../../src/round-state.js';
 
 const FAKE = fileURLToPath(new URL('../fixtures/fake-uci.mjs', import.meta.url));
-const ref = { tourId: 't', roundId: 'r', id: 'g', white: { name: 'W' }, black: { name: 'B' } };
-const event: EventInfo = { id: 't', name: 'Event', rounds: [] };
+const event: EventInfo = {
+  id: 't',
+  name: 'Event',
+  rounds: [{ id: 'r1', name: 'Round 1', ongoing: true, finished: false, startsAt: 1000 }],
+};
+const roundInfo = (id: string): RoundInfo => ({
+  id,
+  name: 'Round 1',
+  tourId: 't',
+  boards: ['a', 'b', 'c'].map((g) => ({
+    id: g,
+    name: g,
+    white: { name: `W${g}` },
+    black: { name: `B${g}` },
+    result: '*',
+  })),
+});
+const defaultEngine = { path: 'berserk', options: { Hash: '1024' } };
 
 function setup(adminPassword = 'pw') {
-  const state = new State({ load: async () => null, save: async () => {} });
-  const kibitzer = {
+  const state = new RoundState({
+    load: async () => null,
+    save: async () => {},
+    loadRound: async () => null,
+    saveRound: async () => {},
+  });
+  const scheduler = {
     engine: null as Engine | null,
-    pick: vi.fn(async () => state.pick(ref)),
-    clear: vi.fn(async () => state.clear()),
+    running: null,
+    startRound: vi.fn(async (r: RoundInfo, startsAt: number | null) => state.startRound(r, startsAt)),
+    setJobTime: vi.fn(async () => {}),
+    setTracked: vi.fn(async () => {}),
+    setEngine: vi.fn(async () => {}),
+    stop: vi.fn(async () => {}),
   };
   const fetchEvent = vi.fn(async (link: string) => {
     if (link === 'busy') throw new LichessError(429, 'rate limited');
     if (link !== 'ok') throw new Error('Not a URL');
     return event;
   });
-  const fetchRound = vi.fn(async (id: string) => ({ id, name: 'R1', tourId: 't', boards: [] }));
+  const fetchRound = vi.fn(async (id: string) => roundInfo(id));
   const app = createApp({
     state,
-    kibitzer,
+    scheduler,
     adminPassword,
-    defaultEngine: { path: 'berserk', options: { Hash: '1024' } },
+    defaultEngine,
     probe: (path) => probeEngine(process.execPath, { args: [path] }), // fake-uci.mjs has no shebang
     lichess: { fetchEvent, fetchRound },
   });
-  return { state, kibitzer, app, agent: request.agent(app) };
+  return { state, scheduler, app, agent: request.agent(app) };
 }
 const login = async (agent: ReturnType<typeof request.agent>) =>
   agent.post('/api/admin/login').send({ password: 'pw' });
@@ -56,6 +81,28 @@ describe('admin auth', () => {
     expect((await request(setup().app).get('/api/admin/status').set('Cookie', cookie)).status).toBe(401); // other secret
     expect((await login(setup('').agent)).status).toBe(401);
   });
+
+  it('refuses every route but login without the cookie, changing nothing', async () => {
+    const { app, state, scheduler } = setup();
+    const calls: ['get' | 'post' | 'put', string, object?][] = [
+      ['get', '/event?link=ok'],
+      ['get', '/rounds/r1'],
+      ['post', '/engine/probe', { path: FAKE }],
+      ['post', '/engine/button', { name: 'Clear Hash' }],
+      ['put', '/config', { path: 'x', options: {} }],
+      ['post', '/round', { link: 'ok', roundId: 'r1' }],
+      ['post', '/clear'],
+      ['put', '/topn', { n: 3 }],
+      ['put', '/jobtime', { ms: 50 }],
+      ['put', '/tracked', { boardIds: [] }],
+    ];
+    for (const [method, path, body] of calls) {
+      const res = await request(app)[method](`/api/admin${path}`).send(body);
+      expect([path, res.status]).toEqual([path, 401]);
+    }
+    for (const fn of Object.values(scheduler)) if (vi.isMockFunction(fn)) expect(fn).not.toHaveBeenCalled();
+    expect([state.settings.topN, state.settings.event, state.round]).toEqual([8, null, null]);
+  });
 });
 
 describe('admin routes', () => {
@@ -65,7 +112,7 @@ describe('admin routes', () => {
     expect((await agent.get('/api/admin/event').query({ link: 'ok' })).body).toEqual(event);
     expect((await agent.get('/api/admin/event').query({ link: 'busy' })).status).toBe(429);
     expect((await agent.get('/api/admin/event').query({ link: 'x' })).body).toEqual({ error: 'Not a URL' });
-    expect((await agent.get('/api/admin/rounds/r1')).body).toMatchObject({ id: 'r1', boards: [] });
+    expect((await agent.get('/api/admin/rounds/r1')).body).toMatchObject({ id: 'r1', boards: expect.any(Array) });
   });
 
   it('probes an engine; rejects a non-UCI one', async () => {
@@ -78,11 +125,11 @@ describe('admin routes', () => {
   });
 
   it('sends a button option to the running engine only', async () => {
-    const { agent, kibitzer } = setup();
+    const { agent, scheduler } = setup();
     await login(agent);
     expect((await agent.post('/api/admin/engine/button').send({ name: 'Clear Hash' })).status).toBe(409);
     const setOption = vi.fn();
-    kibitzer.engine = { setOption } as unknown as Engine;
+    scheduler.engine = { setOption } as unknown as Engine;
     expect((await agent.post('/api/admin/engine/button').send({ name: 'Clear Hash\ngo' })).status).toBe(400);
     expect((await agent.post('/api/admin/engine/button').send({ name: 'Clear Hash' })).status).toBe(204);
     expect(setOption.mock.calls).toEqual([['Clear Hash']]);
@@ -97,27 +144,84 @@ describe('admin routes', () => {
     expect(res.text).not.toContain('at ');
   });
 
-  it('saves config, picks, clears and reports status', async () => {
-    const { agent, state, kibitzer } = setup();
+  it('validates the engine config and hands it to the scheduler', async () => {
+    const { agent, scheduler } = setup();
     await login(agent);
-    expect((await agent.get('/api/admin/status')).body).toEqual({
-      site: 'idle',
+    const put = (body: object) => agent.put('/api/admin/config').send(body);
+    expect((await put({ path: '/e', options: { Hash: 1 } })).status).toBe(400);
+    expect((await put({ path: '/e', options: { 'Hash\nquit': '1' } })).status).toBe(400);
+    expect((await put({ path: '/e', options: { Hash: '1\nquit' } })).status).toBe(400);
+    expect(scheduler.setEngine).not.toHaveBeenCalled();
+    expect((await put({ path: '/e', options: { MultiPV: '3' } })).status).toBe(204);
+    expect(scheduler.setEngine.mock.calls).toEqual([[{ path: '/e', options: { MultiPV: '3' } }]]);
+    scheduler.setEngine.mockRejectedValueOnce(new Error('spawn failed'));
+    expect(await put({ path: '/e', options: {} })).toMatchObject({ status: 400, body: { error: 'spawn failed' } });
+  });
+
+  it('tracks a Round: validates, registers a new Event, refuses the Current Round again', async () => {
+    const { agent, state, scheduler } = setup();
+    await login(agent);
+    const post = (body: object) => agent.post('/api/admin/round').send(body);
+    expect((await post({ link: 'ok' })).status).toBe(400);
+    expect((await post({ link: 'ok', roundId: 'nope' })).body).toEqual({ error: 'round not in event' });
+    expect((await post({ link: 'busy', roundId: 'r1' })).status).toBe(429);
+    expect(scheduler.startRound).not.toHaveBeenCalled();
+    expect((await post({ link: 'ok', roundId: 'r1' })).status).toBe(204);
+    expect(state.settings.event).toEqual({ tourId: 't', name: 'Event', link: 'ok' });
+    expect(scheduler.startRound.mock.calls).toEqual([[roundInfo('r1'), 1000]]);
+    expect(scheduler.stop).toHaveBeenCalledTimes(1); // first Event: nothing running, still stopped before setEvent
+    expect((await post({ link: 'ok', roundId: 'r1' })).status).toBe(409);
+  });
+
+  it('validates N, job time and the tracked set', async () => {
+    const { agent, state, scheduler } = setup();
+    await login(agent);
+    for (const n of [0, 2.5, '3', 65]) expect((await agent.put('/api/admin/topn').send({ n })).status).toBe(400);
+    expect((await agent.put('/api/admin/topn').send({ n: 3 })).status).toBe(204);
+    expect(state.settings.topN).toBe(3);
+    for (const ms of [-1, 0, 'x', undefined, 1e300]) {
+      expect((await agent.put('/api/admin/jobtime').send({ ms })).status).toBe(400);
+    }
+    await agent.put('/api/admin/jobtime').send({ ms: 50 });
+    await agent.put('/api/admin/jobtime').send({ ms: null });
+    expect(scheduler.setJobTime.mock.calls).toEqual([[50], [null]]);
+    const tracked = (boardIds: unknown) => agent.put('/api/admin/tracked').send({ boardIds });
+    expect((await tracked(['a'])).status).toBe(409); // no Current Round
+    await agent.post('/api/admin/round').send({ link: 'ok', roundId: 'r1' });
+    expect((await tracked([1])).status).toBe(400);
+    expect((await tracked(['b', 'zz'])).status).toBe(400); // not a Board of the Current Round
+    expect((await tracked(['b'])).status).toBe(204);
+    expect(scheduler.setTracked.mock.calls).toEqual([[['b']]]);
+  });
+
+  it('reports status, and clears the Event', async () => {
+    const { agent, state, scheduler } = setup();
+    await login(agent);
+    const idle = {
+      event: null,
+      round: null,
       stream: null,
-      engine: { path: 'berserk', options: { Hash: '1024' } },
+      engine: defaultEngine,
       engineRunning: false,
-      game: null,
-    });
-    expect((await agent.put('/api/admin/config').send({ path: '/e', options: { Hash: 1 } })).status).toBe(400);
-    expect((await agent.put('/api/admin/config').send({ path: '/e', options: { 'Hash\nquit': '1' } })).status).toBe(
-      400,
-    );
-    expect((await agent.put('/api/admin/config').send({ path: '/e', options: { Hash: '1\nquit' } })).status).toBe(400);
-    expect((await agent.put('/api/admin/config').send({ path: '/e', options: { MultiPV: '3' } })).status).toBe(204);
-    expect(state.engine).toEqual({ path: '/e', options: { MultiPV: '3' } });
-    expect((await agent.post('/api/admin/pick').send(ref)).status).toBe(204);
-    expect(kibitzer.pick).toHaveBeenCalledWith(ref);
-    expect((await agent.get('/api/admin/status')).body).toMatchObject({ site: 'live', game: { ...ref, result: '*' } });
+      jobTimeMs: null,
+      topN: 8,
+      running: null,
+      queue: { current: [], backfill: 0 },
+      dead: [],
+    };
+    expect((await agent.get('/api/admin/status')).body).toEqual(idle);
+    await agent.put('/api/admin/topn').send({ n: 2 });
+    await agent.post('/api/admin/round').send({ link: 'ok', roundId: 'r1' });
+    const { round } = (await agent.get('/api/admin/status')).body;
+    expect(round.boards.map((b: { id: string; tracked: boolean }) => [b.id, b.tracked])).toEqual([
+      ['a', true],
+      ['b', true],
+      ['c', false],
+    ]);
+    expect(round).toMatchObject({ tourId: 't', roundId: 'r1', name: 'Round 1' });
+    scheduler.stop.mockClear();
     expect((await agent.post('/api/admin/clear')).status).toBe(204);
-    expect([kibitzer.clear.mock.calls.length, state.site]).toEqual([1, 'idle']);
+    expect(scheduler.stop).toHaveBeenCalledTimes(1);
+    expect([state.settings.event, state.round]).toEqual([null, null]);
   });
 });
