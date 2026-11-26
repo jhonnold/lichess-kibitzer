@@ -21,17 +21,11 @@ const board = (plies: Ply[], result: Result = '*'): Board => ({
 describe('tileView', () => {
   const live = board([start, mv('e2e4', 4000), mv('e7e5', 3000), mv('g1f3', 2000)]);
 
-  it('Live: to move, clocks from the plies, latest position, href', () => {
+  it('Live: to move, latest position, href', () => {
     const t = tileView(live);
     expect(t).toMatchObject({ href: '#/board/3', state: 'live', result: null, toMove: 'black', mark: null });
-    expect(t.clocks).toEqual({ white: 2000, black: 3000 });
     expect(t.position.fen).toBe(positionAt(live.plies, 3).fen);
     expect(t.position.lastMove).toEqual(['g1', 'f3']);
-  });
-
-  it('clocks fall back to the Board clocks before a side has moved', () => {
-    expect(tileView(board([start, mv('e2e4', 4000)])).clocks).toEqual({ white: 4000, black: 6000 });
-    expect(tileView(board([start])).clocks).toEqual({ white: 5000, black: 6000 });
   });
 
   it('takes the link from the caller (archive tiles stay in the Archive)', () => {

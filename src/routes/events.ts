@@ -43,7 +43,7 @@ export function eventsRouter(state: RoundState, opts: SseOpts = {}): Router {
     };
     const heartbeat = setInterval(() => res.write(': hb\n\n'), heartbeatMs);
     state.on('event', onEvent);
-    send({ type: 'snapshot', snapshot: state.snapshot() });
+    send({ type: 'snapshot', snapshot: state.snapshot(), now: Date.now() });
     res.on('close', () => {
       viewers.dec();
       state.off('event', onEvent);

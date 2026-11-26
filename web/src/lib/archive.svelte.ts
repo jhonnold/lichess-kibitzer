@@ -5,6 +5,7 @@ import type { SnapSource } from './live.svelte';
 /** One archived Round, fetched once per Round change. */
 export class ArchiveStore implements SnapSource {
   snap = $state.raw<Snapshot | null>(null);
+  readonly skew = 0;
   readonly connected = true; // "Loading…" while snap is null, never a reconnect banner
   error = $state<string | null>(null);
   #key = '';

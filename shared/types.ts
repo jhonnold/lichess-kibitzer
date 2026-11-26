@@ -118,7 +118,7 @@ export interface Snapshot {
 
 /** Per-board events carry boardId and are sent only for Tracked boards. */
 export type SseEvent =
-  | { type: 'snapshot'; snapshot: Snapshot } // event change, startRound
+  | { type: 'snapshot'; snapshot: Snapshot; now?: number } // event change, startRound; now = server ms, first frame only
   | { type: 'board'; board: Board } // upsert one Tracked board (newly tracked, or retract)
   | { type: 'untrack'; boardId: string }
   | { type: 'ply'; boardId: string; index: number; ply: Ply } // append (index = plies.length) or eval upsert

@@ -176,3 +176,23 @@ export function clockOf(plies: readonly Ply[], color: Color): number | null {
   for (let i = plies.length - 1; i > 0; i--) if ((i % 2 === 1) === (color === 'white')) return plies[i].move!.clock;
   return null;
 }
+
+/** Side to move after the latest ply: plies.length odd (an even number of moves) → 'white'. */
+export const turnOf = (plies: readonly Ply[]): Color => (plies.length % 2 === 1 ? 'white' : 'black');
+
+/**
+ * Clock of `color`. Static = clockOf(plies, color) ?? b.clocks[color]. When `ticking`, `color` is to move, it has
+ * a clock from its own earlier move and the latest ply has an arrival time: that clock minus the time since, never
+ * below 0. `now` is server time (Date.now() − skew).
+ */
+export function tickingClock(
+  b: Pick<Board, 'plies' | 'clocks'>,
+  color: Color,
+  ticking: boolean,
+  now: number,
+): number | null {
+  const own = clockOf(b.plies, color);
+  const at = b.plies.at(-1)?.at ?? null;
+  if (!ticking || color !== turnOf(b.plies) || own === null || at === null) return own ?? b.clocks[color];
+  return Math.max(0, own - Math.max(0, now - at));
+}

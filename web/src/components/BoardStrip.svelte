@@ -5,8 +5,8 @@
   import type { Board } from '$shared/types';
   import { archivedResult, boardState, formatResult, shortName } from '$shared/viewer';
 
-  type Props = { boards: Board[]; selected: number; ctx?: ArchiveCtx | null };
-  const { boards, selected, ctx = null }: Props = $props();
+  type Props = { boards: Board[]; selected: number; ctx?: ArchiveCtx | null; onFlip?: () => void };
+  const { boards, selected, ctx = null, onFlip }: Props = $props();
   const href = (n: number) => (ctx ? archiveHash(ctx.tourId, ctx.roundId, n) : boardHash(n));
 </script>
 
@@ -19,6 +19,7 @@
     <a href={ROUND_HASH}>Overview (o)</a>
     <a href={ARCHIVE_HASH}>Archive</a>
   {/if}
+  {#if onFlip}<button class="link" onclick={onFlip}>Flip board (f)</button>{/if}
 </div>
 <nav>
   {#each boards as b (b.id)}
@@ -49,8 +50,16 @@
     font-size: 14px;
     background: var(--surface);
   }
-  .links a {
+  .links a,
+  .links .link {
     color: var(--accent);
+  }
+  .links .link {
+    padding: 0;
+    border: 0;
+    font: inherit;
+    background: none;
+    cursor: pointer;
   }
   nav {
     display: grid;

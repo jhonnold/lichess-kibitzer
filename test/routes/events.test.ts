@@ -51,7 +51,9 @@ describe('GET /api/events', () => {
     const c = await sse(url);
     expect(c.res.headers.get('content-type')).toMatch(/^text\/event-stream/);
     expect(c.res.headers.get('x-accel-buffering')).toBe('no');
-    await vi.waitFor(() => expect(c.events[0]).toEqual({ type: 'snapshot', snapshot: state.snapshot() }));
+    await vi.waitFor(() =>
+      expect(c.events[0]).toEqual({ type: 'snapshot', snapshot: state.snapshot(), now: expect.any(Number) }),
+    );
     await c.close();
   });
 
@@ -69,6 +71,19 @@ describe('GET /api/events', () => {
     expect(types.filter((t) => t === 'search').length).toBeLessThanOrEqual(4); // 20 sent
     expect(c.events[types.indexOf('ply') - 1]).toEqual({ type: 'search', search: search(10) }); // flushed before ply
     await vi.waitFor(() => expect(c.frames).toContain(': hb'));
+    await c.close();
+  });
+
+  it('stamps server time on the first frame only', async () => {
+    const before = Date.now();
+    const c = await sse(url);
+    await vi.waitFor(() => expect(c.events).toHaveLength(1));
+    const now = (c.events[0] as { now: number }).now;
+    expect(now).toBeGreaterThanOrEqual(before);
+    expect(now).toBeLessThanOrEqual(Date.now());
+    state.startRound(round, null);
+    await vi.waitFor(() => expect(c.events).toHaveLength(2));
+    expect(c.events[1]).toEqual({ type: 'snapshot', snapshot: state.snapshot() });
     await c.close();
   });
 

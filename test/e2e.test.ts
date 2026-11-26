@@ -108,7 +108,11 @@ describe('live analysis over SSE', () => {
     'Idle → track a Round → latest before Backfill → Complete evals → reconnect → clear',
     async () => {
       const c = await sse(`http://127.0.0.1:${srv.port}/api/events`);
-      await vi.waitFor(() => expect(c.events[0]).toEqual({ type: 'snapshot', snapshot: srv.state.snapshot() }), WAIT);
+      await vi.waitFor(
+        () =>
+          expect(c.events[0]).toEqual({ type: 'snapshot', snapshot: srv.state.snapshot(), now: expect.any(Number) }),
+        WAIT,
+      );
       expect(srv.state.snapshot()).toMatchObject({ event: null, round: null });
       expect([srv.scheduler.engine, existsSync(logFile)]).toEqual([null, false]); // Idle: no engine process ever spawned
 
