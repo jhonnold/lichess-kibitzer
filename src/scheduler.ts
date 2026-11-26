@@ -108,6 +108,47 @@ export class Scheduler {
     });
   }
 
+  /** Exact tracked set. Untracked Boards leave the Queue; newly tracked ones are queued with their earlier plies. */
+  setTracked(boardIds: readonly string[]): Promise<void> {
+    return this.serial(async () => {
+      const boards = this.state.round?.boards ?? [];
+      const before = new Set(boards.filter((b) => b.tracked).map((b) => b.id));
+      this.state.setTracked(boardIds);
+      for (const b of boards) {
+        if (before.has(b.id) && !b.tracked) this.queue.removeBoard(b.id);
+        else if (!before.has(b.id) && b.tracked) this.enqueue(b);
+      }
+      this.wake();
+    });
+  }
+
+  /** Boot: if there is a Current Round, rebuild the Queue from its plies and follow its source again. */
+  resume(): Promise<void> {
+    return this.serial(async () => {
+      const round = this.state.round;
+      if (!round) return;
+      this.startSource(round.roundId);
+      this.enqueueTracked();
+      this.wake();
+      await this.launchEngine();
+      this.kick();
+    });
+  }
+
+  /** Save the config; if an engine runs, restart it (the running Job is requeued unrecorded). */
+  setEngine(cfg: T.EngineConfig): Promise<void> {
+    return this.serial(async () => {
+      this.state.setEngine(cfg);
+      if (!this.engine_) return;
+      await this.halt('restart');
+      const old = this.engine_;
+      this.engine_ = null;
+      await old?.quit();
+      await this.launchEngine();
+      this.wake(); // publishes the requeued Job, then kicks
+    });
+  }
+
   /** Shutdown / Event cleared: drop the Job, stop the source, quit the engine, clear the Queue. */
   stop(): Promise<void> {
     return this.serial(async () => {
