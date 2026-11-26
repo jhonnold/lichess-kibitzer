@@ -7,7 +7,8 @@ import { parseLine, type UciInfo, type UciOption } from './uci-parser.js';
 export type SearchLimit = 'infinite' | { movetime: number };
 export interface SearchResult {
   bestmove: string;
-  info?: UciInfo;
+  info?: UciInfo; // last unbounded multipv-1 info (v1 Kibitzer reads it)
+  lines: UciInfo[]; // per multipv: last unbounded info of this search, ordered by multipv
 }
 export interface StartOptions {
   args?: string[];
@@ -21,7 +22,7 @@ type Events = {
 interface Active {
   resolve: (r: SearchResult) => void;
   reject: (e: Error) => void;
-  last?: UciInfo;
+  lines: Map<number, UciInfo>; // multipv -> last unbounded info
   stopSent: boolean;
 }
 
@@ -114,7 +115,7 @@ export class Engine extends EventEmitter<Events> {
     const p = this.enqueue(
       () =>
         new Promise<SearchResult>((resolve, reject) => {
-          this.active = { resolve, reject, stopSent: false };
+          this.active = { resolve, reject, lines: new Map(), stopSent: false };
           this.send(moves.length ? `position startpos moves ${moves.join(' ')}` : 'position startpos');
           this.send(limit === 'infinite' ? 'go infinite' : `go movetime ${limit.movetime}`);
           if (this.stopGen !== gen) this.sendStop();
@@ -172,14 +173,16 @@ export class Engine extends EventEmitter<Events> {
   private onLine = (line: string) => {
     const m = parseLine(line);
     if (m?.type === 'info' && m.info.score) {
-      if (this.active && m.info.multipv === 1 && !m.info.score.bound) this.active.last = m.info;
+      if (this.active && !m.info.score.bound) this.active.lines.set(m.info.multipv, m.info);
       this.emit('info', m.info);
     } else if (m?.type === 'readyok') {
       this.readyWaiters.shift()?.resolve();
     } else if (m?.type === 'bestmove') {
       const a = this.active;
       this.active = undefined;
-      a?.resolve({ bestmove: m.move, info: a.last });
+      if (!a) return;
+      const lines = [...a.lines.values()].sort((x, y) => x.multipv - y.multipv);
+      a.resolve({ bestmove: m.move, info: a.lines.get(1), lines });
     }
   };
 
