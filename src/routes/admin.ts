@@ -2,6 +2,7 @@ import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypt
 import { Router, type NextFunction, type Request, type Response } from 'express';
 import type { EngineConfig, Player, QueueView, RegisteredEvent, Result, StreamStatus } from '../../shared/types.js';
 import type { DeadJob, Job } from '../../shared/queue.js';
+import type { JobTiming } from '../../shared/timing.js';
 import { probeEngine } from '../engine/engine.js';
 import type { UciOption } from '../engine/uci-parser.js';
 import type { Follower, FollowStatus } from '../follower.js';
@@ -27,6 +28,7 @@ export interface AdminDeps {
     | 'discardDead'
     | 'engineState'
     | 'restarts'
+    | 'timing'
   >;
   follower: Pick<Follower, 'register' | 'clear' | 'status'>;
   defaultEngine: EngineConfig; // shown (and used) while no config is saved
@@ -47,6 +49,7 @@ export interface AdminStatus {
   engineRunning: boolean;
   engineState: EngineState;
   restarts: number;
+  timing: JobTiming;
   jobTimeMs: number | null;
   topN: number;
   running: Job | null;
@@ -201,15 +204,16 @@ export function adminRouter(deps: AdminDeps): Router {
           tracked,
         })),
       },
-      stream: state.snapshot().stream,
+      stream: state.stream,
       engine: state.settings.engine ?? defaultEngine,
       engineRunning: scheduler.engine !== null,
       engineState: scheduler.engineState,
       restarts: scheduler.restarts,
+      timing: scheduler.timing,
       jobTimeMs: state.settings.jobTimeMs,
       topN: state.settings.topN,
       running: scheduler.running,
-      queue: state.snapshot().queue,
+      queue: state.queue,
       dead: state.dead,
       follow: follower.status,
     };

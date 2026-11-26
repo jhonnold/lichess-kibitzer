@@ -2,7 +2,9 @@
   import { onMount, untrack } from 'svelte';
   import { changedOptions, initialValues, type UciOption } from '$shared/engine-form';
   import { adminApi, ApiError, type AdminStatus, type Probe } from '$lib/admin-api';
+  import StatusPanel from '../components/StatusPanel.svelte';
   import { LiveStore } from '$lib/live.svelte';
+  import type { DeadJob } from '$shared/queue';
   import { formatJobTime, jobTimeMs } from '$shared/admin-form';
   import { countdown, formatResult } from '$shared/viewer';
 
@@ -48,6 +50,21 @@
     [topN, checked] = [String(s.topN), s.round?.boards.filter((b) => b.tracked).map((b) => b.id) ?? []];
     return s;
   }
+  /** The Status section's own 2 s poll: not refresh() (that would reset the Tracking form) and not run() (busy). */
+  async function poll(): Promise<void> {
+    if (!authed || document.hidden) return;
+    now = Date.now();
+    try {
+      status = await adminApi<AdminStatus>('GET', '/status');
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 401) authed = false; // the login form shows
+    }
+  }
+  const onDead = (action: 'requeue' | 'discard', d: DeadJob) =>
+    run('status', async () => {
+      await adminApi('POST', `/dead/${action}`, { boardId: d.boardId, ply: d.ply });
+      await poll();
+    });
   async function loadStatus(): Promise<void> {
     const s = await refresh();
     authed = true;
@@ -102,16 +119,20 @@
       if (!(e instanceof ApiError && e.status === 401)) errors.login = e instanceof Error ? e.message : String(e);
     });
     const tick = setInterval(() => (now = Date.now()), 1000);
+    const pollTimer = setInterval(() => void poll(), 2000);
     const disconnect = store.connect();
-    return () => (clearInterval(tick), disconnect());
+    return () => (clearInterval(tick), clearInterval(pollTimer), disconnect());
   });
 
   const snap = $derived(store.snap);
   const running = $derived(!!snap?.round); // an engine runs while there is a Current Round
 
   // A swap (or a new Event) changes the Current Round: re-read the follow status without a reload.
+  // A derived string, not the ids read in the effect: every Snapshot is a new object and would re-run it (and
+  // refresh() resets the Tracking form).
+  const roundKey = $derived(`${snap?.event?.tourId}/${snap?.round?.roundId}`);
   $effect(() => {
-    void [snap?.event?.tourId, snap?.round?.roundId];
+    void roundKey;
     if (authed) untrack(() => run('status', async () => void (await refresh())));
   });
   const when = (ms: number) => {
@@ -156,6 +177,7 @@
       <p>
         Lichess stream: <b>{snap?.stream ?? '–'}</b> · Server: <b>{store.connected ? 'connected' : 'reconnecting…'}</b>
       </p>
+      {#if status}<StatusPanel {status} {snap} {now} {busy} {onDead} />{/if}
       <button disabled={busy || !snap?.event} onclick={clear}>Clear Event</button>
       {#if errors.status}<p class="error">{errors.status}</p>{/if}
     </section>

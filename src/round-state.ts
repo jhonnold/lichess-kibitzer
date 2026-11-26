@@ -69,6 +69,9 @@ export class RoundState extends EventEmitter<Events> {
   get queue(): Readonly<T.QueueView> {
     return this.#queue;
   }
+  get stream(): T.StreamStatus | null {
+    return this.#stream;
+  }
   get dead(): readonly T.DeadJob[] {
     return this.#dead;
   }

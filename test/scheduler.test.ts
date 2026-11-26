@@ -157,6 +157,18 @@ describe('Scheduler', () => {
     expect((await count(jobDepth)) - p0).toBeGreaterThanOrEqual(done);
   });
 
+  it('keeps Job timing over Complete Jobs', async () => {
+    setup();
+    await sched.startRound(roundInfo('R1', ['g1']), null);
+    src.push(upd('g1', E4));
+    await idle();
+    const done = [0, 1, 2, 3].filter((p) => complete('g1', p)).length;
+    const { jobs, ms, depth } = sched.timing;
+    expect(jobs).toBeGreaterThanOrEqual(done);
+    expect(ms!.p50).toBeGreaterThanOrEqual(0);
+    expect(depth!.p50).toBeGreaterThan(0);
+  });
+
   it('runs the longest-waiting Board first', async () => {
     setup();
     await sched.startRound(roundInfo('R1', ['g1', 'g2']), null);
