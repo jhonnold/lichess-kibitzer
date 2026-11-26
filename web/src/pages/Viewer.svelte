@@ -10,13 +10,24 @@
   import BoardStrip from '../components/BoardStrip.svelte';
   import PlayerBar from '../components/PlayerBar.svelte';
   import { LiveStore } from '$lib/live.svelte';
-  import { clockOf, positionOf, type Position } from '$lib/position';
+  import { clockOf } from '$lib/position';
   import {
+    back,
+    cursorNote,
+    cursorView,
+    forward,
+    jump,
+    liveCursor,
+    playOwn,
+    toLive,
+    type Cursor,
+  } from '$shared/cursor';
+  import {
+    barScore,
     boardState,
     countdown,
     formatResult,
     panelInfo,
-    play,
     selectedBoard,
     statusLine,
     viewerMessage,
@@ -37,7 +48,6 @@
   const game = $derived(selectedBoard(boards, board));
   const notTracked = $derived(board !== null && !!game && game.board !== board);
   const analysis = $derived(game && analyse(game.plies));
-  const position = $derived(game && positionOf(game.plies));
   const bState = $derived(game && boardState(game));
   const upcoming = $derived(bState === 'upcoming');
   const live = $derived(bState === 'live');
@@ -45,47 +55,89 @@
     const left = countdown(startsAt, now);
     return left === null ? 'starts when Lichess reports it live' : left === 'starting' ? left : `starts in ${left}`;
   };
-  const status = $derived(game && statusLine(game, game.plies.length - 1, snap?.search ?? null, snap!.queue));
-  const panel = $derived(game && panelInfo(game, snap?.search ?? null));
-  const panelFen = $derived(panel && game && positionOf(game.plies.slice(0, panel.ply + 1)).fen);
-  // The running search's score only while it is for this Board's latest position; else the latest stored eval.
-  const liveScore = $derived<Score | null>(panel?.searching ? (panel.lines[0]?.score ?? null) : null);
-  const score = $derived<Score | null>(liveScore ?? game?.plies.findLast((p) => p.eval)?.eval?.score ?? null);
-  const clock = (color: 'white' | 'black') => (game && (clockOf(game.plies, color) ?? game.clocks[color])) ?? null;
 
-  // The Viewer's own line, local to this tab. Live updates don't move the board meanwhile; a new game drops it.
-  let explore = $state.raw<{ gameId: string; plies: number; position: Position } | null>(null);
-  const exploring = $derived(explore && explore.gameId === game?.id ? explore : null);
-  const liveMoved = $derived(!!exploring && exploring.plies !== game?.plies.length);
+  // Where the Viewer is in the game. Every normalisation (other Board, retraction, landing on the latest ply) is
+  // persisted, so a retract-then-append keeps following; cursorView returns the same object when nothing changed.
+  let cursor = $state.raw<Cursor>(liveCursor(''));
+  const view = $derived(game && cursorView(cursor, game));
+  $effect(() => {
+    if (view && view.cursor !== cursor) cursor = view.cursor;
+  });
 
-  function onMove(from: string, to: string) {
-    if (!game || !position) return;
-    const base = exploring ?? { gameId: game.id, plies: game.plies.length, position };
-    explore = { ...base, position: play(base.position.fen, [{ from, to, promotion: 'q' }]) };
+  const status = $derived(
+    game && view && snap
+      ? view.evalPly === null
+        ? { state: 'none' as const, text: 'Your moves · no engine' }
+        : statusLine(game, view.evalPly, snap.search, snap.queue)
+      : null,
+  );
+  const panel = $derived(
+    game && view && view.evalPly !== null ? panelInfo(game, view.evalPly, snap?.search ?? null) : null,
+  );
+  const bar = $derived(game && view && barScore(game, view.ply, snap?.search ?? null));
+  // The graph's last point shows the running search's score while it is for the latest ply.
+  const liveScore = $derived<Score | null>(
+    game && view && snap?.search?.boardId === game.id && snap.search.ply === view.latest
+      ? (snap.search.lines[0]?.score ?? null)
+      : null,
+  );
+  const clock = (color: 'white' | 'black') =>
+    (game && view && (clockOf(game.plies.slice(0, view.ply + 1), color) ?? game.clocks[color])) ?? null;
+
+  function onKey(e: KeyboardEvent) {
+    const t = e.target as HTMLElement | null;
+    if (
+      e.altKey ||
+      e.ctrlKey ||
+      e.metaKey ||
+      t?.isContentEditable ||
+      /^(INPUT|TEXTAREA|SELECT)$/.test(t?.tagName ?? '')
+    )
+      return;
+    if (!view) return;
+    const c = view.cursor;
+    const next =
+      e.key === 'ArrowLeft'
+        ? back(c, view.latest)
+        : e.key === 'ArrowRight'
+          ? forward(c, view.latest)
+          : e.key === 'Home'
+            ? jump(c, 0, view.latest)
+            : e.key === 'End'
+              ? toLive(c)
+              : null;
+    if (!next) return;
+    e.preventDefault();
+    cursor = next;
   }
 </script>
 
+<svelte:window onkeydown={onKey} />
+
 {#if !snap}
   <main class="message">{store.connected ? 'Loading…' : 'Connecting…'}</main>
-{:else if !game || !analysis || !position}
+{:else if !game || !analysis || !view || !bar}
   <main class="message">{viewerMessage(snap) ?? 'Nothing live right now'}</main>
 {:else}
   <main class="viewer">
     <div class="boardCol">
-      <EvalBar score={exploring ? null : score} />
+      <EvalBar score={bar.score} dim={bar.dim || view.inBranch} />
       <div class="stack">
         <PlayerBar
           player={game.black}
           clock={clock('black')}
           accuracy={analysis.black}
-          toMove={live && position.turn === 'black'}
+          toMove={live && view.live && view.position.turn === 'black'}
         />
-        <Board position={exploring?.position ?? position} {onMove} />
+        <Board
+          position={view.position}
+          onMove={(from, to) => (cursor = playOwn(view.cursor, from + to, view.latest))}
+        />
         <PlayerBar
           player={game.white}
           clock={clock('white')}
           accuracy={analysis.white}
-          toMove={live && position.turn === 'white'}
+          toMove={live && view.live && view.position.turn === 'white'}
         />
       </div>
     </div>
@@ -98,15 +150,26 @@
       {#if !upcoming && !live}<div class="banner">Game over · {formatResult(game.result)}</div>{/if}
       {#if !store.connected}<div class="warn">Reconnecting to server…</div>{/if}
       {#if snap.stream === 'reconnecting'}<div class="warn">Lichess stream reconnecting…</div>{/if}
-      {#if exploring}
-        <div class="explore" class:moved={liveMoved}>
-          {liveMoved ? 'Live game moved' : 'Exploring · no engine'}
-          <button onclick={() => (explore = null)}>Back to live</button>
+      {#if !view.live}
+        <div class="cursor" class:moved={view.behind > 0}>
+          <span>{cursorNote(view, game.plies)}</span>
+          <button onclick={() => (cursor = toLive(view.cursor))}>Back to live</button>
         </div>
       {/if}
-      <EnginePanel info={panel} fen={panelFen ?? position.fen} {status} />
-      <EvalGraph plies={game.plies} live={liveScore} />
-      <MoveList plies={game.plies} marks={analysis.marks} />
+      <EnginePanel info={panel} fen={view.position.fen} {status} />
+      <EvalGraph
+        plies={game.plies}
+        live={liveScore}
+        cursor={view.live ? null : view.ply}
+        onJump={(n) => (cursor = jump(view.cursor, n, view.latest))}
+      />
+      <MoveList
+        plies={game.plies}
+        marks={analysis.marks}
+        cursor={view.ply}
+        follow={view.live}
+        onJump={(n) => (cursor = jump(view.cursor, n, view.latest))}
+      />
       <p class="from">
         {analysis.scored === 0
           ? 'Accuracy: no scored moves yet'
@@ -162,15 +225,16 @@
     background: var(--warn);
     color: var(--bg);
   }
-  .explore {
+  .cursor {
     display: flex;
     align-items: center;
     justify-content: space-between;
+    gap: 12px;
     padding: 6px 12px;
     font-size: 18px;
     background: var(--surface);
   }
-  .explore.moved {
+  .cursor.moved {
     color: var(--warn);
   }
   button {
@@ -180,6 +244,7 @@
     font-weight: 700;
     color: var(--bg);
     background: var(--accent);
+    white-space: nowrap;
     cursor: pointer;
   }
   .from {

@@ -2,8 +2,8 @@
   import type { Mark } from '$shared/accuracy';
   import type { Ply } from '$shared/types';
 
-  type Props = { plies: Ply[]; marks: (Mark | null)[] };
-  const { plies, marks }: Props = $props();
+  type Props = { plies: Ply[]; marks: (Mark | null)[]; cursor: number; follow: boolean; onJump: (ply: number) => void };
+  const { plies, marks, cursor, follow, onJump }: Props = $props();
 
   const GLYPH: Record<Mark, string> = { inaccuracy: '?!', mistake: '?', blunder: '??' };
   // rows[n] = [index of White's move, index of Black's move] for full move n + 1
@@ -16,7 +16,11 @@
   let list: HTMLOListElement;
   $effect(() => {
     void plies.length;
-    list.scrollTop = list.scrollHeight; // follow the latest move
+    void cursor;
+    if (follow)
+      list.scrollTop = list.scrollHeight; // follow the latest move
+    else if (cursor === 0) list.scrollTop = 0;
+    else list.querySelector('.cur')?.scrollIntoView({ block: 'nearest' }); // keep the stepped-to move visible
   });
 </script>
 
@@ -26,9 +30,9 @@
       <span class="num">{n + 1}.</span>
       {#each row as i (i)}
         {@const mark = marks[i]}
-        <span class="move" class:last={i === plies.length - 1}>
+        <button type="button" class="move" class:cur={i === cursor} onclick={() => onJump(i)}>
           {plies[i].move!.san}{#if mark}<span class={mark}>{GLYPH[mark]}</span>{/if}
-        </span>
+        </button>
       {/each}
     </li>
   {/each}
@@ -52,7 +56,16 @@
   .num {
     color: var(--muted);
   }
-  .last {
+  .move {
+    padding: 0;
+    border: 0;
+    font: inherit;
+    color: inherit;
+    text-align: left;
+    background: none;
+    cursor: pointer;
+  }
+  .cur {
     color: var(--accent);
     font-weight: 700;
   }

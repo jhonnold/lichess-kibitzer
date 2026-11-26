@@ -6,12 +6,13 @@
 
   Chart.register(LineController, LineElement, PointElement, LinearScale, CategoryScale, Filler);
 
-  type Props = { plies: Ply[]; live: Score | null };
-  const { plies, live }: Props = $props();
+  type Props = { plies: Ply[]; live: Score | null; cursor: number | null; onJump: (ply: number) => void };
+  const { plies, live, cursor, onJump }: Props = $props();
 
   let canvas: HTMLCanvasElement;
   let chart: Chart<'line', (number | null)[], number> | undefined;
-  let series = evalSeries([], null); // read by the chart's style callbacks; not reactive
+  let series = evalSeries([], null); // read by the chart's style callbacks and plugin; not reactive
+  let cursorPly: number | null = null;
 
   // White win % over plies; Provisional segments dashed and muted; a dot on the latest point.
   $effect(() => {
@@ -24,7 +25,9 @@
       options: {
         animation: false,
         maintainAspectRatio: false,
-        events: [],
+        events: ['click'],
+        onClick: (e, _els, c) =>
+          onJump(Math.max(0, Math.min(Math.round(c.scales.x.getValueForPixel(e.x!) ?? 0), series.win.length - 1))),
         scales: { x: { display: false }, y: { display: false, min: 0, max: 100 } },
         datasets: {
           line: {
@@ -40,11 +43,30 @@
           },
         },
       },
+      plugins: [
+        {
+          id: 'cursor',
+          afterDatasetsDraw(c) {
+            if (cursorPly === null) return;
+            const { ctx, chartArea } = c;
+            const x = c.scales.x.getPixelForValue(cursorPly);
+            ctx.save();
+            ctx.strokeStyle = css('--text');
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(x, chartArea.top);
+            ctx.lineTo(x, chartArea.bottom);
+            ctx.stroke();
+            ctx.restore();
+          },
+        },
+      ],
     });
     return () => chart?.destroy();
   });
   $effect(() => {
     series = evalSeries(plies, live);
+    cursorPly = cursor;
     if (!chart) return;
     chart.data.labels = series.win.map((_, i) => i);
     chart.data.datasets[0].data = series.win;
@@ -60,5 +82,8 @@
     height: 120px;
     border-top: 1px solid var(--line);
     border-bottom: 1px solid var(--line);
+  }
+  canvas {
+    cursor: pointer;
   }
 </style>

@@ -36,7 +36,10 @@ export function uciMove(uci: string): { from: string; to: string; promotion?: st
 
 /** Position after plies[1..n] (n = 0: the start). Games start from the start position; throws on an illegal move. */
 export function positionAt(plies: readonly Ply[], n: number): Position {
-  return play(START_FEN, plies.slice(1, n + 1).map((p) => uciMove(p.move!.uci)));
+  return play(
+    START_FEN,
+    plies.slice(1, n + 1).map((p) => uciMove(p.move!.uci)),
+  );
 }
 
 /** Legal moves by origin square (chessground's movable.dests). */
@@ -67,25 +70,27 @@ export interface PanelInfo {
 }
 
 /**
- * The running search if it is for this Board's latest ply (empty lines at Job start: an empty panel, not older
- * lines); else the latest ply whose eval has lines; else null.
+ * The panel at the Cursor's `ply`: the running search if it is for this ply (empty lines at Job start: an empty
+ * panel, not older lines); else that ply's stored eval with lines; else null (no fallback to an earlier ply).
  */
-export function panelInfo(board: Board, search: SearchInfo | null): PanelInfo | null {
-  const latest = board.plies.length - 1;
-  if (search?.boardId === board.id && search.ply === latest) {
-    return {
-      ply: latest,
-      searching: true,
-      engine: search.engine,
-      depth: search.depth,
-      nps: search.nps,
-      lines: search.lines,
-    };
+export function panelInfo(board: Board, ply: number, search: SearchInfo | null): PanelInfo | null {
+  if (search?.boardId === board.id && search.ply === ply) {
+    return { ply, searching: true, engine: search.engine, depth: search.depth, nps: search.nps, lines: search.lines };
   }
-  const ply = board.plies.findLastIndex((p) => p.eval?.lines.length);
-  if (ply < 0) return null;
-  const e = board.plies[ply].eval!;
-  return { ply, searching: false, engine: null, depth: e.depth, nps: null, lines: e.lines };
+  const e = board.plies[ply]?.eval;
+  return e?.lines.length ? { ply, searching: false, engine: null, depth: e.depth, nps: null, lines: e.lines } : null;
+}
+
+/**
+ * Eval bar at the Cursor's `ply`: the search's score there, else its stored eval; else the last eval before it,
+ * dimmed; none → no score.
+ */
+export function barScore(board: Board, ply: number, search: SearchInfo | null): { score: Score | null; dim: boolean } {
+  const live = search?.boardId === board.id && search.ply === ply ? search.lines[0]?.score : undefined;
+  const own = live ?? board.plies[ply]?.eval?.score;
+  if (own) return { score: own, dim: false };
+  const before = board.plies.slice(0, ply).findLast((p) => p.eval)?.eval?.score ?? null;
+  return { score: before, dim: before !== null };
 }
 
 export type BoardState = 'upcoming' | 'live' | 'finished';

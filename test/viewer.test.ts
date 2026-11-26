@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { winPercent } from '../shared/accuracy.js';
 import type { Board, Eval, Ply, QueueView, Result, SearchInfo, Snapshot } from '../shared/types.js';
 import {
+  barScore,
   boardState,
   countdown,
   evalSeries,
@@ -125,8 +126,8 @@ describe('panelInfo', () => {
     startedAt: 0,
   });
 
-  it('a search on the latest ply is searching, even with no lines yet', () => {
-    expect(panelInfo(board, search('g', 2))).toEqual({
+  it('a search on the ply is searching, even with no lines yet', () => {
+    expect(panelInfo(board, 2, search('g', 2))).toEqual({
       ply: 2,
       searching: true,
       engine: 'E',
@@ -134,18 +135,41 @@ describe('panelInfo', () => {
       nps: 100,
       lines: [line(1)],
     });
-    expect(panelInfo(board, search('g', 2, []))?.lines).toEqual([]);
+    expect(panelInfo(board, 2, search('g', 2, []))?.lines).toEqual([]);
   });
 
-  it('another Board or an earlier ply falls back to the latest stored lines', () => {
+  it('a search on an earlier ply the Cursor is on is searching', () => {
+    expect(panelInfo(board, 1, search('g', 1))).toMatchObject({ ply: 1, searching: true, lines: [line(1)] });
+  });
+
+  it("else the ply's stored eval", () => {
     const stored = { ply: 1, searching: false, engine: null, depth: 9, nps: null, lines: [line(7)] };
-    expect(panelInfo(board, search('other', 2))).toEqual(stored);
-    expect(panelInfo(board, search('g', 0))).toEqual(stored);
-    expect(panelInfo(board, null)).toEqual(stored);
+    expect(panelInfo(board, 1, search('other', 2))).toEqual(stored);
+    expect(panelInfo(board, 1, null)).toEqual(stored);
+    expect(panelInfo(board, 0, search('g', 2))).toMatchObject({ ply: 0, searching: false, lines: [line(5)] });
   });
 
-  it('no search and no stored lines is null', () => {
-    expect(panelInfo({ id: 'g', plies: [withLines(0, [])] } as unknown as Board, null)).toBeNull();
+  it('no eval at that ply is null, not an earlier ply', () => {
+    expect(panelInfo(board, 2, search('other', 2))).toBeNull();
+    expect(panelInfo(board, 2, null)).toBeNull();
+  });
+
+  it('empty stored lines is null', () => {
+    expect(panelInfo({ id: 'g', plies: [withLines(0, [])] } as unknown as Board, 0, null)).toBeNull();
+  });
+
+  describe('barScore', () => {
+    it('the search score at the ply, else its stored eval, not dim', () => {
+      expect(barScore(board, 2, search('g', 2))).toEqual({ score: { cp: 1 }, dim: false });
+      expect(barScore(board, 1, search('g', 1, []))).toEqual({ score: { cp: 7 }, dim: false });
+      expect(barScore(board, 1, search('g', 2))).toEqual({ score: { cp: 7 }, dim: false });
+    });
+
+    it('no eval at the ply: the last one before it, dimmed; none at all: no score', () => {
+      expect(barScore(board, 2, null)).toEqual({ score: { cp: 7 }, dim: true });
+      const bare = { id: 'g', plies: [{ move: null, at: null, eval: null }] } as unknown as Board;
+      expect(barScore(bare, 0, null)).toEqual({ score: null, dim: false });
+    });
   });
 });
 
