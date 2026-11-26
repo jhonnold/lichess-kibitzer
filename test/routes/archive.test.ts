@@ -9,6 +9,7 @@ import type { RoundInfo } from '../../src/lichess/api.js';
 import { archiveRouter } from '../../src/routes/archive.js';
 import { dataStore } from '../../src/store.js';
 import type { Board, Eval, Round } from '../../shared/types.js';
+import { roundMeta } from '../../shared/archive.js';
 
 let dir: string;
 beforeEach(() => {
@@ -40,9 +41,7 @@ const setup = (current: Round | null = round('current1')) => {
     [round('round001'), round('round002', 'Round 2'), round('current1')].map((r) => [r.roundId, r]),
   );
   const store = {
-    listRounds: vi.fn(async () =>
-      [...stored.values()].map((r) => ({ ...r, boards: r.boards.filter((b) => b.tracked).length })),
-    ),
+    listRounds: vi.fn(async () => [...stored.values()].map(roundMeta)),
     loadRound: vi.fn(async (_t: string, r: string) => stored.get(r) ?? null),
   };
   const state = { round: current };

@@ -1,16 +1,26 @@
-import type { Round, Snapshot } from './types.js';
+import type { Board, Round, Snapshot } from './types.js';
 
 /** Lichess game, round and tournament ids. Checked before an id from a URL reaches a file path. */
 export const LICHESS_ID = /^[A-Za-z0-9]{8}$/;
 export const isLichessId = (s: string): boolean => LICHESS_ID.test(s);
 
-/** One archived Round, without its Boards. boards = Tracked board count. */
+/** How a Tracked Board ended up in the Archive: a result, moves but no result, or no moves. */
+export interface Outcomes {
+  finished: number;
+  unfinished: number;
+  notPlayed: number;
+}
+export const outcomeOf = (b: Pick<Board, 'result' | 'plies'>): keyof Outcomes =>
+  b.result !== '*' ? 'finished' : b.plies.length > 1 ? 'unfinished' : 'notPlayed';
+
+/** One archived Round, without its Boards. boards = Tracked board count; outcomes split them. */
 export interface ArchiveRound {
   tourId: string;
   roundId: string;
   name: string;
   startsAt: number | null;
   boards: number;
+  outcomes: Outcomes;
 }
 export interface ArchiveEvent {
   tourId: string;
@@ -19,14 +29,20 @@ export interface ArchiveEvent {
 }
 export type RoundMeta = ArchiveRound & { eventName: string };
 
-export const roundMeta = (r: Round): RoundMeta => ({
-  tourId: r.tourId,
-  roundId: r.roundId,
-  name: r.name,
-  eventName: r.eventName,
-  startsAt: r.startsAt,
-  boards: r.boards.filter((b) => b.tracked).length,
-});
+export function roundMeta(r: Round): RoundMeta {
+  const tracked = r.boards.filter((b) => b.tracked);
+  const outcomes: Outcomes = { finished: 0, unfinished: 0, notPlayed: 0 };
+  for (const b of tracked) outcomes[outcomeOf(b)]++;
+  return {
+    tourId: r.tourId,
+    roundId: r.roundId,
+    name: r.name,
+    eventName: r.eventName,
+    startsAt: r.startsAt,
+    boards: tracked.length,
+    outcomes,
+  };
+}
 
 const byStart = (a: number | null, b: number | null) => (a === b ? 0 : a === null ? 1 : b === null ? -1 : a - b);
 const collate = new Intl.Collator('en', { numeric: true });
