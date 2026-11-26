@@ -106,15 +106,55 @@ describe('Queue', () => {
     expect(q.current()).toEqual([expect.objectContaining({ ply: 6 })]);
   });
 
-  it('pre-empts only a running backfill Job while the current tier waits', () => {
+  it('evicts a running backfill Job as soon as the current tier waits', () => {
     const q = new Queue();
     q.setLatest('a', 1, 5, 0, true);
     q.addBackfill('a', [3], 0);
     const running = q.next()!;
-    expect(q.shouldPreempt(running)).toBe(false);
+    expect(q.preempt(running, 0, 3000)).toBeNull();
     q.setLatest('b', 2, 9, 1);
-    expect(q.shouldPreempt(running)).toBe(true);
-    expect(q.shouldPreempt({ boardId: 'a', board: 1, ply: 5, tier: 'current', since: 0 })).toBe(false);
+    expect(q.preempt(running, 0, 3000)).toBe('backfill');
+  });
+
+  it('evicts a running live Job for another live position only once its slice is up', () => {
+    const q = new Queue();
+    q.setLatest('a', 1, 5, 0);
+    const running = q.next()!;
+    expect(q.preempt(running, 5000, 3000)).toBeNull(); // nothing waits
+    q.setLatest('b', 2, 9, 1);
+    expect(q.preempt(running, 2999, 3000)).toBeNull();
+    expect(q.preempt(running, 3000, 3000)).toBe('live');
+  });
+
+  it('evicts a running live Job at once when its Board moves on or is untracked', () => {
+    const q = new Queue();
+    q.setLatest('a', 1, 5, 0);
+    const running = q.next()!;
+    q.setLatest('a', 1, 6, 1);
+    expect(q.preempt(running, 0, 3000)).toBe('stale');
+    q.removeBoard('a');
+    expect(q.preempt(running, 0, 3000)).toBe('stale');
+  });
+
+  it('puts an evicted live Job at the top of backfill, where it stays while it is the latest ply', () => {
+    const q = new Queue();
+    q.setLatest('a', 1, 5, 0, true);
+    q.addBackfill('a', [4], 0);
+    q.setLatest('b', 2, 9, 1);
+    const running = q.next()!;
+    q.setLatest('c', 3, 2, 2);
+    expect(q.evict(running, 3)).toBe(true);
+    expect(q.current().map((j) => j.boardId)).toEqual(['c']);
+    expect(q.deferred()).toEqual([{ boardId: 'b', board: 2, ply: 9, tier: 'backfill', since: 3 }]);
+    expect(q.position('b', 9)).toBe(2);
+    expect(q.requeue(q.next()!, 4)).toBe(true); // c back; b still waits in backfill
+    q.next();
+    expect(q.next()).toMatchObject({ boardId: 'b', ply: 9, tier: 'backfill' });
+    expect(q.requeue({ boardId: 'b', board: 2, ply: 9, tier: 'backfill', since: 3 }, 5)).toBe(true);
+    expect(q.current()).toEqual([]);
+    q.setLatest('b', 2, 10, 6);
+    expect(q.deferred()).toEqual([]);
+    expect(q.position('b', 9)).toBe(2);
   });
 
   it('puts a pre-empted backfill Job back at its old spot', () => {

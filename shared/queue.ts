@@ -19,6 +19,13 @@ export interface DeadJob {
 
 export const MAX_CRASHES = 3;
 
+/** A running live Job gets at least this long (capped at the job time) before another live position evicts it. */
+export const MIN_LIVE_SLICE_MS = 3000;
+
+/** Why a running Job is stopped early. stale: its Board moved on; live: another live position waits and the slice is
+ *  up; backfill: a live position waits. */
+export type Eviction = 'stale' | 'live' | 'backfill';
+
 const key = (boardId: string, ply: number) => `${boardId}:${ply}`;
 
 /** Current tier: longest-waiting first, then lower board. Backfill: most recently queued first, then higher ply. */
@@ -78,14 +85,23 @@ export class Queue {
     return job;
   }
 
-  /** True when the running Job is a backfill Job and any current-tier Job waits. */
-  shouldPreempt(running: Job): boolean {
-    return running.tier === 'backfill' && [...this.jobs.values()].some((j) => j.tier === 'current');
+  /** Whether to stop the running Job now, and why; null = let it run. elapsedMs = how long it has run. */
+  preempt(running: Job, elapsedMs: number, sliceMs: number): Eviction | null {
+    if (running.tier === 'current' && this.latest.get(running.boardId)?.ply !== running.ply) return 'stale';
+    if (![...this.jobs.values()].some((j) => j.tier === 'current')) return null;
+    if (running.tier === 'backfill') return 'backfill';
+    return elapsedMs >= sliceMs ? 'live' : null;
   }
 
   /** Put a pre-empted Job back (routing as in place()). false = dropped or already queued or dead. */
   requeue(job: Job, now: number): boolean {
     return this.add(job, now);
+  }
+
+  /** A live Job evicted for another live position: to the top of backfill, though it is still its Board's latest ply.
+   *  false = dropped or already queued or dead. */
+  evict(job: Job, now: number): boolean {
+    return this.add({ ...job, tier: 'backfill', since: now }, now);
   }
 
   /** The running Job crashed the engine: requeue, or move to the Dead-letter queue on the MAX_CRASHES-th crash. */
@@ -158,6 +174,11 @@ export class Queue {
     return this.ordered().filter((j) => j.tier === 'current');
   }
 
+  /** Backfill Jobs at their Board's latest ply (evicted live Jobs waiting for a full search), in pick order. */
+  deferred(): Job[] {
+    return this.ordered().filter((j) => j.tier === 'backfill' && j.ply === this.latest.get(j.boardId)?.ply);
+  }
+
   backfillCount(): number {
     return [...this.jobs.values()].filter((j) => j.tier === 'backfill').length;
   }
@@ -190,8 +211,9 @@ export class Queue {
 
   /**
    * Route a Job by its ply against the Board's latest ply. null = dropped (Board untracked or ply past latest),
-   * or already queued, dead or discarded. ply === latest → current tier; ply < latest → backfill. since is kept when the
-   * Job was already in that tier, else now.
+   * or already queued, dead or discarded. A current Job at ply === latest stays current; ply < latest → backfill. A
+   * backfill Job never goes up (an evicted latest ply stays there). since is kept when the Job was already in that tier,
+   * else now.
    */
   private place(job: Job, now: number): Job | null {
     const k = key(job.boardId, job.ply);
@@ -199,7 +221,7 @@ export class Queue {
     if (!latest || job.ply > latest.ply || this.jobs.has(k) || this.deadJobs.has(k) || this.discarded.has(k)) {
       return null;
     }
-    if (job.ply === latest.ply) {
+    if (job.ply === latest.ply && job.tier === 'current') {
       return { ...job, board: latest.board, tier: 'current', since: job.tier === 'current' ? job.since : now };
     }
     return { ...job, board: latest.board, tier: 'backfill', since: job.tier === 'backfill' ? job.since : now };
