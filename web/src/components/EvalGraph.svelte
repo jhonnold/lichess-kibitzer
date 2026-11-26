@@ -79,9 +79,7 @@
 <style>
   .graph {
     position: relative;
-    height: 120px;
-    border-top: 1px solid var(--line);
-    border-bottom: 1px solid var(--line);
+    height: 96px;
   }
   canvas {
     cursor: pointer;
