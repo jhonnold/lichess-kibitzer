@@ -7,6 +7,7 @@ import type { UciInfo } from './engine/uci-parser.js';
 import type { RoundInfo } from './lichess/api.js';
 import { lichessSource, type GameUpdate, type Source, type SourceFactory } from './lichess/stream.js';
 import { jobDepth, jobDuration } from './metrics.js';
+import { OpeningFallback, type OpeningFetch } from './opening.js';
 import { pvToSan, toScore } from './pv.js';
 import type { RoundState } from './round-state.js';
 
@@ -23,6 +24,7 @@ export interface SchedulerOpts {
   source?: SourceFactory; // default lichessSource
   now?: () => number; // default Date.now
   after?: (ms: number, fn: () => void) => () => void; // default setTimeout(unref) → cancel; tests inject
+  fetchOpening?: OpeningFetch; // masters explorer for untagged Boards; undefined = no fallback (tests, demo)
 }
 
 /** The Job being searched. stop = why it was told to stop (null = it ran its full time). */
@@ -81,13 +83,16 @@ export class Scheduler {
   private backoff = RESTART_MIN_MS;
   private restarts_ = 0;
   private samples: JobSample[] = []; // the last TIMING_WINDOW recorded Jobs; resets on boot, not on a Round swap
+  private readonly openings: OpeningFallback | null = null;
   private cancelRestart: (() => void) | null = null;
   private launchFailed = false;
 
   constructor(
     private readonly state: RoundState,
     private readonly opts: SchedulerOpts,
-  ) {}
+  ) {
+    if (opts.fetchOpening) this.openings = new OpeningFallback(state, opts.fetchOpening);
+  }
 
   /** Null before the first Round, after stop() or after an exit. */
   get engine(): Engine | null {
@@ -121,6 +126,7 @@ export class Scheduler {
       this.detach();
       await this.halt('drop');
       this.queue.clear();
+      this.openings?.clear();
       if (existing) this.state.openRound(existing);
       else this.state.startRound(r, startsAt);
       this.startSource(r.id);
@@ -276,7 +282,9 @@ export class Scheduler {
     const kept = this.state.syncMoves(u.gameId, moves, this.now);
     if (kept === null) return;
     this.state.setResult(u.gameId, u.result);
+    this.state.setOpening(u.gameId, u.opening);
     const b = this.state.board(u.gameId)!;
+    if (b.tracked && !u.opening) this.openings?.seen(b.id, u.uci);
     if (b.tracked) {
       // A correction that does not shorten the game: forget the replaced plies first, else setLatest sees no change.
       if (kept + 1 < before && kept + 1 < b.plies.length) this.queue.setLatest(b.id, b.board, kept, this.now, true);

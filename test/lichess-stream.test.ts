@@ -81,6 +81,12 @@ describe('parseGame', () => {
     expect(u!.status).toBe('finished');
   });
 
+  it('reads the opening from the ECO and Opening tags, name alone without ECO, null without Opening', () => {
+    expect(parseGame(ALL[0])!.opening).toBe('E06 Catalan Opening: Closed');
+    expect(parseGame(ALL[0].replace(/^\[ECO[^\n]*\n/m, ''))!.opening).toBe('Catalan Opening: Closed');
+    expect(parseGame(ALL[0].replace(/^\[Opening[^\n]*\n/m, ''))!.opening).toBeNull();
+  });
+
   it('parses an Upcoming Board: no moves, ongoing', () => {
     const u = parseGame(ALL[0].slice(0, ALL[0].indexOf('\n\n') + 2) + '*');
     expect(u).toMatchObject({ gameId: 'at7GqSzo', uci: [], status: 'ongoing' });

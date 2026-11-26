@@ -11,6 +11,7 @@ import {
   formatScore,
   formatResult,
   legalDests,
+  lichessUrl,
   ordinal,
   panelInfo,
   play,
@@ -413,5 +414,11 @@ describe('tickingClock', () => {
   it('upcoming: the Board clocks', () => {
     expect(tickingClock(b([start]), 'white', true, 9000)).toBe(90000);
     expect(tickingClock(b([start]), 'black', true, 9000)).toBe(80000);
+  });
+});
+
+describe('lichessUrl', () => {
+  it('links the game through its Round', () => {
+    expect(lichessUrl('L3MX2oE3', 'at7GqSzo')).toBe('https://lichess.org/broadcast/-/-/L3MX2oE3/at7GqSzo');
   });
 });

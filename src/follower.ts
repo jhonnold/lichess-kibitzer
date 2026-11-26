@@ -9,6 +9,7 @@ export const POLL_MS = 60_000;
 export interface LichessClient {
   fetchEvent(link: string): Promise<EventInfo>;
   fetchRound(roundId: string): Promise<RoundInfo>;
+  fetchOpening?(uci: readonly string[]): Promise<string | null>;
 }
 
 export interface FollowerOpts {

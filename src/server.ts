@@ -4,7 +4,7 @@ import type { AddressInfo } from 'node:net';
 import type { EngineConfig } from '../shared/types.js';
 import { createApp, type AppDeps } from './app.js';
 import { Follower, type FollowerOpts, type LichessClient } from './follower.js';
-import { fetchEvent, fetchRound } from './lichess/api.js';
+import { fetchEvent, fetchOpening, fetchRound } from './lichess/api.js';
 import { RoundState } from './round-state.js';
 import { Scheduler, type SchedulerOpts } from './scheduler.js';
 import type { DataStore } from './store.js';
@@ -34,8 +34,8 @@ export interface Running {
 export async function startServer(opts: ServerOpts): Promise<Running> {
   const { store, defaultEngine, adminPassword } = opts;
   const state = await RoundState.load(store);
-  const scheduler = new Scheduler(state, { ...opts.scheduler, defaultEngine });
-  const lichess = opts.lichess ?? { fetchEvent, fetchRound };
+  const lichess = opts.lichess ?? { fetchEvent, fetchRound, fetchOpening };
+  const scheduler = new Scheduler(state, { fetchOpening: lichess.fetchOpening, ...opts.scheduler, defaultEngine });
   const follower = new Follower(state, scheduler, { ...opts.follow, lichess, store });
   const app = createApp({ ...opts.app, store, state, scheduler, follower, defaultEngine, adminPassword });
   const server = app.listen(opts.port);

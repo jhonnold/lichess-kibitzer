@@ -32,6 +32,7 @@
     countdown,
     archivedResult,
     formatResult,
+    lichessUrl,
     panelInfo,
     selectedBoard,
     statusLine,
@@ -198,7 +199,13 @@
       </div>
     </div>
     <aside>
-      <BoardStrip {boards} selected={game.board} {ctx} onFlip={flip} />
+      <BoardStrip
+        {boards}
+        selected={game.board}
+        {ctx}
+        onFlip={flip}
+        lichess={snap.round ? lichessUrl(snap.round.roundId, game.id) : undefined}
+      />
       {#if notTracked}<div class="warn">Board {board} is not tracked · showing board {game.board}</div>{/if}
       {#if ctx}<div class="banner">
           Archive · {snap.event?.name} · {snap.round?.name} · {archivedResult(game)}
@@ -223,6 +230,7 @@
         cursor={view.live ? null : view.ply}
         onJump={(n) => (cursor = jump(view.cursor, n, view.latest))}
       />
+      {#if game.opening}<p class="opening" title={game.opening}>{game.opening}</p>{/if}
       <MoveList
         plies={game.plies}
         marks={analysis.marks}
@@ -306,6 +314,15 @@
     background: var(--accent);
     white-space: nowrap;
     cursor: pointer;
+  }
+  .opening {
+    margin: 0;
+    padding: 4px 12px;
+    overflow: hidden;
+    color: var(--muted);
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    background: var(--surface);
   }
   .from {
     margin: auto 0 0;

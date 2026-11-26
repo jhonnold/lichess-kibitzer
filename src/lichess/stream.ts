@@ -11,6 +11,7 @@ export interface GameUpdate {
   uci: string[]; // for `position startpos moves …`
   san: string[]; // same plies, for the move list
   clocks: (number | null)[]; // ms left for the mover after ply i, from [%clk]; null if absent
+  opening: string | null; // "E06 Catalan Opening: Closed" from the ECO and Opening tags; null without an Opening tag
   result: Result;
   status: 'ongoing' | 'finished'; // finished ⇔ result !== '*'
 }
@@ -84,8 +85,10 @@ export function parseGame(text: string): GameUpdate | null {
     title: tag(text, `${c}Title`),
     rating: Number(tag(text, `${c}Elo`)) || undefined,
   });
+  const [eco, name] = [tag(text, 'ECO'), tag(text, 'Opening')];
   return {
     gameId,
+    opening: name ? (eco ? `${eco} ${name}` : name) : null,
     white: player('White'),
     black: player('Black'),
     uci,

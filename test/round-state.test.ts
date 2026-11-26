@@ -114,6 +114,27 @@ describe('RoundState', () => {
     expect(rs.snapshot().round?.boards.map((b) => b.id)).not.toContain('g1');
   });
 
+  it('setOpening sets, saves and emits for Tracked; null, same or unknown is a no-op; untracked saves silently', async () => {
+    const { rs, events, rounds } = started();
+    events.length = 0;
+    rs.setOpening('g1', 'E06 Catalan');
+    expect(rs.board('g1')?.opening).toBe('E06 Catalan');
+    expect(events).toMatchObject([{ type: 'board', board: { id: 'g1', opening: 'E06 Catalan' } }]);
+    rs.setOpening('g1', 'E06 Catalan');
+    rs.setOpening('g1', null);
+    rs.setOpening('nope', 'X');
+    expect(events).toHaveLength(1);
+    expect(rs.board('g1')?.opening).toBe('E06 Catalan');
+    rs.setOpening('g10', 'A00 Untracked');
+    expect(events).toHaveLength(1);
+    await rs.saved();
+    expect(rounds.at(-1)?.boards.map((b) => b.opening)).toEqual([
+      'E06 Catalan',
+      ...Array(8).fill(null),
+      'A00 Untracked',
+    ]);
+  });
+
   it('syncMoves: first sync at null, later at now, no-op on same list, silent when untracked', () => {
     const { rs, events } = started();
     expect(rs.syncMoves('g1', [mv('e2e4')], 100)).toBe(0);
