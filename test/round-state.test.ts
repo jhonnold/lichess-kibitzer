@@ -260,4 +260,41 @@ describe('RoundState', () => {
     rs.syncMoves('g10', [mv('e2e4')], 99);
     expect(rs.board('g10')?.plies[1].at).toBeNull();
   });
+
+  it('openRound makes a loaded Round current again: evals and tracked kept, new epochs, no Round-file save', () => {
+    const a = started(3);
+    a.rs.setEval('g1', 0, ev(10), a.rs.epoch('g1'));
+    a.rs.setTracked(['g3']);
+    const file = structuredClone(a.rs.round!) as T.Round;
+    const b = setup();
+    b.rs.setTopN(2);
+    b.rs.startRound(info(2), null); // some other Round is current
+    const old = b.rs.epoch('g1');
+    b.rs.setDead([{ boardId: 'g1', board: 1, ply: 0, at: 1 }]);
+    b.events.length = 0;
+    b.rounds.length = 0;
+    b.rs.openRound(file);
+    expect(b.rs.round!.boards.map((x) => x.tracked)).toEqual([false, false, true]);
+    expect(b.rs.board('g1')!.plies[0].eval).toMatchObject({ score: { cp: 10 } });
+    expect(b.rs.epoch('g1')).toBeGreaterThan(old);
+    expect(b.rs.setEval('g1', 0, ev(20), old)).toBe(false);
+    expect(b.rs.dead).toEqual([]);
+    expect(b.events.map((e) => e.type)).toEqual(['snapshot']);
+    expect(b.rounds).toEqual([]);
+    expect(b.states.at(-1)!.current).toEqual({ tourId: 'T1', roundId: 'R1' });
+  });
+
+  it('setStartsAt emits a snapshot and saves once; an equal value or no Round is silent', () => {
+    const s = started(2);
+    s.rounds.length = 0;
+    s.rs.setStartsAt(1234);
+    expect(s.events).toEqual([]);
+    expect(s.rounds).toEqual([]);
+    s.rs.setStartsAt(5678);
+    expect(s.events.map((e) => e.type)).toEqual(['snapshot']);
+    expect(s.rs.round!.startsAt).toBe(5678);
+    expect(s.rounds).toHaveLength(1);
+    expect(s.rounds[0].startsAt).toBe(5678);
+    setup().rs.setStartsAt(1); // no Round: no-op
+  });
 });
