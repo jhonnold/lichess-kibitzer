@@ -108,7 +108,7 @@ export class Kibitzer {
       throw err;
     }
     if (fresh) this.state.pick(ref);
-    const source = (this.opts.source ?? lichessSource)(ref.roundId, ref.id);
+    const source = (this.opts.source ?? lichessSource)(ref.roundId);
     const s: Session = { engine, source, pending: null, busy: false, tried: new Set(), live: null };
     this.session = s;
     engine.on('info', (info) => this.onInfo(s, info));
@@ -118,7 +118,7 @@ export class Kibitzer {
     // Stream handler exceptions are swallowed as network errors (and the update lost): never throw from these.
     source.start({
       game: (u) => {
-        if (this.session !== s) return;
+        if (this.session !== s || u.gameId !== ref.id) return;
         s.pending = u;
         this.kick(s);
       },

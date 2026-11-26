@@ -2,7 +2,7 @@ import { Chess } from 'chess.js';
 import { USER_AGENT, RATE_LIMIT_MS, type Fetch, type Player, type Result } from './api.js';
 
 export type StreamStatus = 'connected' | 'reconnecting';
-/** Full snapshot of the Featured game, not a delta. `uci`/`san` may shrink or diverge between emits (broadcast retracts). */
+/** Full snapshot of one Board's game, not a delta. `uci`/`san` may shrink or diverge between emits (broadcast retracts). */
 export interface GameUpdate {
   gameId: string;
   white: Player;
@@ -21,7 +21,7 @@ export interface Source {
   start(h: SourceHandlers): void;
   stop(): void;
 }
-export type SourceFactory = (roundId: string, gameId: string) => Source;
+export type SourceFactory = (roundId: string) => Source;
 export const MIN_BACKOFF_MS = 1_000;
 export const MAX_BACKOFF_MS = 60_000;
 
@@ -47,8 +47,9 @@ const clk = (c: string) => {
   return m ? Math.round((+m[1] * 3600 + +m[2] * 60 + +m[3]) * 1000) : null;
 };
 
-export function parseGame(text: string, gameId: string): GameUpdate | null {
-  if (tag(text, 'GameURL')?.split('/').pop() !== gameId) return null; // GameURL, not Site (see findings)
+export function parseGame(text: string): GameUpdate | null {
+  const gameId = tag(text, 'GameURL')?.split('/').pop(); // GameURL, not Site (see findings)
+  if (!gameId) return null;
   if (tag(text, 'FEN') || (tag(text, 'Variant') ?? 'Standard') !== 'Standard') return null; // layer 6 sends startpos
   const chess = new Chess();
   const uci: string[] = [],
@@ -115,11 +116,10 @@ const sleep = (ms: number, signal: AbortSignal) =>
 
 export class RoundStream implements Source {
   private ctrl = new AbortController();
-  private last = '';
+  private last = new Map<string, string>(); // gameId → last emitted JSON; kept across reconnects
   done: Promise<void> = Promise.resolve();
   constructor(
     private roundId: string,
-    private gameId: string,
     private opts: StreamOpts = {},
   ) {}
   start(h: SourceHandlers) {
@@ -152,18 +152,15 @@ export class RoundStream implements Source {
             const { done, value } = await reader.read();
             if (done) break;
             for (const pgn of split(dec.decode(value, { stream: true }))) {
-              delay = wait = MIN_BACKOFF_MS; // Lichess sends the full snapshot first, so any game = healthy connection
-              const u = parseGame(pgn, this.gameId);
+              const u = parseGame(pgn);
               if (!u) continue;
+              // An ongoing Board = healthy connection, keep reconnecting fast. An all-Finished Round backs off to 60 s.
+              if (u.status === 'ongoing') delay = wait = MIN_BACKOFF_MS;
               const key = JSON.stringify(u);
-              if (key !== this.last) {
-                this.last = key;
+              if (key !== this.last.get(u.gameId)) {
+                this.last.set(u.gameId, key);
                 h.game(u);
               } // dedupe re-sends after reconnect
-              if (u.status === 'finished') {
-                this.stop();
-                return;
-              } // nothing more to follow
             }
           }
         }
@@ -178,4 +175,4 @@ export class RoundStream implements Source {
   }
 }
 
-export const lichessSource: SourceFactory = (roundId, gameId) => new RoundStream(roundId, gameId);
+export const lichessSource: SourceFactory = (roundId) => new RoundStream(roundId);

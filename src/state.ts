@@ -95,7 +95,7 @@ export class State extends EventEmitter<Events> {
     return true;
   }
 
-  /** Live → Finished. Live info and stream status are dropped (engine stopped, source stopped itself). */
+  /** Live → Finished. Live info and stream status are dropped (engine and source stopped by the Kibitzer). */
   finish(result: Exclude<T.Result, '*'>): void {
     if (this.site !== 'live') return;
     this.#game!.result = result;
