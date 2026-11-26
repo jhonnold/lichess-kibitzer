@@ -6,7 +6,7 @@ import { Engine, type SearchResult } from './engine/engine.js';
 import type { UciInfo } from './engine/uci-parser.js';
 import type { RoundInfo } from './lichess/api.js';
 import { lichessSource, type GameUpdate, type Source, type SourceFactory } from './lichess/stream.js';
-import { evictions, jobDepth, jobDuration } from './metrics.js';
+import { evictions, jobDepth, jobDuration, jobNps, jobs } from './metrics.js';
 import { OpeningFallback, type OpeningFetch } from './opening.js';
 import { pvToSan, toScore } from './pv.js';
 import type { RoundState } from './round-state.js';
@@ -422,20 +422,32 @@ export class Scheduler {
       cancelSlice();
       // The search rejected: the engine died. A Job we quit the engine under (restart) is not its crash.
       this.run = null;
-      if (run.stop === 'restart') this.queue.requeue(job, this.now);
-      else if (run.stop !== 'drop' && this.queue.crashed(job, this.now) === 'dead') this.persistDead();
+      if (run.stop === 'restart') {
+        this.queue.requeue(job, this.now);
+        jobs.inc({ tier: job.tier, outcome: 'interrupted' });
+      } else if (run.stop === 'drop') jobs.inc({ tier: job.tier, outcome: 'dropped' });
+      else {
+        const crash = this.queue.crashed(job, this.now);
+        if (crash === 'dead') this.persistDead();
+        jobs.inc({
+          tier: job.tier,
+          outcome: { requeued: 'crashed', dead: 'dead_lettered', dropped: 'dropped' }[crash],
+        });
+      }
       this.publishQueue();
       return;
     }
     cancelSlice();
     this.run = null;
     this.backoff = RESTART_MIN_MS;
-    if (run.stop === 'drop') return;
-    if (run.stop !== 'restart') {
+    if (run.stop === 'drop') return void jobs.inc({ tier: job.tier, outcome: 'dropped' });
+    if (run.stop === 'restart') jobs.inc({ tier: job.tier, outcome: 'interrupted' });
+    else {
       if (run.evicted) evictions.inc({ reason: run.evicted }); // not before: a halt may override the stop
       const e = toEval(r, ply, run.fen, run.stop ? 'provisional' : 'complete');
+      jobs.inc({ tier: job.tier, outcome: e ? 'recorded' : 'empty' });
       if (e) {
-        this.recordJob(job, this.now - run.startedAt, e);
+        this.recordJob(job, this.now - run.startedAt, e, run.nps);
         // A short eviction (stale) must not replace a deeper Provisional eval of the same ply.
         const prev = this.state.board(boardId)?.plies[ply]?.eval;
         if (e.kind === 'complete' || !prev || prev.depth <= e.depth) this.state.setEval(boardId, ply, e, run.epoch);
@@ -452,10 +464,11 @@ export class Scheduler {
     else if (run.stop || run.epoch !== this.state.epoch(boardId)) this.queue.requeue(job, this.now);
   }
 
-  private recordJob(job: Job, ms: number, e: T.Eval): void {
+  private recordJob(job: Job, ms: number, e: T.Eval, nps: number | null): void {
     const labels = { tier: job.tier, kind: e.kind };
     jobDuration.observe(labels, ms / 1000);
     jobDepth.observe(labels, e.depth);
+    if (nps !== null) jobNps.observe(labels, nps);
     this.samples.push({ ms, depth: e.depth, kind: e.kind });
     if (this.samples.length > TIMING_WINDOW) this.samples.shift();
   }

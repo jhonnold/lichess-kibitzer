@@ -105,8 +105,18 @@ describe('GET /api/admin/metrics', () => {
     expect(body).toContain('kibitzer_dead_letter_queue_size 1');
     expect(body).toContain('kibitzer_engine_up 1');
     expect(body).toContain('kibitzer_engine_restarts_total 2');
+    expect(body).toContain('kibitzer_engine_state{state="up"} 1');
     scheduler.engineState = 'restarting';
     expect((await scrape(app, basic('admin:pw'))).text).toContain('kibitzer_engine_up 0');
+    for (const [engineState, on] of [
+      ['restarting', 'restarting'],
+      [null, 'idle'],
+    ] as const) {
+      scheduler.engineState = engineState;
+      const text = (await scrape(app, basic('admin:pw'))).text;
+      for (const st of ['up', 'restarting', 'idle'])
+        expect(text).toContain(`kibitzer_engine_state{state="${st}"} ${st === on ? 1 : 0}`);
+    }
   });
 
   it('reports the build and the configured engine, which follows the saved config', async () => {

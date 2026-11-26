@@ -77,6 +77,27 @@ export const engineUp = new Gauge({
     if (src) this.set(src.scheduler.engineState === 'up' ? 1 : 0);
   },
 });
+/** `idle`: no engine wanted (no Round, or stopped). Every state is exported, the current one as 1. */
+export const engineState = new Gauge({
+  name: 'kibitzer_engine_state',
+  help: '1 for the engine state: up, restarting, or idle (no Round)',
+  labelNames: ['state'],
+  registers: [register],
+  collect() {
+    this.reset();
+    if (!src) return;
+    const now = src.scheduler.engineState ?? 'idle';
+    for (const state of ['up', 'restarting', 'idle']) this.set({ state }, state === now ? 1 : 0);
+  },
+});
+/** One outcome per Job run: recorded (an Eval, evicted Provisional ones included), empty (no scored line), dropped,
+ *  interrupted (engine restart), crashed (requeued) or dead_lettered (its last crash). */
+export const jobs = new Counter({
+  name: 'kibitzer_jobs_total',
+  help: 'Jobs run, by tier and outcome (recorded, empty, dropped, interrupted, crashed, dead_lettered)',
+  labelNames: ['tier', 'outcome'],
+  registers: [register],
+});
 export const evictions = new Counter({
   name: 'kibitzer_evictions_total',
   help: 'Running Jobs stopped early, by reason (stale, live, backfill)',
@@ -108,6 +129,14 @@ export const jobDepth = new Histogram({
   help: 'Search depth reached by Jobs that recorded an Eval',
   labelNames: ['tier', 'kind'],
   buckets: [5, 10, 15, 20, 25, 30, 35, 40, 50],
+  registers: [register],
+});
+export const jobNps = new Histogram({
+  name: 'kibitzer_job_nps',
+  help: 'Engine nodes per second at the end of Jobs that recorded an Eval',
+  labelNames: ['tier', 'kind'],
+  // Berserk benches ~1.95M nps on one thread (docs/jobtime.md).
+  buckets: [1e5, 2.5e5, 5e5, 1e6, 1.5e6, 2e6, 2.5e6, 3e6, 4e6, 6e6],
   registers: [register],
 });
 export const streamReconnects = new Counter({

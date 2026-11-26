@@ -89,8 +89,14 @@ the Admin cookie; with no `ADMIN_PASSWORD` it always answers 401.
 
 - `kibitzer_queue_depth{tier}`: Jobs waiting, `current` and `backfill`
 - `kibitzer_dead_letter_queue_size`: Jobs in the Dead-letter queue
-- `kibitzer_engine_up`: 1 while the engine is up; `kibitzer_engine_restarts_total`: restarts since boot
-- `kibitzer_job_duration_seconds` and `kibitzer_job_depth` (histograms, `tier` and `kind` labels): Jobs that recorded an Eval
+- `kibitzer_engine_state{state}`: 1 for the current state (`up`, `restarting`, or `idle` with no Round), 0 for the
+  others. `kibitzer_engine_up`: 1 while up (0 both while restarting and when idle); `kibitzer_engine_restarts_total`:
+  restarts since boot
+- `kibitzer_jobs_total{tier,outcome}`: one outcome per Job run. `recorded` (an Eval, evicted Provisional ones
+  included), `empty` (the search gave no scored line), `dropped` (a Round swap, an untrack or a stop),
+  `interrupted` (engine restart), `crashed` (the engine died; requeued) or `dead_lettered` (its last crash)
+- `kibitzer_job_duration_seconds`, `kibitzer_job_depth` and `kibitzer_job_nps` (histograms, `tier` and `kind`
+  labels): Jobs that recorded an Eval; nps is the engine's last report
 - `kibitzer_lichess_requests_total{endpoint,outcome}`: every Lichess API call. `endpoint` is `event`, `round` or
   `explorer`; `outcome` is `ok`, `http_error`, `rate_limited` (a 429), `timeout`, `network` (no response, or a broken
   or non-JSON body) or `paused` (refused locally during the minute after a 429).
