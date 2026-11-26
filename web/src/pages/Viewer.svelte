@@ -10,6 +10,7 @@
   import BoardStrip from '../components/BoardStrip.svelte';
   import PlayerBar from '../components/PlayerBar.svelte';
   import { arrows } from '$shared/arrows';
+  import { archiveHash, boardHash, type Layout } from '$shared/route';
   import type { SnapSource } from '$lib/live.svelte';
   import type { ArchiveCtx } from '$shared/archive';
   import { clockOf } from '$lib/position';
@@ -40,8 +41,17 @@
     viewerMessage,
   } from '$shared/viewer';
 
-  // ctx: set for an archived Round, which switches the live-only UI off.
-  const { store, board, ctx = null }: { store: SnapSource; board: number | null; ctx?: ArchiveCtx | null } = $props();
+  // ctx: set for an archived Round, which switches the live-only UI off. ply: deep link into the game.
+  // layout: streaming params; query: the hash's `?…` part, which every link and URL update keeps.
+  type Props = {
+    store: SnapSource;
+    board: number | null;
+    ply?: number | null;
+    layout: Layout;
+    query?: string;
+    ctx?: ArchiveCtx | null;
+  };
+  const { store, board, ply = null, layout, query = '', ctx = null }: Props = $props();
 
   let now = $state(Date.now());
   onMount(() => {
@@ -68,6 +78,26 @@
   const view = $derived(game && cursorView(cursor, game));
   $effect(() => {
     if (view && view.cursor !== cursor) cursor = view.cursor;
+  });
+
+  // The route's ply moves the Cursor only when the route changes (not when the Cursor moves the URL).
+  let applied = '';
+  $effect(() => {
+    if (!game) return;
+    const key = `${game.id}/${ply}`;
+    if (key === applied) return;
+    applied = key;
+    if (ply !== null) cursor = jump(liveCursor(game.id), ply, game.plies.length - 1);
+  });
+  // The URL follows the Cursor (replaceState: no history entries, no hashchange). Live = no ply. The route's Board
+  // number is kept (`#/` stays the default Board, an untracked n stays n).
+  $effect(() => {
+    if (!game || !view || applied !== `${game.id}/${ply}`) return;
+    const p = view.live ? undefined : view.ply;
+    const n = board ?? game.board;
+    const want =
+      (ctx ? archiveHash(ctx.tourId, ctx.roundId, n, p) : board === null && view.live ? '#/' : boardHash(n, p)) + query;
+    if (location.hash !== want) history.replaceState(null, '', want);
   });
 
   const status = $derived(
@@ -109,7 +139,9 @@
     })(),
   );
   // No panel (own moves, a ply without lines) → no arrows.
-  const shapes = $derived(showArrows && panel && view ? arrows(panel.lines, view.position.turn) : []);
+  const shapes = $derived(
+    (layout.arrows ?? showArrows) && panel && view ? arrows(panel.lines, view.position.turn) : [],
+  );
 
   const FLIP_KEY = 'kibitzer.flip';
   let flipped = $state(
@@ -121,6 +153,7 @@
       }
     })(),
   );
+  const orientation = $derived((layout.flip ?? flipped) ? 'black' : 'white');
   function flip() {
     flipped = !flipped;
     try {
@@ -184,66 +217,73 @@
       material={mat![color]}
     />
   {/snippet}
-  <main class="viewer">
+  <main class="viewer" class:nopanel={!layout.panel}>
     <div class="boardCol">
-      <EvalBar score={bar.score} dim={bar.dim || view.inBranch} flip={flipped} />
+      <EvalBar score={bar.score} dim={bar.dim || view.inBranch} flip={orientation === 'black'} />
       <div class="stack">
-        {@render playerBar(flipped ? 'white' : 'black')}
+        {@render playerBar(orientation === 'black' ? 'white' : 'black')}
         <Board
           position={view.position}
           arrows={shapes}
-          orientation={flipped ? 'black' : 'white'}
+          {orientation}
           onMove={(from, to) => (cursor = playOwn(view.cursor, from + to, view.latest))}
         />
-        {@render playerBar(flipped ? 'black' : 'white')}
+        {@render playerBar(orientation === 'black' ? 'black' : 'white')}
       </div>
     </div>
-    <aside>
-      <BoardStrip
-        {boards}
-        selected={game.board}
-        {ctx}
-        onFlip={flip}
-        lichess={snap.round ? lichessUrl(snap.round.roundId, game.id) : undefined}
-      />
-      {#if notTracked}<div class="warn">Board {board} is not tracked · showing board {game.board}</div>{/if}
-      {#if ctx}<div class="banner">
-          Archive · {snap.event?.name} · {snap.round?.name} · {archivedResult(game)}
-        </div>{:else}
-        {#if upcoming}<div class="banner">
-            Upcoming · {snap.round?.name} · {startsIn(snap.round?.startsAt ?? null)}
-          </div>{/if}
-        {#if !upcoming && !live}<div class="banner">Game over · {formatResult(game.result)}</div>{/if}
-        {#if !store.connected}<div class="warn">Reconnecting to server…</div>{/if}
-        {#if snap.stream === 'reconnecting'}<div class="warn">Lichess stream reconnecting…</div>{/if}
-      {/if}
-      {#if !view.live}
-        <div class="cursor" class:moved={view.behind > 0}>
-          <span>{cursorNote(view, game.plies, !!ctx)}</span>
-          <button onclick={() => (cursor = toLive(view.cursor))}>{ctx ? 'End' : 'Back to live'}</button>
-        </div>
-      {/if}
-      <EnginePanel info={panel} fen={view.position.fen} status={ctx ? null : status} />
-      <EvalGraph
-        plies={game.plies}
-        live={liveScore}
-        cursor={view.live ? null : view.ply}
-        onJump={(n) => (cursor = jump(view.cursor, n, view.latest))}
-      />
-      {#if game.opening}<p class="opening" title={game.opening}>{game.opening}</p>{/if}
-      <MoveList
-        plies={game.plies}
-        marks={analysis.marks}
-        cursor={view.ply}
-        follow={view.live}
-        onJump={(n) => (cursor = jump(view.cursor, n, view.latest))}
-      />
-      <p class="from">
-        {analysis.scored === 0
-          ? 'Accuracy: no scored moves yet'
-          : `Accuracy: ${analysis.scored} of ${analysis.total} moves scored`}
-      </p>
-    </aside>
+    {#if layout.panel}
+      <aside>
+        {#if layout.chrome}
+          <BoardStrip
+            {boards}
+            selected={game.board}
+            {ctx}
+            {query}
+            onFlip={flip}
+            lichess={snap.round ? lichessUrl(snap.round.roundId, game.id) : undefined}
+          />
+          {#if notTracked}<div class="warn">Board {board} is not tracked · showing board {game.board}</div>{/if}
+          {#if ctx}<div class="banner">
+              Archive · {snap.event?.name} · {snap.round?.name} · {archivedResult(game)}
+            </div>{:else}
+            {#if upcoming}<div class="banner">
+                Upcoming · {snap.round?.name} · {startsIn(snap.round?.startsAt ?? null)}
+              </div>{/if}
+            {#if !upcoming && !live}<div class="banner">Game over · {formatResult(game.result)}</div>{/if}
+            {#if !store.connected}<div class="warn">Reconnecting to server…</div>{/if}
+            {#if snap.stream === 'reconnecting'}<div class="warn">Lichess stream reconnecting…</div>{/if}
+          {/if}
+        {/if}
+        {#if layout.chrome && !view.live}
+          <div class="cursor" class:moved={view.behind > 0}>
+            <span>{cursorNote(view, game.plies, !!ctx)}</span>
+            <button onclick={() => (cursor = toLive(view.cursor))}>{ctx ? 'End' : 'Back to live'}</button>
+          </div>
+        {/if}
+        <EnginePanel info={panel} fen={view.position.fen} status={ctx ? null : status} />
+        <EvalGraph
+          plies={game.plies}
+          live={liveScore}
+          cursor={view.live ? null : view.ply}
+          onJump={(n) => (cursor = jump(view.cursor, n, view.latest))}
+        />
+        {#if game.opening}<p class="opening" title={game.opening}>{game.opening}</p>{/if}
+        <MoveList
+          plies={game.plies}
+          marks={analysis.marks}
+          cursor={view.ply}
+          follow={view.live}
+          onJump={(n) => (cursor = jump(view.cursor, n, view.latest))}
+        />
+        {#if layout.chrome}
+          <p class="from">
+            {analysis.scored === 0
+              ? 'Accuracy: no scored moves yet'
+              : `Accuracy: ${analysis.scored} of ${analysis.total} moves scored`}
+          </p>
+        {/if}
+      </aside>
+    {/if}
   </main>
 {/if}
 
@@ -264,6 +304,13 @@
     grid-template-rows: minmax(0, 1fr);
     gap: var(--gap);
     padding: var(--gap);
+  }
+  .nopanel {
+    grid-template-columns: auto;
+    justify-content: center;
+  }
+  .nopanel .stack {
+    width: min(calc(100vh - 2 * var(--barH) - 2 * var(--gap)), calc(100vw - 80px));
   }
   .boardCol {
     display: flex;

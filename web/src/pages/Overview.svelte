@@ -2,13 +2,20 @@
   import { onMount } from 'svelte';
   import type { SnapSource } from '$lib/live.svelte';
   import type { ArchiveCtx } from '$shared/archive';
-  import { archiveHash } from '$shared/route';
+  import type { Layout } from '$shared/route';
+  import { archiveHash, boardHash } from '$shared/route';
   import { viewerMessage } from '$shared/viewer';
   import BoardTile from '../components/BoardTile.svelte';
 
   // back: the Viewer hash `o` returns to. ctx: an archived Round (no Queue dots, links stay in the Archive).
-  const { store, back, ctx = null }: { store: SnapSource; back: string; ctx?: ArchiveCtx | null } = $props();
-  const href = $derived(ctx ? (n: number) => archiveHash(ctx.tourId, ctx.roundId, n) : undefined);
+  const {
+    store,
+    back,
+    layout,
+    query = '',
+    ctx = null,
+  }: { store: SnapSource; back: string; layout: Layout; query?: string; ctx?: ArchiveCtx | null } = $props();
+  const href = $derived((n: number) => (ctx ? archiveHash(ctx.tourId, ctx.roundId, n) : boardHash(n)) + query);
   const snap = $derived(store.snap);
   let now = $state(Date.now());
   onMount(() => {
@@ -23,10 +30,12 @@
   <main class="message">{viewerMessage(snap) ?? 'Nothing live right now'}</main>
 {:else}
   <main>
-    <header>
-      <h1>{ctx ? 'Archive · ' : ''}{snap.event?.name} · {snap.round.name}</h1>
-      <a href={back}>Board view (o)</a>
-    </header>
+    {#if layout.chrome}
+      <header>
+        <h1>{ctx ? 'Archive · ' : ''}{snap.event?.name} · {snap.round.name}</h1>
+        <a href={back}>Board view (o)</a>
+      </header>
+    {/if}
     <div class="grid">
       {#each snap.round.boards as b (b.id)}
         <BoardTile board={b} search={snap.search} queue={snap.queue} {href} archived={!!ctx} now={now - store.skew} />

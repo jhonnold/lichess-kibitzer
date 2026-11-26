@@ -11,7 +11,8 @@ requirements*, kept outside this repo). This doc says what the app needs from th
   `ProtectHome=true`). Default: Berserk at `/usr/local/bin/berserk`.
 - **Memory** for the engine defaults: Hash=1024 MB plus Node's own footprint (sizing is homelab's). One engine
   process at a time, none when Idle.
-- **Outbound HTTPS** to `lichess.org` (broadcast API and PGN stream).
+- **Outbound HTTPS** to `lichess.org` (broadcast API and PGN stream) and `explorer.lichess.org` (opening names, only
+  for Boards whose PGN has no `Opening` tag).
 - **Inbound** TCP on `PORT` (default 8080) from the reverse proxy only. The app binds all interfaces.
 
 ## Install
@@ -43,9 +44,12 @@ All set in `/opt/lichess-kibitzer/.env` (template: [`.env.example`](../.env.exam
 | Var | Default | Notes |
 |-----|---------|-------|
 | `PORT` | `8080` | HTTP port. |
-| `ADMIN_PASSWORD` | unset | Unset or empty refuses every login. |
+| `ADMIN_PASSWORD` | unset | Unset or empty refuses every login. Also the basic-auth password of `/api/admin/metrics` (user `admin`). |
 | `DATA_FILE` | `data/state.json` (relative to the working dir) | Set to `/var/lib/lichess-kibitzer/state.json`: the only writable dir under `ProtectSystem=strict`. |
 | `DEFAULT_ENGINE` | `berserk` (PATH lookup) | Engine path prefilled on the Admin page, with Threads=1, Hash=1024, MultiPV=5. |
+
+The Archive is the Round files under `<dir of DATA_FILE>/rounds/<tourId>/<roundId>.json` (with the default
+`DATA_FILE`, `/var/lib/lichess-kibitzer/rounds/`). Back that directory up with `state.json`; never edit the files by hand.
 
 ## Service
 

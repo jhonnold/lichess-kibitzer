@@ -19,6 +19,11 @@
   --fontMono: ui-monospace, 'JetBrains Mono', monospace;
   color-scheme: dark;
 }
+/* ?bg=transparent (OBS browser source): the page shows the stream behind it. */
+:root.transparent,
+:root.transparent body {
+  background: transparent;
+}
 *,
 *::before,
 *::after {
