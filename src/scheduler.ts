@@ -83,13 +83,15 @@ export class Scheduler {
     return this.run && { ...this.run.job };
   }
 
-  /** Replace the Current Round (also the first one): drop the running Job, follow the new Round's source. */
-  startRound(r: RoundInfo, startsAt: number | null): Promise<void> {
+  /** Replace the Current Round (also the first one): drop the running Job, follow the new Round's source.
+   *  existing = that Round's file: continue it, never wipe it. */
+  startRound(r: RoundInfo, startsAt: number | null, existing: T.Round | null = null): Promise<void> {
     return this.serial(async () => {
       this.detach();
       await this.halt('drop');
       this.queue.clear();
-      this.state.startRound(r, startsAt);
+      if (existing) this.state.openRound(existing);
+      else this.state.startRound(r, startsAt);
       this.startSource(r.id);
       this.enqueueTracked();
       this.wake();

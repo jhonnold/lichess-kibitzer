@@ -6,6 +6,17 @@ import type { DataStore } from './store.js';
 type Events = { event: [T.SseEvent] };
 
 const EMPTY_QUEUE: T.QueueView = { current: [], backfill: 0 };
+const newBoard = (b: RoundInfo['boards'][number], i: number, tracked: boolean): T.Board => ({
+  id: b.id,
+  board: i + 1,
+  white: b.white,
+  black: b.black,
+  result: b.result,
+  tracked,
+  opening: null,
+  clocks: { white: b.whiteClockMs ?? null, black: b.blackClockMs ?? null },
+  plies: [{ move: null, at: null, eval: null }],
+});
 const DEFAULT_SETTINGS: T.Settings = { event: null, engine: null, jobTimeMs: null, topN: T.DEFAULT_TOP_N };
 
 /** In-memory site state: settings, the Current Round (every Board) and transient search/queue/stream. Events are
@@ -20,6 +31,7 @@ export class RoundState extends EventEmitter<Events> {
   #seq = 0; // epochs are never reused across Rounds
   #epochs = new Map<string, number>();
   #synced = new Set<string>(); // Boards synced since construction/startRound
+  #unknown = false; // the source sent a game the Round lacks (a Board added on Lichess after the Round was fetched)
   #stateSaving: Promise<void> = Promise.resolve();
   #roundSaving: Promise<void> = Promise.resolve();
 
@@ -84,25 +96,55 @@ export class RoundState extends EventEmitter<Events> {
       name: r.name,
       eventName: this.#settings.event?.name ?? '',
       startsAt,
-      boards: r.boards.map((b, i) => ({
-        id: b.id,
-        board: i + 1,
-        white: b.white,
-        black: b.black,
-        result: b.result,
-        tracked: i < this.#settings.topN,
-        opening: null,
-        clocks: { white: b.whiteClockMs ?? null, black: b.blackClockMs ?? null },
-        plies: [{ move: null, at: null, eval: null }],
-      })),
+      boards: r.boards.map((b, i) => newBoard(b, i, i < this.#settings.topN)),
     };
     this.#epochs = new Map(this.#round.boards.map((b) => [b.id, ++this.#seq]));
     this.#synced.clear();
+    this.#unknown = false;
     this.#dead = [];
     this.resetTransient();
     this.emit('event', { type: 'snapshot', snapshot: this.snapshot() });
     this.saveRound();
     this.saveState();
+  }
+
+  /** Make a Round loaded from its file current again (evals and tracked set kept): new epochs, #synced cleared,
+   *  dead [], transient reset, 'snapshot' event, saveState (no saveRound: nothing changed). */
+  openRound(round: T.Round): void {
+    this.#round = round;
+    this.#epochs = new Map(round.boards.map((b) => [b.id, ++this.#seq]));
+    this.#synced.clear();
+    this.#unknown = false;
+    this.#dead = [];
+    this.resetTransient();
+    this.emit('event', { type: 'snapshot', snapshot: this.snapshot() });
+    this.saveState();
+  }
+
+  /** Lichess moved the start. No-op when equal or no Round; else saveRound + 'snapshot' event. */
+  setStartsAt(startsAt: number | null): void {
+    if (!this.#round || this.#round.startsAt === startsAt) return;
+    this.#round.startsAt = startsAt;
+    this.emit('event', { type: 'snapshot', snapshot: this.snapshot() });
+    this.saveRound();
+  }
+
+  /** True once the source sent a game that is not a Board of the Current Round. */
+  get hasUnknownBoards(): boolean {
+    return this.#unknown;
+  }
+
+  /** Append the Boards Lichess lists that the Round lacks, untracked, in Lichess order. Clears hasUnknownBoards. */
+  addBoards(boards: RoundInfo['boards']): void {
+    this.#unknown = false;
+    const r = this.#round;
+    if (!r) return;
+    const add = boards.filter((b) => !r.boards.some((x) => x.id === b.id));
+    for (const b of add) {
+      r.boards.push(newBoard(b, r.boards.length, false));
+      this.#epochs.set(b.id, ++this.#seq);
+    }
+    if (add.length) this.saveRound();
   }
 
   /** Exact tracked set; unknown ids ignored. Lasts this Round only. */
@@ -126,7 +168,10 @@ export class RoundState extends EventEmitter<Events> {
    */
   syncMoves(boardId: string, moves: T.Move[], now: number): number | null {
     const b = this.board(boardId) as T.Board | undefined;
-    if (!b) return null;
+    if (!b) {
+      this.#unknown = !!this.#round;
+      return null;
+    }
     const at = this.#synced.has(boardId) ? now : null;
     this.#synced.add(boardId);
     let kept = 0;
@@ -192,6 +237,7 @@ export class RoundState extends EventEmitter<Events> {
     this.#round = null;
     this.#epochs.clear();
     this.#synced.clear();
+    this.#unknown = false;
     this.#dead = [];
     this.resetTransient();
     this.emit('event', { type: 'snapshot', snapshot: this.snapshot() });

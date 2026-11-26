@@ -48,6 +48,7 @@ Gate before commit: `npm run lint && npm run check && npm test && npm run build`
 | Lichess stream | `src/lichess/stream.ts` |
 | Site state, persistence, wire types | `src/round-state.ts`, `src/store.ts`, `shared/types.ts` |
 | Orchestrator (Queue + Jobs over RoundState); derived accuracy/marks | `src/scheduler.ts`, `src/round-state.ts`, `src/pv.ts`, `shared/analysis.ts` |
+| Event following (poll, Round rollover) | `src/follower.ts`, `shared/rollover.ts` |
 | Demo server (`npm run demo`; fake engine, synthesized Round; flags in file header) | `scripts/demo.ts` |
 | Hash router (parseHash, boardHash) | `shared/route.ts` |
 | Tests | `test/` |
