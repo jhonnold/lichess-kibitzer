@@ -66,6 +66,9 @@ export class RoundState extends EventEmitter<Events> {
   get round(): Readonly<T.Round> | null {
     return this.#round;
   }
+  get queue(): Readonly<T.QueueView> {
+    return this.#queue;
+  }
   get dead(): readonly T.DeadJob[] {
     return this.#dead;
   }

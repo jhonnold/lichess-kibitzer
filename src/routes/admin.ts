@@ -6,6 +6,7 @@ import { probeEngine } from '../engine/engine.js';
 import type { UciOption } from '../engine/uci-parser.js';
 import type { Follower, FollowStatus } from '../follower.js';
 import { LichessError } from '../lichess/api.js';
+import { register } from '../metrics.js';
 import type { RoundState } from '../round-state.js';
 import type { EngineState, Scheduler } from '../scheduler.js';
 
@@ -65,6 +66,14 @@ const fail = (res: Response) => (err: unknown) =>
     .status(err instanceof LichessError ? err.status : 400)
     .json({ error: String((err as Error | undefined)?.message ?? err) });
 
+/** `Authorization: Basic base64(admin:<ADMIN_PASSWORD>)`; an unset or empty password never matches. */
+function basicOk(header: string | undefined, password: string | undefined): boolean {
+  if (!password || !header?.startsWith('Basic ')) return false;
+  const decoded = Buffer.from(header.slice(6), 'base64').toString();
+  const i = decoded.indexOf(':'); // the first one: the password may contain ':'
+  return i >= 0 && same(decoded.slice(0, i), 'admin') && same(decoded.slice(i + 1), password);
+}
+
 /** /api/admin/*: login sets an HMAC-signed `<expiry>.<sig>` cookie; every other route needs it. */
 export function adminRouter(deps: AdminDeps): Router {
   const { state, scheduler, follower, defaultEngine, adminPassword, probe = probeEngine } = deps;
@@ -83,6 +92,19 @@ export function adminRouter(deps: AdminDeps): Router {
       maxAge: MAX_AGE_MS,
     });
     res.sendStatus(204);
+  });
+
+  /** Prometheus scrape: basic auth, not the cookie, so it is mounted before the cookie check. */
+  r.get('/metrics', (req, res) => {
+    if (!basicOk(req.headers.authorization, adminPassword))
+      return void res.set('WWW-Authenticate', 'Basic realm="kibitzer"').sendStatus(401);
+    register.metrics().then(
+      (body) => res.set({ 'Content-Type': register.contentType, 'Cache-Control': 'no-store' }).end(body),
+      (err: unknown) => {
+        console.error('metrics:', err);
+        res.sendStatus(500);
+      },
+    );
   });
 
   r.use((req: Request, res: Response, next: NextFunction) => {

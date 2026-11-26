@@ -1,4 +1,5 @@
 import { Chess } from 'chess.js';
+import { rateLimited, streamReconnects } from '../metrics.js';
 import { USER_AGENT, RATE_LIMIT_MS, type Fetch, type Player, type Result } from './api.js';
 
 export type StreamStatus = 'connected' | 'reconnecting';
@@ -138,6 +139,7 @@ export class RoundStream implements Source {
       try {
         const res = await (this.opts.fetch ?? fetch)(url, { signal, headers: { 'User-Agent': USER_AGENT } });
         if (res.status === 429) {
+          rateLimited.inc({ source: 'stream' });
           void res.body?.cancel();
           wait = RATE_LIMIT_MS;
         } else if (!res.ok || !res.body) {
@@ -168,6 +170,7 @@ export class RoundStream implements Source {
         /* network error / abort → fall through */
       }
       if (signal.aborted) return;
+      streamReconnects.inc();
       h.status('reconnecting');
       await (this.opts.sleep ?? sleep)(wait, signal);
       if (wait !== RATE_LIMIT_MS) delay = Math.min(delay * 2, MAX_BACKOFF_MS);

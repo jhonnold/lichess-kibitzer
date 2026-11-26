@@ -78,6 +78,30 @@ analysis.ccrl.live {
   public address, the cookie loses `Secure`.
 - The Admin page (`/#/admin`, API under `/api/admin/`) is public behind its password.
 
+## Metrics
+
+`GET /api/admin/metrics` serves Prometheus text. It uses HTTP basic auth (user `admin`, password `ADMIN_PASSWORD`), not
+the Admin cookie; with no `ADMIN_PASSWORD` it always answers 401.
+
+- `kibitzer_queue_depth{tier}`: Jobs waiting, `current` and `backfill`
+- `kibitzer_dead_letter_queue_size`: Jobs in the Dead-letter queue
+- `kibitzer_engine_up`: 1 while the engine is up; `kibitzer_engine_restarts_total`: restarts since boot
+- `kibitzer_job_duration_seconds` and `kibitzer_job_depth` (histograms, `tier` and `kind` labels): Jobs that recorded an Eval
+- `kibitzer_lichess_stream_reconnects_total`, `kibitzer_lichess_rate_limited_total{source}` (`stream` or `api`)
+- `kibitzer_viewers`: open live streams (the Admin page counts as one)
+- `kibitzer_process_*`, `kibitzer_nodejs_*`: Node defaults
+
+```yaml
+scrape_configs:
+  - job_name: lichess-kibitzer
+    scheme: https
+    metrics_path: /api/admin/metrics
+    basic_auth: { username: admin, password_file: /etc/prometheus/kibitzer-password }
+    static_configs: [{ targets: ['kibitzer.example.org'] }]
+```
+
+Check: `curl -u admin:$ADMIN_PASSWORD https://kibitzer.example.org/api/admin/metrics | grep ^kibitzer_`
+
 ## Update
 
 The state file lives in `/var/lib`, so a pull never touches it. A version 1 state file (from before

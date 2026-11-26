@@ -9,6 +9,8 @@ import {
   RATE_LIMIT_MS,
   type Fetch,
 } from '../src/lichess/api.js';
+import { rateLimited } from '../src/metrics.js';
+import { val } from './helpers/metric.js';
 
 const FIX = 'test/fixtures/lichess/';
 const json = (file: string) => () => new Response(readFileSync(FIX + file, 'utf8'), { status: 200 });
@@ -110,6 +112,7 @@ describe('rate limiting and serialisation', () => {
       return calls === 1 ? new Response(null, { status: 429 }) : new Response(readFileSync(FIX + 'round.json', 'utf8'));
     };
 
+    const limited = await val(rateLimited, { source: 'api' });
     const first = await fetchRound('L3MX2oE3', f).catch((e) => e);
     expect(first).toBeInstanceOf(LichessError);
     expect(first.status).toBe(429);
@@ -117,6 +120,7 @@ describe('rate limiting and serialisation', () => {
     const second = await fetchRound('L3MX2oE3', f).catch((e) => e);
     expect(second.status).toBe(429);
     expect(calls).toBe(1);
+    expect(await val(rateLimited, { source: 'api' })).toBe(limited + 1); // the local pause sent no request
 
     vi.setSystemTime(1_000_000 + RATE_LIMIT_MS);
     await expect(fetchRound('L3MX2oE3', f)).resolves.toMatchObject({ id: 'L3MX2oE3' });

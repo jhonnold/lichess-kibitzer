@@ -10,7 +10,9 @@ import type { GameUpdate } from '../src/lichess/stream.js';
 import { RoundState } from '../src/round-state.js';
 import { MAX_CRASHES } from '../shared/queue.js';
 import { RESTART_MIN_MS, Scheduler } from '../src/scheduler.js';
+import { val } from './helpers/metric.js';
 import { ReplaySource } from './helpers/replay-source.js';
+import { jobDepth, jobDuration } from '../src/metrics.js';
 
 const FAKE = fileURLToPath(new URL('./fixtures/fake-uci.mjs', import.meta.url));
 const E4 = ['e2e4', 'e7e5', 'g1f3'];
@@ -137,6 +139,22 @@ describe('Scheduler', () => {
       'position startpos moves d2d4 d7d5',
     ]);
     expect(complete('g1', 0) && complete('g1', 1) && complete('g2', 0) && complete('g2', 1)).toBe(true);
+  });
+
+  it('observes job duration and depth for each recorded Eval', async () => {
+    const count = async (m: typeof jobDuration | typeof jobDepth) => {
+      const one = (tier: string) => val(m, { tier, kind: 'complete' }, `${m.name}_count`);
+      return (await one('current')) + (await one('backfill'));
+    };
+    const [d0, p0] = [await count(jobDuration), await count(jobDepth)];
+    setup();
+    await sched.startRound(roundInfo('R1', ['g1']), null);
+    src.push(upd('g1', E4));
+    await idle();
+    const done = [0, 1, 2, 3].filter((p) => complete('g1', p)).length;
+    expect(done).toBeGreaterThanOrEqual(1);
+    expect((await count(jobDuration)) - d0).toBeGreaterThanOrEqual(done);
+    expect((await count(jobDepth)) - p0).toBeGreaterThanOrEqual(done);
   });
 
   it('runs the longest-waiting Board first', async () => {
