@@ -2,14 +2,14 @@
   import { winPercent, type Score } from '$shared/accuracy';
   import { formatScore } from '$lib/format';
 
-  type Props = { score: Score | null };
-  const { score }: Props = $props();
+  type Props = { score: Score | null; dim?: boolean };
+  const { score, dim = false }: Props = $props();
 
   const white = $derived(score ? winPercent(score) : 50);
   const label = $derived(score ? formatScore(score) : '');
 </script>
 
-<div class="bar" role="img" aria-label={score ? `Evaluation ${label} for White` : 'No evaluation'}>
+<div class="bar" class:dim role="img" aria-label={score ? `Evaluation ${label} for White` : 'No evaluation'}>
   <div class="white" style:height="{white}%"></div>
   <span class:top={white < 50}>{label}</span>
 </div>
@@ -21,6 +21,9 @@
     flex-direction: column-reverse;
     width: 40px;
     background: var(--evalB);
+  }
+  .dim {
+    opacity: 0.45;
   }
   .white {
     background: var(--evalW);
