@@ -1,8 +1,4 @@
-import type { Score } from '$shared/accuracy';
-
-/** White POV: "+0.35", "-1.20", "#3", "#-2". */
-export const formatScore = (s: Score): string =>
-  'mate' in s ? `#${s.mate}` : `${s.cp > 0 ? '+' : ''}${(s.cp / 100).toFixed(2)}`;
+export { formatScore } from '$shared/viewer';
 
 /** ms → "1:05:09" / "4:07". */
 export function formatClock(ms: number | null): string {

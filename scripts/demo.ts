@@ -147,10 +147,10 @@ function release(i?: number): void {
 const running = await startServer({
   port,
   store: dataStore(join(data, 'state.json')),
-  defaultEngine: { path: 'fake', options: {} },
+  defaultEngine: { path: 'fake', options: { MultiPV: '5' } },
   adminPassword: v.password,
   scheduler: {
-    launch: () => Engine.start(process.execPath, { args: [FAKE, '--ply-score'] }),
+    launch: () => Engine.start(process.execPath, { args: [FAKE, '--legal-pv'] }),
     source,
   },
   app: { probe: () => probeEngine(process.execPath, { args: [FAKE] }) },
