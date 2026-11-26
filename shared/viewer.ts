@@ -1,4 +1,4 @@
-import { Chess } from 'chess.js';
+import { Chess, DEFAULT_POSITION } from 'chess.js';
 import { winPercent, type Color, type Score } from './accuracy.js';
 import type { Board, PvLine, Ply, QueueView, Result, SearchInfo, Snapshot } from './types.js';
 
@@ -24,6 +24,19 @@ export function play(fen: string, moves: ChessMove[]): Position {
     check: chess.inCheck(),
     lastMove: last && [last.from, last.to],
   };
+}
+
+export const START_FEN = DEFAULT_POSITION;
+
+/** 'e7e8q' → { from: 'e7', to: 'e8', promotion: 'q' }; 'g1f3' → { from, to } (no promotion key). */
+export function uciMove(uci: string): { from: string; to: string; promotion?: string } {
+  const m = { from: uci.slice(0, 2), to: uci.slice(2, 4) };
+  return uci.length > 4 ? { ...m, promotion: uci[4] } : m;
+}
+
+/** Position after plies[1..n] (n = 0: the start). Games start from the start position; throws on an illegal move. */
+export function positionAt(plies: readonly Ply[], n: number): Position {
+  return play(START_FEN, plies.slice(1, n + 1).map((p) => uciMove(p.move!.uci)));
 }
 
 /** Legal moves by origin square (chessground's movable.dests). */
