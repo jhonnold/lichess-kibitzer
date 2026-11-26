@@ -7,6 +7,7 @@ import {
   boardState,
   countdown,
   evalSeries,
+  formatScore,
   formatResult,
   legalDests,
   ordinal,
@@ -341,5 +342,17 @@ describe('viewerMessage', () => {
   });
   it('is null while a Board can be shown', () => {
     expect(viewerMessage(snap(event, round([mk(1, 0)])))).toBeNull();
+  });
+});
+
+describe('formatScore', () => {
+  it('formats White POV scores', () => {
+    expect([{ cp: 35 }, { cp: -120 }, { cp: 0 }, { mate: 3 }, { mate: -2 }].map(formatScore)).toEqual([
+      '+0.35',
+      '-1.20',
+      '0.00',
+      '#3',
+      '#-2',
+    ]);
   });
 });

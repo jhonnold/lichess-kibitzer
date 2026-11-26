@@ -3,6 +3,7 @@ import { once } from 'node:events';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { Chess } from 'chess.js';
 import { afterEach, describe, expect, it } from 'vitest';
 import { Engine, probeEngine } from '../../src/engine/engine.js';
 import type { UciInfo } from '../../src/engine/uci-parser.js';
@@ -197,5 +198,20 @@ describe('Engine', () => {
     const second = await e.search(['e2e4', 'e7e5'], { movetime: 10 });
     expect(second.info?.score).toEqual({ unit: 'cp', value: 229 });
     expect(second.lines[0]).toBe(second.info);
+  });
+
+  it('--legal-pv gives distinct legal first moves', async () => {
+    const e = await start(['--legal-pv']);
+    e.setOption('MultiPV', '5');
+    const r = await e.search(['e2e4'], { movetime: 10 });
+    expect(r.lines).toHaveLength(5);
+    const firsts = r.lines.map((l) => l.pv[0]);
+    expect(new Set(firsts).size).toBe(5);
+    const legal = new Chess('rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1')
+      .moves({ verbose: true })
+      .map((m) => m.from + m.to);
+    for (const m of firsts) expect(legal).toContain(m);
+    expect(r.lines[0].score).toEqual({ unit: 'cp', value: 70 });
+    expect(r.lines[3].score).toEqual({ unit: 'cp', value: -70 });
   });
 });

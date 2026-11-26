@@ -59,6 +59,10 @@ export function evalSeries(plies: Ply[], live: Score | null): { win: (number | n
   return { win, provisional: plies.map((p) => p.eval?.kind === 'provisional') };
 }
 
+/** White POV: "+0.35", "-1.20", "#3", "#-2". */
+export const formatScore = (s: Score): string =>
+  'mate' in s ? `#${s.mate}` : `${s.cp > 0 ? '+' : ''}${(s.cp / 100).toFixed(2)}`;
+
 /** What the engine panel shows for one Board. */
 export interface PanelInfo {
   ply: number;

@@ -9,6 +9,7 @@
   import MoveList from '../components/MoveList.svelte';
   import BoardStrip from '../components/BoardStrip.svelte';
   import PlayerBar from '../components/PlayerBar.svelte';
+  import { arrows } from '$shared/arrows';
   import { LiveStore } from '$lib/live.svelte';
   import { clockOf } from '$lib/position';
   import {
@@ -84,6 +85,19 @@
   const clock = (color: 'white' | 'black') =>
     (game && view && (clockOf(game.plies.slice(0, view.ply + 1), color) ?? game.clocks[color])) ?? null;
 
+  const ARROWS_KEY = 'kibitzer.arrows';
+  let showArrows = $state(
+    (() => {
+      try {
+        return localStorage.getItem(ARROWS_KEY) !== '0';
+      } catch {
+        return true;
+      }
+    })(),
+  );
+  // No panel (own moves, a ply without lines) → no arrows.
+  const shapes = $derived(showArrows && panel && view ? arrows(panel.lines, view.position.turn) : []);
+
   function onKey(e: KeyboardEvent) {
     const t = e.target as HTMLElement | null;
     if (
@@ -94,6 +108,15 @@
       /^(INPUT|TEXTAREA|SELECT)$/.test(t?.tagName ?? '')
     )
       return;
+    if (e.key === 'a' || e.key === 'A') {
+      showArrows = !showArrows;
+      try {
+        localStorage.setItem(ARROWS_KEY, showArrows ? '1' : '0');
+      } catch {
+        // storage unavailable: the choice lasts until reload
+      }
+      return;
+    }
     if (!view) return;
     const c = view.cursor;
     const next =
@@ -131,6 +154,7 @@
         />
         <Board
           position={view.position}
+          arrows={shapes}
           onMove={(from, to) => (cursor = playOwn(view.cursor, from + to, view.latest))}
         />
         <PlayerBar
