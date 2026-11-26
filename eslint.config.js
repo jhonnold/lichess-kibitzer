@@ -11,7 +11,7 @@ const scoped = (configs) => configs.map((c) => ({ ...c, files: c.files ?? svelte
 export default tseslint.config(
   { ignores: ['build/**'] },
   {
-    files: ['{src,shared,test,web}/**/*.{ts,svelte}'],
+    files: ['{src,shared,test,web,scripts}/**/*.{ts,svelte}'],
     extends: [js.configs.recommended, tseslint.configs.recommended, prettier],
     languageOptions: { globals: globals.node, parserOptions: { sourceType: 'module' } },
   },
