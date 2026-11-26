@@ -171,7 +171,11 @@ const running = await startServer({
   defaultEngine: engineConfig('fake'),
   adminPassword: v.password,
   scheduler: {
-    launch: () => Engine.start(process.execPath, { args: [FAKE, '--legal-pv', ...crash] }),
+    // The Lines copy scores 0.08 higher, so the main line and the Lines visibly disagree.
+    launch: (_cfg, role) =>
+      Engine.start(process.execPath, {
+        args: [FAKE, '--legal-pv', ...(role === 'multi' ? ['--offset', '8'] : []), ...crash],
+      }),
     source,
   },
   app: { probe: () => probeEngine(process.execPath, { args: [FAKE] }) },
