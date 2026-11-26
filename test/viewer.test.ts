@@ -209,6 +209,9 @@ describe('boardState / formatResult / shortName / ordinal', () => {
     expect(shortName('Hoefelsauer, Thomas')).toBe('Hoefelsauer');
     expect(shortName('Magnus Carlsen')).toBe('Carlsen');
     expect(shortName('  Nepo ')).toBe('Nepo');
+    expect(shortName('Gukesh D')).toBe('Gukesh');
+    expect(shortName('Erigaisi A.')).toBe('Erigaisi');
+    expect(shortName('X')).toBe('X');
   });
   it('writes ordinals', () => {
     expect([1, 2, 3, 4, 11, 12, 13, 21, 22, 101, 111].map(ordinal)).toEqual([

@@ -111,10 +111,12 @@ export function archivedResult(b: Board): string {
   return b.result !== '*' ? formatResult(b.result) : b.plies.length > 1 ? 'unfinished' : 'not played';
 }
 
-/** 'Hoefelsauer, Thomas' → 'Hoefelsauer'; 'Magnus Carlsen' → 'Carlsen'. */
+/** 'Hoefelsauer, Thomas' → 'Hoefelsauer'; 'Magnus Carlsen' → 'Carlsen'; 'Gukesh D' → 'Gukesh' (initials skipped). */
 export function shortName(name: string): string {
   const n = name.trim();
-  return n.includes(',') ? n.split(',')[0].trim() : (n.split(/\s+/).pop() ?? n);
+  if (n.includes(',')) return n.split(',')[0].trim();
+  const words = n.split(/\s+/);
+  return words.findLast((w) => !/^\p{L}\.?$/u.test(w)) ?? words.at(-1) ?? n;
 }
 
 /** The game's page on Lichess (303 to the slugged URL). */
