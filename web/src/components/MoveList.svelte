@@ -1,11 +1,11 @@
 <script lang="ts">
+  import { MARK_GLYPH } from '$shared/analysis';
   import type { Mark } from '$shared/accuracy';
   import type { Ply } from '$shared/types';
 
   type Props = { plies: Ply[]; marks: (Mark | null)[]; cursor: number; follow: boolean; onJump: (ply: number) => void };
   const { plies, marks, cursor, follow, onJump }: Props = $props();
 
-  const GLYPH: Record<Mark, string> = { inaccuracy: '?!', mistake: '?', blunder: '??' };
   // rows[n] = [index of White's move, index of Black's move] for full move n + 1
   const rows = $derived(
     Array.from({ length: Math.ceil((plies.length - 1) / 2) }, (_, n) =>
@@ -31,7 +31,7 @@
       {#each row as i (i)}
         {@const mark = marks[i]}
         <button type="button" class="move" class:cur={i === cursor} onclick={() => onJump(i)}>
-          {plies[i].move!.san}{#if mark}<span class={mark}>{GLYPH[mark]}</span>{/if}
+          {plies[i].move!.san}{#if mark}<span class={mark}>{MARK_GLYPH[mark]}</span>{/if}
         </button>
       {/each}
     </li>

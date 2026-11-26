@@ -24,8 +24,13 @@
   };
 
   // With onMove: legal moves for either side (the Viewer's own exploration). Without: view only.
-  type Props = { position: Position; onMove?: (from: string, to: string) => void; arrows?: ArrowSpec[] };
-  const { position, onMove, arrows = [] }: Props = $props();
+  type Props = {
+    position: Position;
+    onMove?: (from: string, to: string) => void;
+    arrows?: ArrowSpec[];
+    coordinates?: boolean;
+  };
+  const { position, onMove, arrows = [], coordinates = true }: Props = $props();
 
   let host: HTMLDivElement;
   let cg: Api | undefined;
@@ -34,6 +39,7 @@
   $effect(() => {
     cg = Chessground(host, {
       viewOnly: !onMove,
+      coordinates,
       animation: { enabled: !!onMove, duration: 150 }, // view-only (preview) boards snap
       movable: { free: false, color: 'both', events: { after: (from, to) => onMove?.(from, to) } },
     });
@@ -48,15 +54,13 @@
   // Fresh shape objects each run: chessground fills in label colours on them.
   $effect(() => {
     cg?.setAutoShapes(
-      arrows.map(
-        (a): DrawShape => ({
-          orig: a.from as Key,
-          dest: a.to as Key,
-          brush: STYLE[a.strength].brush,
-          modifiers: { lineWidth: a.rank ? Math.max(6, 11 - a.rank) : 15 },
-          label: { text: a.label, fill: STYLE[a.strength].fill },
-        }),
-      ),
+      arrows.map((a): DrawShape => ({
+        orig: a.from as Key,
+        dest: a.to as Key,
+        brush: STYLE[a.strength].brush,
+        modifiers: { lineWidth: a.rank ? Math.max(6, 11 - a.rank) : 15 },
+        label: { text: a.label, fill: STYLE[a.strength].fill },
+      })),
     );
   });
 </script>

@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { boardHash } from '$shared/route';
+  import { MARK_GLYPH, latestMark } from '$shared/analysis';
+  import { boardHash, ROUND_HASH } from '$shared/route';
   import type { Board } from '$shared/types';
   import { boardState, formatResult, shortName } from '$shared/viewer';
 
@@ -7,11 +8,14 @@
   const { boards, selected }: Props = $props();
 </script>
 
+<a class="overview" href={ROUND_HASH}>Overview (o)</a>
 <nav>
   {#each boards as b (b.id)}
     {@const st = boardState(b)}
+    {@const mark = latestMark(b.plies)}
     <a href={boardHash(b.board)} aria-current={b.board === selected ? 'page' : undefined}>
       <span class="names"><b>{b.board}</b> {shortName(b.white.name)} – {shortName(b.black.name)}</span>
+      {#if mark}<span class={mark}>{MARK_GLYPH[mark]}</span>{/if}
       {#if st === 'finished'}
         <span class="state">{formatResult(b.result)}</span>
       {:else if st === 'live'}
@@ -24,6 +28,13 @@
 </nav>
 
 <style>
+  .overview {
+    padding: 4px 8px 0;
+    font-size: 14px;
+    text-align: right;
+    color: var(--accent);
+    background: var(--surface);
+  }
   nav {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
@@ -31,9 +42,8 @@
     padding: 6px;
     background: var(--surface);
   }
-  a {
+  nav a {
     display: flex;
-    justify-content: space-between;
     gap: 8px;
     min-width: 0;
     padding: 3px 8px;
@@ -44,7 +54,7 @@
     text-decoration: none;
     background: var(--surface2);
   }
-  a[aria-current='page'] {
+  nav a[aria-current='page'] {
     border-color: var(--accent);
     background: var(--bg);
   }
@@ -55,7 +65,17 @@
   }
   .state {
     flex: none;
+    margin-left: auto;
     color: var(--muted);
+  }
+  .inaccuracy {
+    color: var(--inaccuracy);
+  }
+  .mistake {
+    color: var(--mistake);
+  }
+  .blunder {
+    color: var(--blunder);
   }
   .live {
     color: var(--blunder);

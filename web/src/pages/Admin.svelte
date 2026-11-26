@@ -3,14 +3,14 @@
   import { changedOptions, initialValues, type UciOption } from '$shared/engine-form';
   import { adminApi, ApiError, type AdminStatus, type Probe } from '$lib/admin-api';
   import StatusPanel from '../components/StatusPanel.svelte';
-  import { LiveStore } from '$lib/live.svelte';
+  import type { LiveStore } from '$lib/live.svelte';
   import type { DeadJob } from '$shared/queue';
   import { formatJobTime, jobTimeMs } from '$shared/admin-form';
   import { countdown, formatResult } from '$shared/viewer';
 
   type Section = 'login' | 'event' | 'engine' | 'status' | 'tracking';
 
-  const store = new LiveStore(); // site state + Lichess stream status, same feed as the Viewer
+  const { store }: { store: LiveStore } = $props(); // site state + Lichess stream status, same feed as the Viewer
   let authed = $state<boolean | null>(null); // null: checking the cookie
   let busy = $state(false);
   const errors = $state<Partial<Record<Section, string>>>({});
@@ -120,8 +120,7 @@
     });
     const tick = setInterval(() => (now = Date.now()), 1000);
     const pollTimer = setInterval(() => void poll(), 2000);
-    const disconnect = store.connect();
-    return () => (clearInterval(tick), clearInterval(pollTimer), disconnect());
+    return () => (clearInterval(tick), clearInterval(pollTimer));
   });
 
   const snap = $derived(store.snap);

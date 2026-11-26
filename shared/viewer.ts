@@ -165,3 +165,9 @@ export function viewerMessage(snap: Snapshot): string | null {
   if (!round) return `${event.name} · waiting for the first Round`;
   return round.boards.length ? null : `${event.name} · ${round.name} · no pairings yet`;
 }
+
+/** Clock after each side's latest move (plies[i] for odd i is White's move). */
+export function clockOf(plies: readonly Ply[], color: Color): number | null {
+  for (let i = plies.length - 1; i > 0; i--) if ((i % 2 === 1) === (color === 'white')) return plies[i].move!.clock;
+  return null;
+}

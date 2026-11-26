@@ -10,7 +10,7 @@
   import BoardStrip from '../components/BoardStrip.svelte';
   import PlayerBar from '../components/PlayerBar.svelte';
   import { arrows } from '$shared/arrows';
-  import { LiveStore } from '$lib/live.svelte';
+  import type { LiveStore } from '$lib/live.svelte';
   import { clockOf } from '$lib/position';
   import {
     back,
@@ -34,14 +34,12 @@
     viewerMessage,
   } from '$shared/viewer';
 
-  const { board }: { board: number | null } = $props();
+  const { store, board }: { store: LiveStore; board: number | null } = $props();
 
-  const store = new LiveStore();
   let now = $state(Date.now());
   onMount(() => {
     const tick = setInterval(() => (now = Date.now()), 1000);
-    const disconnect = store.connect();
-    return () => (clearInterval(tick), disconnect());
+    return () => clearInterval(tick);
   });
 
   const snap = $derived(store.snap);

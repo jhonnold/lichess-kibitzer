@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { Chess } from 'chess.js';
 import { describe, expect, it } from 'vitest';
-import { analyse } from '../shared/analysis.js';
+import { analyse, latestMark, MARK_GLYPH } from '../shared/analysis.js';
 import type { Score } from '../shared/accuracy.js';
 import type { EvalKind, Ply } from '../shared/types.js';
 
@@ -69,4 +69,35 @@ describe('analyse', () => {
       marks: [null],
     });
   });
+});
+
+describe('latestMark', () => {
+  const ev = (cp: number, kind: EvalKind = 'complete', bestmove: string | null = null) => ({
+    score: { cp },
+    depth: 1,
+    kind,
+    bestmove,
+    lines: [],
+  });
+  const game = (last: Ply['eval']): Ply[] => [
+    { move: null, at: null, eval: ev(0, 'complete', 'e2e4') },
+    { move: { uci: 'f2f3', san: 'f3', clock: null }, at: null, eval: last },
+  ];
+
+  it('is the mark of the latest move once both evals are Complete', () => {
+    expect(latestMark(game(ev(-300)))).toBe('blunder');
+  });
+  it('is null for ply 0 only, an unjudged, a Provisional or a missing latest eval', () => {
+    expect(latestMark(game(null).slice(0, 1))).toBeNull();
+    expect(latestMark(game(ev(0)))).toBeNull();
+    expect(latestMark(game(ev(-300, 'provisional')))).toBeNull();
+    expect(latestMark(game(null))).toBeNull();
+  });
+  it('is null when only an earlier move was marked', () => {
+    const p = game(ev(-300));
+    p.push({ move: { uci: 'e7e5', san: 'e5', clock: null }, at: null, eval: null });
+    expect(analyse(p).marks[1]).toBe('blunder');
+    expect(latestMark(p)).toBeNull();
+  });
+  it('has a glyph per mark', () => expect(MARK_GLYPH).toEqual({ inaccuracy: '?!', mistake: '?', blunder: '??' }));
 });
