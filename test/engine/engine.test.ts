@@ -150,4 +150,52 @@ describe('Engine', () => {
     expect(await exit).toEqual([3, null]);
     await expect(e.isReady()).rejects.toThrow(/engine exited/);
   });
+
+  it('keeps the last unbounded line of each multipv', async () => {
+    const e = await start();
+    e.setOption('MultiPV', 3);
+    const r = await e.search(['e2e4', 'e7e5'], { movetime: 30 });
+    expect(r.lines).toHaveLength(3);
+    [1, 2, 3].forEach((k) => {
+      expect(r.lines[k - 1]).toEqual(
+        expect.objectContaining({ multipv: k, depth: 3, score: { unit: 'cp', value: 30 - k } }),
+      );
+      expect(r.lines[k - 1].score?.bound).toBeUndefined();
+    });
+    expect(r.info).toBe(r.lines[0]);
+  });
+
+  it('keeps lines to one search', async () => {
+    const e = await start();
+    e.setOption('MultiPV', 3);
+    await e.search([], { movetime: 10 });
+
+    e.setOption('MultiPV', 1);
+    const r = await e.search([], { movetime: 10 });
+    expect(r.lines).toEqual([expect.objectContaining({ multipv: 1, depth: 3 })]);
+
+    e.setOption('MultiPV', 3);
+    const p = e.search([], 'infinite');
+    await delay(50);
+    await e.stop();
+    const stopped = await p;
+    expect(stopped.lines.map((l) => l.multipv)).toEqual([1, 2, 3]);
+  });
+
+  it('--crash-on exits only on that position', async () => {
+    const e = await start(['--crash-on', 'e2e4 e7e5']);
+    const exit = once(e, 'exit');
+    await expect(e.search(['e2e4'], { movetime: 10 })).resolves.toEqual(expect.objectContaining({ bestmove: 'e2e4' }));
+    await expect(e.search(['e2e4', 'e7e5'], { movetime: 10 })).rejects.toThrow(/engine exited/);
+    expect(await exit).toEqual([3, null]);
+  });
+
+  it('--ply-score derives the score from the move count', async () => {
+    const e = await start(['--ply-score']);
+    const first = await e.search([], { movetime: 10 });
+    expect(first.info?.score).toEqual({ unit: 'cp', value: 29 });
+    const second = await e.search(['e2e4', 'e7e5'], { movetime: 10 });
+    expect(second.info?.score).toEqual({ unit: 'cp', value: 229 });
+    expect(second.lines[0]).toBe(second.info);
+  });
 });
