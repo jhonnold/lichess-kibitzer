@@ -11,9 +11,11 @@ import {
   ordinal,
   panelInfo,
   play,
+  positionAt,
   selectedBoard,
   shortName,
   statusLine,
+  uciMove,
   viewerMessage,
 } from '../shared/viewer.js';
 
@@ -43,6 +45,30 @@ describe('play', () => {
 
   it('throws on an illegal move', () => {
     expect(() => play(DEFAULT_POSITION, ['Nf6'])).toThrow();
+  });
+});
+
+describe('positionAt / uciMove', () => {
+  const ply = (uci: string): Ply => ({ move: { san: '', uci, clock: null }, at: null, eval: null });
+  const start: Ply = { move: null, at: null, eval: null };
+  const line = [start, ply('e2e4'), ply('e7e5'), ply('g1f3')];
+
+  it('replays plies 1..n from the start position', () => {
+    expect(positionAt(line, 0)).toEqual({ fen: DEFAULT_POSITION, turn: 'white', check: false, lastMove: undefined });
+    expect(positionAt(line, 2)).toMatchObject({ turn: 'white', lastMove: ['e7', 'e5'] });
+    expect(positionAt(line, 3)).toEqual(play(DEFAULT_POSITION, ['e4', 'e5', 'Nf3']));
+  });
+
+  it('reports castling by the king squares and applies promotions', () => {
+    const castle = [start, ...['e2e4', 'e7e5', 'g1f3', 'b8c6', 'f1c4', 'g8f6', 'e1g1'].map(ply)];
+    expect(positionAt(castle, 7).lastMove).toEqual(['e1', 'g1']);
+    const promo = [start, ...['a2a4', 'b7b5', 'a4b5', 'a7a6', 'b5a6', 'g8f6', 'a6a7', 'h7h6', 'a7b8q'].map(ply)];
+    expect(positionAt(promo, 9).fen.split('/')[0]).toBe('rQbqkb1r');
+  });
+
+  it('uciMove has a promotion key only for promotions', () => {
+    expect(uciMove('e2e4')).toEqual({ from: 'e2', to: 'e4' });
+    expect(uciMove('e7e8q')).toEqual({ from: 'e7', to: 'e8', promotion: 'q' });
   });
 });
 
