@@ -36,6 +36,7 @@ const ROUND_INFO: RoundInfo = {
   })),
 };
 
+const fetchEvent = vi.fn(async () => EVENT);
 const WAIT = { timeout: 15_000 }; // slow CI
 const TEST_TIMEOUT = 30_000;
 let dir: string, logFile: string, cookie: string, src: ReplaySource, srv: Running;
@@ -52,7 +53,8 @@ const boot = async () => {
       launch: () => Engine.start(process.execPath, { args: [FAKE, '--log', logFile] }),
       source: () => (src = ReplaySource.fromFile(PGN)), // 3 Boards, 7 updates
     },
-    app: { sse: { throttleMs: 20 }, lichess: { fetchEvent: async () => EVENT, fetchRound: async () => ROUND_INFO } },
+    app: { sse: { throttleMs: 20 } },
+    lichess: { fetchEvent, fetchRound: async () => ROUND_INFO },
   });
 };
 async function admin(method: 'POST' | 'PUT', path: string, body: object = {}) {
@@ -72,7 +74,7 @@ async function admin(method: 'POST' | 'PUT', path: string, body: object = {}) {
   });
   expect(res.status).toBe(204);
 }
-const track = () => admin('POST', '/round', { link: 'x', roundId: ROUND });
+const track = () => admin('POST', '/event', { link: 'x' });
 const replay = () => {
   for (let i = 0; i < 7; i++) src.next();
 };
@@ -182,8 +184,11 @@ describe('live analysis over SSE', () => {
       );
       expect(before.length).toBeGreaterThan(0);
 
+      fetchEvent.mockClear();
       srv = await boot();
       expect([srv.state.round?.roundId, srv.scheduler.engine?.exited]).toEqual([ROUND, false]);
+      expect(fetchEvent).toHaveBeenCalledTimes(1); // boot resumes following: one poll, no swap
+      expect(srv.follower.status.error).toBeNull();
       const kept = srv.state.round!.boards.flatMap((b) =>
         b.plies.filter((p) => p.eval?.kind === 'complete').map((p) => p.eval),
       );

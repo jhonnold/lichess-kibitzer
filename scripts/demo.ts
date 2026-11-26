@@ -125,13 +125,14 @@ const running = await startServer({
     launch: () => Engine.start(process.execPath, { args: [FAKE, '--ply-score'] }),
     source,
   },
-  app: { lichess, probe: () => probeEngine(process.execPath, { args: [FAKE] }) },
+  app: { probe: () => probeEngine(process.execPath, { args: [FAKE] }) },
+  lichess,
+  follow: { pollMs: 60_000 }, // polls the fake lichess above, never lichess.org
 });
-const { state, scheduler } = running;
+const { state, scheduler, follower } = running;
 state.setTopN(top);
 await scheduler.setJobTime(jobTime);
-state.setEvent({ tourId: 'demo', name: 'Demo Event', link: 'demo' });
-await scheduler.startRound(await lichess.fetchRound(), null);
+await follower.register('demo');
 
 if (interval > 0) setInterval(release, interval);
 createInterface({ input: process.stdin }).on('line', (l) => release(l.trim() ? Number(l) : undefined));
