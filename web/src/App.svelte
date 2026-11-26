@@ -4,9 +4,12 @@
   import Admin from './pages/Admin.svelte';
   import Overview from './pages/Overview.svelte';
   import Archive from './pages/Archive.svelte';
+  import AppBar from './components/AppBar.svelte';
+  import TabBar from './components/TabBar.svelte';
   import { ArchiveStore } from '$lib/archive.svelte';
   import { LiveStore } from '$lib/live.svelte';
-  import { ARCHIVE_HASH, archiveHash, boardHash, layoutOf, parseHash, ROUND_HASH } from '$shared/route';
+  import { ARCHIVE_HASH, archiveHash, boardHash, layoutOf, navLinks, parseHash, ROUND_HASH } from '$shared/route';
+  import { boardState } from '$shared/viewer';
 
   // Hash router: see shared/route.ts. One LiveStore (one EventSource) for every page.
   let hash = $state(location.hash);
@@ -39,6 +42,25 @@
     route.page === 'archive-round'
       ? archiveHash(route.tourId, route.roundId, lastArchiveBoard ?? archive.snap?.round?.boards[0]?.board ?? 1) + query
       : ARCHIVE_HASH,
+  );
+
+  // Navigation (hidden under ?chrome=0): the sections, and what is on screen.
+  const links = $derived(navLinks(route, back, query));
+  const here = $derived(
+    route.page === 'archive-round'
+      ? {
+          kind: 'archived' as const,
+          event: archive.snap?.event?.name ?? null,
+          round: archive.snap?.round?.name ?? null,
+          roundHref: archiveHash(route.tourId, route.roundId) + query,
+          board: route.board,
+        }
+      : {
+          kind: 'live' as const,
+          event: store.snap?.event?.name ?? null,
+          round: store.snap?.round?.name ?? null,
+          live: !!store.snap?.round?.boards.some((b) => boardState(b) === 'live'),
+        },
   );
 
   onMount(() => {
@@ -75,30 +97,50 @@
 
 <svelte:window onkeydown={onKey} />
 
-{#if route.page === 'admin'}
-  <Admin {store} />
-{:else if route.page === 'round'}
-  <Overview {store} {back} {layout} {query} />
-{:else if route.page === 'archive'}
-  <Archive />
-{:else if route.page === 'archive-round'}
-  {@const ctx = { tourId: route.tourId, roundId: route.roundId }}
-  {#if archive.error}
-    <main class="message"><p>{archive.error} · <a href={ARCHIVE_HASH}>Archive</a></p></main>
-  {:else if route.board === null}
-    <Overview store={archive} back={archiveBack} {ctx} {layout} {query} />
-  {:else}
-    <Viewer store={archive} board={route.board} ply={route.ply} {layout} {query} {ctx} />
+<div class="app">
+  {#if layout.chrome}
+    <AppBar {links} {here} stream={store.snap?.stream ?? null} connected={store.connected} />
   {/if}
-{:else}
-  <Viewer {store} board={route.board} ply={route.ply} {layout} {query} />
-{/if}
+  <div class="page">
+    {#if route.page === 'admin'}
+      <Admin {store} />
+    {:else if route.page === 'round'}
+      <Overview {store} {back} {layout} {query} />
+    {:else if route.page === 'archive'}
+      <Archive />
+    {:else if route.page === 'archive-round'}
+      {@const ctx = { tourId: route.tourId, roundId: route.roundId }}
+      {#if archive.error}
+        <main class="message"><p>{archive.error} · <a href={ARCHIVE_HASH}>Archive</a></p></main>
+      {:else if route.board === null}
+        <Overview store={archive} back={archiveBack} {ctx} {layout} {query} />
+      {:else}
+        <Viewer store={archive} board={route.board} ply={route.ply} {layout} {query} {ctx} />
+      {/if}
+    {:else}
+      <Viewer {store} board={route.board} ply={route.ply} {layout} {query} />
+    {/if}
+  </div>
+  {#if layout.chrome}<TabBar {links} />{/if}
+</div>
 
 <style>
+  /* One screen high: the bars stay put and each page scrolls inside .page. */
+  .app {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    height: 100dvh;
+  }
+  .page {
+    position: relative;
+    flex: 1 1 0;
+    min-height: 0;
+  }
   .message {
     display: grid;
     place-items: center;
-    height: 100vh;
+    height: 100%;
     font-size: 32px;
     color: var(--muted);
   }

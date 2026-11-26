@@ -46,7 +46,7 @@
 
 <style>
   main {
-    height: 100vh;
+    height: 100%;
     padding: 12px 24px;
     overflow-y: auto;
   }

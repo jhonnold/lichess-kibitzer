@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { archiveHash, boardHash, layoutOf, parseHash, ROUND_HASH } from '../shared/route.js';
+import { archiveHash, boardHash, layoutOf, navLinks, parseHash, ROUND_HASH, tabOf } from '../shared/route.js';
 
 const viewer = (board: number | null, ply: number | null = null) => ({
   route: { page: 'viewer', board, ply },
@@ -118,4 +118,26 @@ describe('layoutOf', () => {
 
   it('other values are the defaults', () =>
     expect(layoutOf({ chrome: '1', panel: 'x', arrows: 'x', flip: '2', bg: 'red' })).toEqual(defaults));
+});
+
+describe('navLinks', () => {
+  const at = (hash: string) => parseHash(hash).route;
+
+  it('puts each route in its section; an archived Round is in the Archive', () => {
+    expect(
+      ['#/', '#/board/3/12', '#/round', '#/archive', '#/archive/abcdefgh/ABCDEFGH/board/2', '#/admin'].map((h) =>
+        tabOf(at(h)),
+      ),
+    ).toEqual(['board', 'board', 'round', 'archive', 'archive', 'admin']);
+  });
+
+  it('marks the current section and keeps the streaming params on Board and Round only', () => {
+    const links = navLinks(at('#/round?flip=1'), '#/board/2?flip=1', '?flip=1');
+    expect(links).toEqual([
+      { tab: 'board', label: 'Board', href: '#/board/2?flip=1', current: false },
+      { tab: 'round', label: 'Round', href: '#/round?flip=1', key: 'o', current: true },
+      { tab: 'archive', label: 'Archive', href: '#/archive', current: false },
+      { tab: 'admin', label: 'Admin', href: '#/admin', current: false },
+    ]);
+  });
 });
