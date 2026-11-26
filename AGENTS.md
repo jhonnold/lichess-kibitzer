@@ -36,6 +36,7 @@ Gate before commit: `npm run lint && npm run check && npm test && npm run build`
 | HTTP routes (SSE `/api/events`, `/api/admin/*`), boot wiring | `src/routes/`, `src/app.ts` (createApp), `src/server.ts` (startServer) |
 | Top-level test (replay source + fake engine, several Boards, over SSE) | `test/e2e.test.ts` |
 | Frontend entry, router | `web/src/main.ts`, `web/src/App.svelte` |
+| App shell and navigation (app bar ≥700px, phone tab bar <700px; breakpoints 1100 / 700) | `web/src/App.svelte`, `web/src/components/AppBar.svelte`, `web/src/components/TabBar.svelte`, `navLinks` in `shared/route.ts` |
 | Pages | `web/src/pages/` (Viewer, Overview, Archive, Admin) |
 | Viewer SSE state (pure reducer, EventSource store) | `shared/live.ts`, `web/src/lib/live.svelte.ts` |
 | Viewer pure helpers (replay/PV end, legal dests, eval graph series, ticking clocks, Lichess link) | `shared/viewer.ts` |
