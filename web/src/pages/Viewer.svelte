@@ -11,12 +11,26 @@
   import PlayerBar from '../components/PlayerBar.svelte';
   import { LiveStore } from '$lib/live.svelte';
   import { clockOf, positionOf, type Position } from '$lib/position';
-  import { boardState, formatResult, panelInfo, play, selectedBoard, statusLine } from '$shared/viewer';
+  import {
+    boardState,
+    countdown,
+    formatResult,
+    panelInfo,
+    play,
+    selectedBoard,
+    statusLine,
+    viewerMessage,
+  } from '$shared/viewer';
 
   const { board }: { board: number | null } = $props();
 
   const store = new LiveStore();
-  onMount(() => store.connect());
+  let now = $state(Date.now());
+  onMount(() => {
+    const tick = setInterval(() => (now = Date.now()), 1000);
+    const disconnect = store.connect();
+    return () => (clearInterval(tick), disconnect());
+  });
 
   const snap = $derived(store.snap);
   const boards = $derived(snap?.round?.boards ?? []);
@@ -27,6 +41,10 @@
   const bState = $derived(game && boardState(game));
   const upcoming = $derived(bState === 'upcoming');
   const live = $derived(bState === 'live');
+  const startsIn = (startsAt: number | null) => {
+    const left = countdown(startsAt, now);
+    return left === null ? 'starts when Lichess reports it live' : left === 'starting' ? left : `starts in ${left}`;
+  };
   const status = $derived(game && statusLine(game, game.plies.length - 1, snap?.search ?? null, snap!.queue));
   const panel = $derived(game && panelInfo(game, snap?.search ?? null));
   const panelFen = $derived(panel && game && positionOf(game.plies.slice(0, panel.ply + 1)).fen);
@@ -50,7 +68,7 @@
 {#if !snap}
   <main class="message">{store.connected ? 'Loading…' : 'Connecting…'}</main>
 {:else if !game || !analysis || !position}
-  <main class="message">Nothing live right now</main>
+  <main class="message">{viewerMessage(snap) ?? 'Nothing live right now'}</main>
 {:else}
   <main class="viewer">
     <div class="boardCol">
@@ -74,7 +92,9 @@
     <aside>
       <BoardStrip {boards} selected={game.board} />
       {#if notTracked}<div class="warn">Board {board} is not tracked · showing board {game.board}</div>{/if}
-      {#if upcoming}<div class="banner">Upcoming · {snap.round?.name}</div>{/if}
+      {#if upcoming}<div class="banner">
+          Upcoming · {snap.round?.name} · {startsIn(snap.round?.startsAt ?? null)}
+        </div>{/if}
       {#if !upcoming && !live}<div class="banner">Game over · {formatResult(game.result)}</div>{/if}
       {#if !store.connected}<div class="warn">Reconnecting to server…</div>{/if}
       {#if snap.stream === 'reconnecting'}<div class="warn">Lichess stream reconnecting…</div>{/if}

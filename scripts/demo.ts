@@ -2,8 +2,10 @@
  * Demo server for manual checks and screenshots: the real server with the fake engine and a synthesized Round built
  * from test/fixtures/lichess/round-stream.pgn. Never contacts lichess.org.
  *   npm run build && npm run demo -- [--port 18457] [--boards 10] [--top 8] [--job-time 800] [--interval 1500]
- *                                    [--data DIR] [--password demo]
+ *                                    [--data DIR] [--password demo] [--rounds 1] [--swap-in 20] [--poll 2000]
  * One move per --interval ms, round-robin over Boards with moves left (0 = frozen at the initial state).
+ * --rounds 0: an Event with no Rounds yet; 2: adds Round 2 (all Boards Upcoming, colours swapped), which the follower
+ * swaps in --swap-in seconds after boot (its start is 10 min later); --poll is the follower's poll interval in ms.
  * stdin: a line `n` releases one move on Board n; an empty line, the next round-robin move.
  */
 import { mkdtempSync } from 'node:fs';
@@ -11,6 +13,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { parseArgs } from 'node:util';
+import { SWAP_LEAD_MS } from '../shared/rollover.js';
 import { Engine, probeEngine } from '../src/engine/engine.js';
 import type { Board, EventInfo, RoundInfo } from '../src/lichess/api.js';
 import type { GameUpdate, Source, SourceHandlers } from '../src/lichess/stream.js';
@@ -27,9 +30,21 @@ const { values: v } = parseArgs({
     interval: { type: 'string', default: '1500' },
     data: { type: 'string' },
     password: { type: 'string', default: 'demo' },
+    rounds: { type: 'string', default: '1' },
+    'swap-in': { type: 'string', default: '20' },
+    poll: { type: 'string', default: '2000' },
   },
 });
-const [port, count, top, jobTime, interval] = [v.port!, v.boards!, v.top!, v['job-time']!, v.interval!].map(Number);
+const [port, count, top, jobTime, interval, rounds, swapIn, pollMs] = [
+  v.port!,
+  v.boards!,
+  v.top!,
+  v['job-time']!,
+  v.interval!,
+  v.rounds!,
+  v['swap-in']!,
+  v.poll!,
+].map(Number);
 const data = v.data ?? mkdtempSync(join(tmpdir(), 'kibitzer-demo-'));
 const FAKE = join(import.meta.dirname, '../test/fixtures/fake-uci.mjs');
 
@@ -66,34 +81,47 @@ function update(i: number): GameUpdate {
   };
 }
 
-// One fake Lichess: the Event, the Round and the Source all read the state above.
+// One fake Lichess: the Event, the Rounds and the Source all read the state above. Round 2 starts 10 min after its swap.
+const startsAt2 = Date.now() + swapIn * 1000 + SWAP_LEAD_MS;
+const board = (u: GameUpdate): Board => ({
+  id: u.gameId,
+  name: `${u.white.name} - ${u.black.name}`,
+  white: u.white,
+  black: u.black,
+  result: u.result,
+});
 const lichess = {
   fetchEvent: async (): Promise<EventInfo> => ({
     id: 'demo',
     name: 'Demo Event',
-    rounds: [{ id: 'demoRnd1', name: 'Round 1', ongoing: true, finished: false }],
+    rounds: [
+      { id: 'demoRnd1', name: 'Round 1', ongoing: true, finished: false },
+      { id: 'demoRnd2', name: 'Round 2', ongoing: false, finished: false, startsAt: startsAt2 },
+    ].slice(0, rounds),
     defaultRoundId: 'demoRnd1',
   }),
-  fetchRound: async (): Promise<RoundInfo> => ({
-    id: 'demoRnd1',
-    name: 'Round 1',
+  fetchRound: async (id: string): Promise<RoundInfo> => ({
+    id,
+    name: id === 'demoRnd2' ? 'Round 2' : 'Round 1',
     tourId: 'demo',
     boards: Array.from({ length: count }, (_, k): Board => {
       const u = update(k + 1);
-      return {
-        id: u.gameId,
-        name: `${u.white.name} - ${u.black.name}`,
-        white: u.white,
-        black: u.black,
-        result: u.result,
-      };
+      if (id === 'demoRnd1') return board(u);
+      return board({
+        ...u,
+        gameId: `demo2_${String(k + 1).padStart(4, '0')}`,
+        white: u.black,
+        black: u.white,
+        result: '*',
+      });
     }),
   }),
 };
 
 const handlers = new Set<SourceHandlers>();
-const source = (): Source => {
+const source = (roundId: string): Source => {
   let h: SourceHandlers;
+  if (roundId !== 'demoRnd1') return { start() {}, stop() {} }; // Round 2: no game has started
   return {
     start(x) {
       handlers.add((h = x));
@@ -127,7 +155,7 @@ const running = await startServer({
   },
   app: { probe: () => probeEngine(process.execPath, { args: [FAKE] }) },
   lichess,
-  follow: { pollMs: 60_000 }, // polls the fake lichess above, never lichess.org
+  follow: { pollMs }, // polls the fake lichess above, never lichess.org
 });
 const { state, scheduler, follower } = running;
 state.setTopN(top);
