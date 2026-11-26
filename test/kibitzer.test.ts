@@ -37,7 +37,7 @@ function setup(init: Persisted | null = null) {
   kib = new Kibitzer(state, {
     defaultEngine: { path: 'fake', options: { Hash: '64' } },
     launch: () => Engine.start(process.execPath, { args: [FAKE, '--log', logFile] }),
-    source: (roundId, gameId) => (sources.push([roundId, gameId]), (src = new ReplaySource([]))),
+    source: (roundId) => (sources.push([roundId]), (src = new ReplaySource([]))),
     backfillMs: 5,
   });
 }
@@ -60,7 +60,7 @@ describe('Kibitzer', () => {
     src.status('connected');
     src.push(update(2));
     await vi.waitFor(() => expect(goes()).toBe(1));
-    expect(sources).toEqual([['r1', 'g1']]);
+    expect(sources).toEqual([['r1']]);
     expect(state.snapshot().stream).toBe('connected');
     expect(readLog().slice(1)).toEqual([
       'setoption name Hash value 64',
@@ -126,7 +126,20 @@ describe('Kibitzer', () => {
       null,
       final(-29),
     ]);
+    expect(src.stopped).toBe(true);
     expect(tail(3)).toEqual(['stop', '> bestmove e2e4', 'quit']);
+  });
+
+  it('ignores other Boards of the Round', async () => {
+    setup();
+    await kib.pick(ref);
+    src.push(update(1));
+    await vi.waitFor(() => expect(goes()).toBe(1));
+    const engine = kib.engine!;
+    src.push({ ...update(3, '1-0'), gameId: 'other' });
+    src.push(update(2));
+    await vi.waitFor(() => expect(plies()).toHaveLength(3));
+    expect([state.site, kib.engine === engine, engine.exited]).toEqual(['live', true, false]);
   });
 
   it('resume: keeps saved evals and backfills positions missed while down', async () => {

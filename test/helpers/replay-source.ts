@@ -8,18 +8,18 @@ import {
   type StreamStatus,
 } from '../../src/lichess/stream.js';
 
-/** File-replay fake of a Source for layers 6 and 7. */
+/** File-replay fake of a Source: all Boards of a Round, or one when `gameId` is given. */
 export class ReplaySource implements Source {
   started = false;
   stopped = false;
   private h?: SourceHandlers;
   private i = 0;
   constructor(readonly updates: GameUpdate[]) {}
-  static fromFile(path: string, gameId: string): ReplaySource {
+  static fromFile(path: string, gameId?: string): ReplaySource {
     return new ReplaySource(
       pgnSplitter()(readFileSync(path, 'utf8'))
-        .map((p) => parseGame(p, gameId))
-        .filter((u): u is GameUpdate => u !== null),
+        .map((p) => parseGame(p))
+        .filter((u): u is GameUpdate => u !== null && (gameId === undefined || u.gameId === gameId)),
     );
   }
   start(h: SourceHandlers) {
@@ -36,7 +36,6 @@ export class ReplaySource implements Source {
   }
   push(u: GameUpdate) {
     this.h?.game(u);
-    if (u.status === 'finished') this.stopped = true;
   }
   status(s: StreamStatus) {
     this.h?.status(s);
