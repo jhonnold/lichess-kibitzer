@@ -37,6 +37,7 @@ function setup(init?: { state: T.PersistedState | null; round: T.Round | null })
     save: async (s) => void states.push(structuredClone(s)),
     loadRound: async () => init?.round ?? null,
     saveRound: async (r) => void rounds.push(structuredClone(r)),
+    listRounds: async () => [],
   };
   const rs = new RoundState(store, init);
   const events: T.SseEvent[] = [];

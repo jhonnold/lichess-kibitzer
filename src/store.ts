@@ -1,5 +1,6 @@
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { isLichessId, roundMeta, type RoundMeta } from '../shared/archive.js';
 import type { PersistedRound, PersistedState, Round } from '../shared/types.js';
 
 export const DEFAULT_DATA_FILE = 'data/state.json';
@@ -50,6 +51,7 @@ export interface DataStore {
   save(s: PersistedState): Promise<void>;
   loadRound(tourId: string, roundId: string): Promise<Round | null>; // null: missing
   saveRound(r: Round): Promise<void>; // coalesced per file
+  listRounds(): Promise<RoundMeta[]>; // every Round file, the Current Round's too
 }
 
 /** state.json at `file`; Round files at `<dirname(file)>/rounds/<tourId>/<roundId>.json`. */
@@ -57,7 +59,32 @@ export function dataStore(file = process.env.DATA_FILE || DEFAULT_DATA_FILE): Da
   const writeState = jsonWriter(file);
   const writers = new Map<string, (data: unknown) => Promise<void>>();
   const roundPath = (tourId: string, roundId: string) => join(dirname(file), 'rounds', tourId, `${roundId}.json`);
-  return {
+  // Round metas by `${tourId}/${roundId}`: `scanned` once from the files on the first listRounds; `saved` (every
+  // saveRound this process made) overrides it, so a write still in flight during the scan is not lost.
+  let scanned: Promise<Map<string, RoundMeta>> | null = null;
+  const saved = new Map<string, RoundMeta>();
+  const scan = async () => {
+    const metas = new Map<string, RoundMeta>();
+    const root = join(dirname(file), 'rounds');
+    const tours = await readdir(root, { withFileTypes: true }).catch((e: NodeJS.ErrnoException) => {
+      if (e.code === 'ENOENT') return [];
+      throw e;
+    });
+    for (const t of tours.filter((d) => d.isDirectory() && isLichessId(d.name))) {
+      for (const f of await readdir(join(root, t.name))) {
+        const roundId = f.endsWith('.json') ? f.slice(0, -5) : '';
+        if (!isLichessId(roundId)) continue;
+        try {
+          const r = await store.loadRound(t.name, roundId);
+          if (r) metas.set(`${t.name}/${roundId}`, roundMeta(r));
+        } catch (err) {
+          console.warn(`rounds/${t.name}/${f} skipped:`, (err as Error).message);
+        }
+      }
+    }
+    return metas;
+  };
+  const store: DataStore = {
     async load() {
       const data = await readJson(file);
       if (data === null) return null;
@@ -83,10 +110,19 @@ export function dataStore(file = process.env.DATA_FILE || DEFAULT_DATA_FILE): Da
       return round as Round;
     },
     saveRound(r) {
+      saved.set(`${r.tourId}/${r.roundId}`, roundMeta(r));
       const path = roundPath(r.tourId, r.roundId);
       let write = writers.get(path);
       if (!write) writers.set(path, (write = jsonWriter(path)));
       return write({ version: 2, ...r });
     },
+    async listRounds() {
+      scanned ??= scan().catch((e: unknown) => {
+        scanned = null; // retry on the next call
+        throw e;
+      });
+      return [...new Map([...(await scanned), ...saved]).values()];
+    },
   };
+  return store;
 }
