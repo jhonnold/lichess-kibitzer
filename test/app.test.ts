@@ -15,11 +15,14 @@ const app = createApp({
   scheduler: {
     engine: null,
     running: null,
-    startRound: vi.fn(),
     setJobTime: vi.fn(),
     setTracked: vi.fn(),
     setEngine: vi.fn(),
-    stop: vi.fn(),
+  },
+  follower: {
+    status: { next: null, swapAt: null, polledAt: null, error: null },
+    register: vi.fn(),
+    clear: vi.fn(),
   },
   defaultEngine: { path: 'berserk', options: {} },
 });

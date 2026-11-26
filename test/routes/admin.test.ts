@@ -3,6 +3,7 @@ import request from 'supertest';
 import { describe, expect, it, vi } from 'vitest';
 import { createApp } from '../../src/app.js';
 import { probeEngine, type Engine } from '../../src/engine/engine.js';
+import type { FollowStatus } from '../../src/follower.js';
 import { LichessError, type EventInfo, type RoundInfo } from '../../src/lichess/api.js';
 import { RoundState } from '../../src/round-state.js';
 
@@ -36,27 +37,35 @@ function setup(adminPassword = 'pw') {
   const scheduler = {
     engine: null as Engine | null,
     running: null,
-    startRound: vi.fn(async (r: RoundInfo, startsAt: number | null) => state.startRound(r, startsAt)),
     setJobTime: vi.fn(async () => {}),
     setTracked: vi.fn(async () => {}),
     setEngine: vi.fn(async () => {}),
-    stop: vi.fn(async () => {}),
+  };
+  const status: FollowStatus = { next: null, swapAt: null, polledAt: null, error: null };
+  const follower = {
+    status,
+    register: vi.fn(async (link: string) => {
+      if (link === 'busy') throw new LichessError(429, 'rate limited');
+      if (link !== 'ok') throw new Error('Not a URL');
+      state.setEvent({ tourId: 't', name: 'Event', link });
+    }),
+    clear: vi.fn(async () => state.setEvent(null)),
   };
   const fetchEvent = vi.fn(async (link: string) => {
     if (link === 'busy') throw new LichessError(429, 'rate limited');
     if (link !== 'ok') throw new Error('Not a URL');
     return event;
   });
-  const fetchRound = vi.fn(async (id: string) => roundInfo(id));
   const app = createApp({
     state,
     scheduler,
+    follower,
     adminPassword,
     defaultEngine,
     probe: (path) => probeEngine(process.execPath, { args: [path] }), // fake-uci.mjs has no shebang
-    lichess: { fetchEvent, fetchRound },
+    lichess: { fetchEvent },
   });
-  return { state, scheduler, app, agent: request.agent(app) };
+  return { state, scheduler, follower, status, app, agent: request.agent(app) };
 }
 const login = async (agent: ReturnType<typeof request.agent>) =>
   agent.post('/api/admin/login').send({ password: 'pw' });
@@ -83,14 +92,13 @@ describe('admin auth', () => {
   });
 
   it('refuses every route but login without the cookie, changing nothing', async () => {
-    const { app, state, scheduler } = setup();
+    const { app, state, scheduler, follower } = setup();
     const calls: ['get' | 'post' | 'put', string, object?][] = [
       ['get', '/event?link=ok'],
-      ['get', '/rounds/r1'],
       ['post', '/engine/probe', { path: FAKE }],
       ['post', '/engine/button', { name: 'Clear Hash' }],
       ['put', '/config', { path: 'x', options: {} }],
-      ['post', '/round', { link: 'ok', roundId: 'r1' }],
+      ['post', '/event', { link: 'ok' }],
       ['post', '/clear'],
       ['put', '/topn', { n: 3 }],
       ['put', '/jobtime', { ms: 50 }],
@@ -100,19 +108,19 @@ describe('admin auth', () => {
       const res = await request(app)[method](`/api/admin${path}`).send(body);
       expect([path, res.status]).toEqual([path, 401]);
     }
-    for (const fn of Object.values(scheduler)) if (vi.isMockFunction(fn)) expect(fn).not.toHaveBeenCalled();
+    for (const fn of [...Object.values(scheduler), follower.register, follower.clear])
+      if (vi.isMockFunction(fn)) expect(fn).not.toHaveBeenCalled();
     expect([state.settings.topN, state.settings.event, state.round]).toEqual([8, null, null]);
   });
 });
 
 describe('admin routes', () => {
-  it('looks up events and rounds, passing Lichess errors through', async () => {
+  it('previews events, passing Lichess errors through', async () => {
     const { agent } = setup();
     await login(agent);
     expect((await agent.get('/api/admin/event').query({ link: 'ok' })).body).toEqual(event);
     expect((await agent.get('/api/admin/event').query({ link: 'busy' })).status).toBe(429);
     expect((await agent.get('/api/admin/event').query({ link: 'x' })).body).toEqual({ error: 'Not a URL' });
-    expect((await agent.get('/api/admin/rounds/r1')).body).toMatchObject({ id: 'r1', boards: expect.any(Array) });
   });
 
   it('probes an engine; rejects a non-UCI one', async () => {
@@ -158,19 +166,18 @@ describe('admin routes', () => {
     expect(await put({ path: '/e', options: {} })).toMatchObject({ status: 400, body: { error: 'spawn failed' } });
   });
 
-  it('tracks a Round: validates, registers a new Event, refuses the Current Round again', async () => {
-    const { agent, state, scheduler } = setup();
+  it('registers an Event through the Follower: validates, passes Lichess errors through', async () => {
+    const { agent, state, follower } = setup();
     await login(agent);
-    const post = (body: object) => agent.post('/api/admin/round').send(body);
-    expect((await post({ link: 'ok' })).status).toBe(400);
-    expect((await post({ link: 'ok', roundId: 'nope' })).body).toEqual({ error: 'round not in event' });
-    expect((await post({ link: 'busy', roundId: 'r1' })).status).toBe(429);
-    expect(scheduler.startRound).not.toHaveBeenCalled();
-    expect((await post({ link: 'ok', roundId: 'r1' })).status).toBe(204);
+    const post = (body: object) => agent.post('/api/admin/event').send(body);
+    expect((await post({})).status).toBe(400);
+    expect((await post({ link: 1 })).status).toBe(400);
+    expect(follower.register).not.toHaveBeenCalled();
+    expect(await post({ link: 'busy' })).toMatchObject({ status: 429, body: { error: 'rate limited' } });
+    expect(await post({ link: 'nope' })).toMatchObject({ status: 400, body: { error: 'Not a URL' } });
+    expect((await post({ link: 'ok' })).status).toBe(204);
+    expect(follower.register.mock.calls.at(-1)).toEqual(['ok']);
     expect(state.settings.event).toEqual({ tourId: 't', name: 'Event', link: 'ok' });
-    expect(scheduler.startRound.mock.calls).toEqual([[roundInfo('r1'), 1000]]);
-    expect(scheduler.stop).toHaveBeenCalledTimes(1); // first Event: nothing running, still stopped before setEvent
-    expect((await post({ link: 'ok', roundId: 'r1' })).status).toBe(409);
   });
 
   it('validates N, job time and the tracked set', async () => {
@@ -187,15 +194,15 @@ describe('admin routes', () => {
     expect(scheduler.setJobTime.mock.calls).toEqual([[50], [null]]);
     const tracked = (boardIds: unknown) => agent.put('/api/admin/tracked').send({ boardIds });
     expect((await tracked(['a'])).status).toBe(409); // no Current Round
-    await agent.post('/api/admin/round').send({ link: 'ok', roundId: 'r1' });
+    state.startRound(roundInfo('r1'), 1000);
     expect((await tracked([1])).status).toBe(400);
     expect((await tracked(['b', 'zz'])).status).toBe(400); // not a Board of the Current Round
     expect((await tracked(['b'])).status).toBe(204);
     expect(scheduler.setTracked.mock.calls).toEqual([[['b']]]);
   });
 
-  it('reports status, and clears the Event', async () => {
-    const { agent, state, scheduler } = setup();
+  it('reports status (with follow), and clears the Event through the Follower', async () => {
+    const { agent, state, follower, status } = setup();
     await login(agent);
     const idle = {
       event: null,
@@ -208,10 +215,11 @@ describe('admin routes', () => {
       running: null,
       queue: { current: [], backfill: 0 },
       dead: [],
+      follow: status,
     };
     expect((await agent.get('/api/admin/status')).body).toEqual(idle);
     await agent.put('/api/admin/topn').send({ n: 2 });
-    await agent.post('/api/admin/round').send({ link: 'ok', roundId: 'r1' });
+    state.startRound(roundInfo('r1'), 1000);
     const { round } = (await agent.get('/api/admin/status')).body;
     expect(round.boards.map((b: { id: string; tracked: boolean }) => [b.id, b.tracked])).toEqual([
       ['a', true],
@@ -219,9 +227,8 @@ describe('admin routes', () => {
       ['c', false],
     ]);
     expect(round).toMatchObject({ tourId: 't', roundId: 'r1', name: 'Round 1' });
-    scheduler.stop.mockClear();
     expect((await agent.post('/api/admin/clear')).status).toBe(204);
-    expect(scheduler.stop).toHaveBeenCalledTimes(1);
+    expect(follower.clear).toHaveBeenCalledTimes(1);
     expect([state.settings.event, state.round]).toEqual([null, null]);
   });
 });

@@ -4,7 +4,8 @@ import type { EngineConfig, Player, QueueView, RegisteredEvent, Result, StreamSt
 import type { DeadJob, Job } from '../../shared/queue.js';
 import { probeEngine } from '../engine/engine.js';
 import type { UciOption } from '../engine/uci-parser.js';
-import { fetchEvent, fetchRound, LichessError, type EventInfo, type RoundInfo } from '../lichess/api.js';
+import type { Follower, FollowStatus, LichessClient } from '../follower.js';
+import { fetchEvent, LichessError } from '../lichess/api.js';
 import type { RoundState } from '../round-state.js';
 import type { Scheduler } from '../scheduler.js';
 
@@ -14,11 +15,12 @@ const MAX_JOB_MS = 3600_000; // keeps `go movetime` a plain integer
 
 export interface AdminDeps {
   state: RoundState;
-  scheduler: Pick<Scheduler, 'engine' | 'running' | 'startRound' | 'setJobTime' | 'setTracked' | 'setEngine' | 'stop'>;
+  scheduler: Pick<Scheduler, 'engine' | 'running' | 'setJobTime' | 'setTracked' | 'setEngine'>;
+  follower: Pick<Follower, 'register' | 'clear' | 'status'>;
   defaultEngine: EngineConfig; // shown (and used) while no config is saved
   adminPassword?: string; // unset or empty: every login is refused
   probe?: (path: string) => Promise<{ name: string; options: UciOption[] }>; // default probeEngine
-  lichess?: { fetchEvent(link: string): Promise<EventInfo>; fetchRound(roundId: string): Promise<RoundInfo> };
+  lichess?: Pick<LichessClient, 'fetchEvent'>; // the GET /event preview; default the real one
 }
 
 export interface AdminStatus {
@@ -37,6 +39,7 @@ export interface AdminStatus {
   running: Job | null;
   queue: QueueView;
   dead: readonly DeadJob[];
+  follow: FollowStatus;
 }
 
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null;
@@ -55,10 +58,11 @@ export function adminRouter(deps: AdminDeps): Router {
   const {
     state,
     scheduler,
+    follower,
     defaultEngine,
     adminPassword,
     probe = probeEngine,
-    lichess = { fetchEvent, fetchRound },
+    lichess = { fetchEvent },
   } = deps;
   const secret = randomBytes(32); // per process: a restart logs Admins out
   const sign = (exp: string) => createHmac('sha256', secret).update(exp).digest('base64url');
@@ -87,9 +91,6 @@ export function adminRouter(deps: AdminDeps): Router {
   r.get('/event', (req, res) => {
     lichess.fetchEvent(String(req.query.link ?? '')).then((e) => res.json(e), fail(res));
   });
-  r.get('/rounds/:roundId', (req, res) => {
-    lichess.fetchRound(req.params.roundId).then((round) => res.json(round), fail(res));
-  });
   r.post('/engine/probe', (req, res) => {
     probe(String(req.body?.path ?? '')).then((p) => res.json(p), fail(res));
   });
@@ -113,32 +114,14 @@ export function adminRouter(deps: AdminDeps): Router {
       .setEngine({ path, options: options as Record<string, string> })
       .then(() => res.sendStatus(204), fail(res));
   });
-  /** Track a Round (manual until the Event poller): a new Event stops the old Round first. */
-  r.post('/round', async (req, res) => {
-    const { link, roundId } = req.body ?? {};
-    if (typeof link !== 'string' || !link || typeof roundId !== 'string' || !roundId)
-      return void res.status(400).json({ error: 'expected { link, roundId }' });
-    try {
-      const ev = await lichess.fetchEvent(link);
-      const summary = ev.rounds.find((x) => x.id === roundId);
-      if (!summary) return void res.status(400).json({ error: 'round not in event' });
-      if (roundId === state.round?.roundId) return void res.status(409).json({ error: 'already the Current Round' });
-      const info = await lichess.fetchRound(roundId);
-      if (state.settings.event?.tourId !== ev.id) {
-        await scheduler.stop();
-        state.setEvent({ tourId: ev.id, name: ev.name, link });
-      }
-      await scheduler.startRound(info, summary.startsAt ?? null);
-      res.sendStatus(204);
-    } catch (err) {
-      fail(res)(err);
-    }
+  /** Register an Event: from then on the Follower picks the Current Round. */
+  r.post('/event', (req, res) => {
+    const link: unknown = req.body?.link;
+    if (typeof link !== 'string' || !link) return void res.status(400).json({ error: 'expected { link }' });
+    follower.register(link).then(() => res.sendStatus(204), fail(res));
   });
   r.post('/clear', (_req, res) => {
-    scheduler
-      .stop()
-      .then(() => state.setEvent(null))
-      .then(() => res.sendStatus(204), fail(res));
+    follower.clear().then(() => res.sendStatus(204), fail(res));
   });
   /** The next Round's default; the Scheduler has no topN. */
   r.put('/topn', (req, res) => {
@@ -189,6 +172,7 @@ export function adminRouter(deps: AdminDeps): Router {
       running: scheduler.running,
       queue: state.snapshot().queue,
       dead: state.dead,
+      follow: follower.status,
     };
     res.json(body);
   });
