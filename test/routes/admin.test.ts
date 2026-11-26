@@ -6,6 +6,7 @@ import { probeEngine, type Engine } from '../../src/engine/engine.js';
 import type { FollowStatus } from '../../src/follower.js';
 import { LichessError, type EventInfo, type RoundInfo } from '../../src/lichess/api.js';
 import { RoundState } from '../../src/round-state.js';
+import type { EngineState } from '../../src/scheduler.js';
 
 const FAKE = fileURLToPath(new URL('../fixtures/fake-uci.mjs', import.meta.url));
 const event: EventInfo = {
@@ -40,6 +41,10 @@ function setup(adminPassword = 'pw') {
     setJobTime: vi.fn(async () => {}),
     setTracked: vi.fn(async () => {}),
     setEngine: vi.fn(async () => {}),
+    requeueDead: vi.fn(async (_boardId: string, ply: number) => ply === 1),
+    discardDead: vi.fn(async (_boardId: string, ply: number) => ply === 1),
+    engineState: 'up' as EngineState,
+    restarts: 2,
   };
   const status: FollowStatus = { next: null, swapAt: null, polledAt: null, error: null };
   const follower = {
@@ -103,6 +108,8 @@ describe('admin auth', () => {
       ['put', '/topn', { n: 3 }],
       ['put', '/jobtime', { ms: 50 }],
       ['put', '/tracked', { boardIds: [] }],
+      ['post', '/dead/requeue', { boardId: 'a', ply: 1 }],
+      ['post', '/dead/discard', { boardId: 'a', ply: 1 }],
     ];
     for (const [method, path, body] of calls) {
       const res = await request(app)[method](`/api/admin${path}`).send(body);
@@ -201,6 +208,30 @@ describe('admin routes', () => {
     expect(scheduler.setTracked.mock.calls).toEqual([[['b']]]);
   });
 
+  it('requeues and discards Dead-letter queue entries', async () => {
+    const { agent, scheduler } = setup();
+    await login(agent);
+    for (const [route, fn] of [
+      ['requeue', scheduler.requeueDead],
+      ['discard', scheduler.discardDead],
+    ] as const) {
+      const post = (body: unknown) => agent.post(`/api/admin/dead/${route}`).send(body);
+      expect((await post({ boardId: 'a', ply: 1 })).status).toBe(204);
+      expect(fn.mock.calls).toEqual([['a', 1]]);
+      const missing = await post({ boardId: 'a', ply: 2 });
+      expect([missing.status, missing.body]).toEqual([404, { error: 'not in the Dead-letter queue' }]);
+      for (const body of [
+        {},
+        { boardId: 'a' },
+        { boardId: 'a', ply: -1 },
+        { boardId: 'a', ply: 1.5 },
+        { boardId: 1, ply: 1 },
+      ])
+        expect((await post(body)).status).toBe(400);
+      expect(fn).toHaveBeenCalledTimes(2);
+    }
+  });
+
   it('reports status (with follow), and clears the Event through the Follower', async () => {
     const { agent, state, follower, status } = setup();
     await login(agent);
@@ -210,6 +241,8 @@ describe('admin routes', () => {
       stream: null,
       engine: defaultEngine,
       engineRunning: false,
+      engineState: 'up',
+      restarts: 2,
       jobTimeMs: null,
       topN: 8,
       running: null,

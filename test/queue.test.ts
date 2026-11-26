@@ -177,6 +177,13 @@ describe('Queue', () => {
     expect(q.dead()).toEqual([]);
     expect(q.discardDead('a', 5)).toBe(false);
     expect(q.requeueDead('a', 5, 1)).toBe(false);
+    q.addBackfill('a', [5], 2);
+    q.setLatest('a', 1, 6, 2);
+    q.addBackfill('a', [5], 2);
+    expect(q.position('a', 5)).toBeNull(); // stays out for the Round
+    q.setLatest('a', 1, 4, 3); // corrected away: a new position may come at ply 5
+    q.setLatest('a', 1, 5, 3);
+    expect(q.position('a', 5)).toBe(1);
   });
 
   it('removeBoard drops only that Board: Jobs, Dead-letter queue entries and latest', () => {
@@ -244,6 +251,18 @@ describe('Queue', () => {
     q.next();
     q.setLatest('a', 1, 5, 4);
     expect(q.current()).toEqual([expect.objectContaining({ ply: 5 })]);
+  });
+
+  it('restores persisted Dead-letter queue entries before anything is queued', () => {
+    const q = new Queue();
+    q.restoreDead([{ boardId: 'a', board: 1, ply: 5, at: 7 }]);
+    q.setLatest('a', 1, 5, 10);
+    q.addBackfill('a', [3, 5], 10);
+    expect(q.current()).toEqual([]);
+    expect(q.dead()).toEqual([{ boardId: 'a', board: 1, ply: 5, at: 7 }]);
+    expect(q.requeueDead('a', 5, 11)).toBe(true);
+    expect(q.next()).toMatchObject({ ply: 5 });
+    expect(q.crashed({ boardId: 'a', board: 1, ply: 5, tier: 'current', since: 11 }, 12)).toBe('requeued');
   });
 
   it('returns copies from its read-only views', () => {

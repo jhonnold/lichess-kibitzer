@@ -8,11 +8,18 @@ import { lichessSource, type GameUpdate, type Source, type SourceFactory } from 
 import { pvToSan, toScore } from './pv.js';
 import type { RoundState } from './round-state.js';
 
+export const RESTART_MIN_MS = 1000;
+export const RESTART_MAX_MS = 60_000;
+
+/** null: no engine wanted (no Round, or after stop()). */
+export type EngineState = 'up' | 'restarting' | null;
+
 export interface SchedulerOpts {
   defaultEngine: T.EngineConfig; // used while state.settings.engine is null
   launch?: (cfg: T.EngineConfig) => Promise<Engine>; // default Engine.start(cfg.path); tests spawn the fake
   source?: SourceFactory; // default lichessSource
   now?: () => number; // default Date.now
+  after?: (ms: number, fn: () => void) => () => void; // default setTimeout(unref) → cancel; tests inject
 }
 
 /** The Job being searched. stop = why it was told to stop (null = it ran its full time). */
@@ -67,6 +74,11 @@ export class Scheduler {
   private busy = false;
   private halting = false;
   private ops: Promise<unknown> = Promise.resolve();
+  private wanted = false; // a Round exists and stop() was not called: keep an engine running
+  private backoff = RESTART_MIN_MS;
+  private restarts_ = 0;
+  private cancelRestart: (() => void) | null = null;
+  private launchFailed = false;
 
   constructor(
     private readonly state: RoundState,
@@ -76,6 +88,16 @@ export class Scheduler {
   /** Null before the first Round, after stop() or after an exit. */
   get engine(): Engine | null {
     return this.engine_;
+  }
+
+  get engineState(): EngineState {
+    if (!this.wanted) return null;
+    return this.engine_ && !this.cancelRestart && !this.launchFailed ? 'up' : 'restarting';
+  }
+
+  /** Relaunches scheduled since process start. */
+  get restarts(): number {
+    return this.restarts_;
   }
 
   /** Copy of the Job being searched. */
@@ -95,8 +117,11 @@ export class Scheduler {
       this.startSource(r.id);
       this.enqueueTracked();
       this.wake();
+      this.wanted = true;
+      this.cancelPendingRestart();
+      this.backoff = RESTART_MIN_MS;
       if (!this.engine_) {
-        await this.launchEngine();
+        await this.ensureEngine();
         this.kick();
       }
     });
@@ -120,6 +145,7 @@ export class Scheduler {
         if (before.has(b.id) && !b.tracked) this.queue.removeBoard(b.id);
         else if (!before.has(b.id) && b.tracked) this.enqueue(b);
       }
+      this.persistDead();
       this.wake();
     });
   }
@@ -130,30 +156,67 @@ export class Scheduler {
       const round = this.state.round;
       if (!round) return;
       this.startSource(round.roundId);
+      this.queue.restoreDead(this.state.dead); // before enqueueTracked: dead positions are not queued again
       this.enqueueTracked();
       this.wake();
-      await this.launchEngine();
+      this.wanted = true;
+      await this.ensureEngine();
       this.kick();
     });
   }
 
-  /** Save the config; if an engine runs, restart it (the running Job is requeued unrecorded). */
+  /** Save the config; if a Round is followed, restart the engine now (the running Job is requeued unrecorded). A failed
+   *  launch rejects and keeps retrying with backoff. */
   setEngine(cfg: T.EngineConfig): Promise<void> {
     return this.serial(async () => {
       this.state.setEngine(cfg);
-      if (!this.engine_) return;
-      await this.halt('restart');
-      const old = this.engine_;
-      this.engine_ = null;
-      await old?.quit();
-      await this.launchEngine();
+      if (!this.wanted) return;
+      if (this.engine_) {
+        await this.halt('restart');
+        const old = this.engine_;
+        this.engine_ = null;
+        await old?.quit();
+      }
+      this.cancelPendingRestart(); // after the halt: an exit during it scheduled one too
+      this.backoff = RESTART_MIN_MS;
+      try {
+        await this.launchEngine();
+        this.launchFailed = false;
+      } catch (err) {
+        this.launchFailed = true;
+        this.scheduleRestart();
+        throw err;
+      }
       this.wake(); // publishes the requeued Job, then kicks
+    });
+  }
+
+  /** Admin: put a Dead-letter queue entry back with a fresh crash count. false = not in the Dead-letter queue. */
+  requeueDead(boardId: string, ply: number): Promise<boolean> {
+    return this.serialValue(async () => {
+      const ok = this.queue.requeueDead(boardId, ply, this.now);
+      this.persistDead();
+      this.wake();
+      return ok;
+    });
+  }
+
+  /** Admin: drop a Dead-letter queue entry. false = not in the Dead-letter queue. */
+  discardDead(boardId: string, ply: number): Promise<boolean> {
+    return this.serialValue(async () => {
+      const ok = this.queue.discardDead(boardId, ply);
+      this.persistDead();
+      return ok;
     });
   }
 
   /** Shutdown / Event cleared: drop the Job, stop the source, quit the engine, clear the Queue. */
   stop(): Promise<void> {
     return this.serial(async () => {
+      this.wanted = false;
+      this.cancelPendingRestart();
+      this.backoff = RESTART_MIN_MS;
+      this.launchFailed = false;
       this.detach();
       await this.halt('drop');
       const e = this.engine_;
@@ -166,6 +229,10 @@ export class Scheduler {
   }
 
   private serial(op: () => Promise<void>): Promise<void> {
+    return this.serialValue(op);
+  }
+
+  private serialValue<V>(op: () => Promise<V>): Promise<V> {
     const p = this.ops.then(op);
     this.ops = p.catch(() => {});
     return p;
@@ -205,8 +272,19 @@ export class Scheduler {
       // A correction that does not shorten the game: forget the replaced plies first, else setLatest sees no change.
       if (kept + 1 < before && kept + 1 < b.plies.length) this.queue.setLatest(b.id, b.board, kept, this.now, true);
       this.enqueue(b);
+      this.persistDead(); // a correction that shortened the game dropped its dead plies
     }
     this.wake();
+  }
+
+  /** Persist the Dead-letter queue when it differs from the saved one. */
+  private persistDead(): void {
+    const now = this.queue.dead();
+    const saved = this.state.dead;
+    if (now.length === saved.length && now.every((d, i) => d.boardId === saved[i].boardId && d.ply === saved[i].ply)) {
+      return;
+    }
+    this.state.setDead(now);
   }
 
   /** Idempotent: latest ply → current tier, earlier plies without a Complete eval → backfill. */
@@ -297,11 +375,15 @@ export class Scheduler {
     try {
       r = await engine.search(moves, { movetime: ms });
     } catch {
+      // The search rejected: the engine died. A Job we quit the engine under (restart) is not its crash.
       this.run = null;
-      this.onEngineExit(run.stop === 'drop' ? null : job);
+      if (run.stop === 'restart') this.queue.requeue(job, this.now);
+      else if (run.stop !== 'drop' && this.queue.crashed(job, this.now) === 'dead') this.persistDead();
+      this.publishQueue();
       return;
     }
     this.run = null;
+    this.backoff = RESTART_MIN_MS;
     if (run.stop === 'drop') return;
     if (run.stop !== 'restart') {
       const e = toEval(r, ply, run.fen, run.stop ? 'provisional' : 'complete');
@@ -331,11 +413,44 @@ export class Scheduler {
     });
   }
 
-  /** Layer 10 replaces the requeue with crash counting and relaunches with backoff. */
-  private onEngineExit(job: Job | null): void {
-    this.engine_ = null;
-    if (job) this.queue.requeue(job, this.now);
-    this.publishQueue();
+  private cancelPendingRestart(): void {
+    this.cancelRestart?.();
+    this.cancelRestart = null;
+  }
+
+  /** Relaunch after `backoff` (doubling up to RESTART_MAX_MS); one pending at a time. */
+  private scheduleRestart(): void {
+    if (!this.wanted || this.cancelRestart) return;
+    const delay = this.backoff;
+    this.backoff = Math.min(2 * delay, RESTART_MAX_MS);
+    this.restarts_++;
+    const after =
+      this.opts.after ??
+      ((ms, fn) => {
+        const h = setTimeout(fn, ms);
+        h.unref();
+        return () => clearTimeout(h);
+      });
+    this.cancelRestart = after(delay, () => {
+      this.cancelRestart = null;
+      void this.serial(async () => {
+        if (!this.wanted || this.engine_) return;
+        await this.ensureEngine();
+        if (this.engine_) this.wake();
+      });
+    });
+  }
+
+  /** Launch; on failure remember it and retry with backoff. Never throws. */
+  private async ensureEngine(): Promise<void> {
+    try {
+      await this.launchEngine();
+      this.launchFailed = false;
+    } catch (err) {
+      console.error('scheduler: engine launch failed:', err);
+      this.launchFailed = true;
+      this.scheduleRestart();
+    }
   }
 
   private async launchEngine(): Promise<void> {
@@ -354,7 +469,9 @@ export class Scheduler {
     engine.on('exit', (code, signal) => {
       if (this.engine_ !== engine) return;
       console.error(`scheduler: engine exited (${code ?? signal})`);
-      this.onEngineExit(null);
+      this.engine_ = null;
+      this.publishQueue();
+      this.scheduleRestart();
     });
     this.engine_ = engine;
   }

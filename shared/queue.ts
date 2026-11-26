@@ -37,6 +37,7 @@ export class Queue {
   private readonly latest = new Map<string, { board: number; ply: number }>();
   private readonly crashes = new Map<string, number>();
   private readonly deadJobs = new Map<string, DeadJob>();
+  private readonly discarded = new Set<string>(); // discarded from the Dead-letter queue: not queued again this Round
 
   /** Board's latest ply. Supersedes its waiting current Job (→ backfill). done = record only, enqueue nothing. */
   setLatest(boardId: string, board: number, ply: number, now: number, done = false): void {
@@ -54,6 +55,7 @@ export class Queue {
       for (let p = ply + 1; p <= prev.ply; p++) {
         this.crashes.delete(key(boardId, p));
         this.deadJobs.delete(key(boardId, p));
+        this.discarded.delete(key(boardId, p));
       }
     }
     if (!done) this.add({ boardId, board, ply, tier: 'current', since }, now);
@@ -107,6 +109,7 @@ export class Queue {
     for (const k of [...this.jobs.keys()]) if (own(k)) this.jobs.delete(k);
     for (const k of [...this.crashes.keys()]) if (own(k)) this.crashes.delete(k);
     for (const k of [...this.deadJobs.keys()]) if (own(k)) this.deadJobs.delete(k);
+    for (const k of [...this.discarded]) if (own(k)) this.discarded.delete(k);
     this.latest.delete(boardId);
   }
 
@@ -116,6 +119,7 @@ export class Queue {
     this.latest.clear();
     this.crashes.clear();
     this.deadJobs.clear();
+    this.discarded.clear();
   }
 
   /** Admin requeue from the Dead-letter queue (crash count reset). false = not dead, or dropped. */
@@ -128,11 +132,25 @@ export class Queue {
     return this.add({ boardId, board: dead.board, ply, tier: 'current', since: now }, now);
   }
 
-  /** Admin discard from the Dead-letter queue (crash count reset). false = not dead. */
+  /** Admin discard from the Dead-letter queue: never queued again until the Board is untracked, the ply is
+   *  corrected away or the Queue is cleared. false = not dead. */
   discardDead(boardId: string, ply: number): boolean {
     const k = key(boardId, ply);
+    if (!this.deadJobs.delete(k)) return false;
     this.crashes.delete(k);
-    return this.deadJobs.delete(k);
+    this.discarded.add(k);
+    return true;
+  }
+
+  /** Boot: put persisted Dead-letter queue entries back (crash count MAX_CRASHES). Call before any setLatest or
+   *  addBackfill, so place() refuses those keys. */
+  restoreDead(dead: readonly DeadJob[]): void {
+    for (const d of dead) {
+      const k = key(d.boardId, d.ply);
+      this.jobs.delete(k);
+      this.crashes.set(k, MAX_CRASHES);
+      this.deadJobs.set(k, { ...d });
+    }
   }
 
   /** Current tier, in pick order (copies). */
@@ -172,13 +190,15 @@ export class Queue {
 
   /**
    * Route a Job by its ply against the Board's latest ply. null = dropped (Board untracked or ply past latest),
-   * or already queued or dead. ply === latest → current tier; ply < latest → backfill. since is kept when the
+   * or already queued, dead or discarded. ply === latest → current tier; ply < latest → backfill. since is kept when the
    * Job was already in that tier, else now.
    */
   private place(job: Job, now: number): Job | null {
     const k = key(job.boardId, job.ply);
     const latest = this.latest.get(job.boardId);
-    if (!latest || job.ply > latest.ply || this.jobs.has(k) || this.deadJobs.has(k)) return null;
+    if (!latest || job.ply > latest.ply || this.jobs.has(k) || this.deadJobs.has(k) || this.discarded.has(k)) {
+      return null;
+    }
     if (job.ply === latest.ply) {
       return { ...job, board: latest.board, tier: 'current', since: job.tier === 'current' ? job.since : now };
     }

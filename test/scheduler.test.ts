@@ -8,7 +8,8 @@ import { Engine } from '../src/engine/engine.js';
 import type { RoundInfo } from '../src/lichess/api.js';
 import type { GameUpdate } from '../src/lichess/stream.js';
 import { RoundState } from '../src/round-state.js';
-import { Scheduler } from '../src/scheduler.js';
+import { MAX_CRASHES } from '../shared/queue.js';
+import { RESTART_MIN_MS, Scheduler } from '../src/scheduler.js';
 import { ReplaySource } from './helpers/replay-source.js';
 
 const FAKE = fileURLToPath(new URL('./fixtures/fake-uci.mjs', import.meta.url));
@@ -35,12 +36,17 @@ const upd = (gameId: string, uci: string[], result: T.Result = '*'): GameUpdate 
 
 let dir: string, logFile: string, t: number;
 let state: RoundState, sched: Scheduler, src: ReplaySource, sources: ReplaySource[], sourceIds: string[];
+let engineArgs: string[]; // read per launch
+let delays: number[]; // restart delays asked of `after`
+let fire: (() => void)[]; // manual mode: timers waiting to be fired by hand
 
 function setup(
   opts: {
     jobTimeMs?: number | null;
     topN?: number;
     engineArgs?: string[];
+    manual?: boolean; // restart timers wait in `fire` instead of running at once
+    launch?: (real: () => Promise<Engine>) => Promise<Engine>;
     init?: ConstructorParameters<typeof RoundState>[1];
   } = {},
 ) {
@@ -50,10 +56,17 @@ function setup(
   );
   if (opts.init === undefined) state.setTopN(opts.topN ?? 3);
   state.setJobTime(opts.jobTimeMs === undefined ? 15 : opts.jobTimeMs);
+  engineArgs = opts.engineArgs ?? [];
+  const real = () => Engine.start(process.execPath, { args: [FAKE, '--log', logFile, '--ply-score', ...engineArgs] });
   sched = new Scheduler(state, {
     defaultEngine: { path: 'fake', options: { MultiPV: '3' } },
-    launch: () =>
-      Engine.start(process.execPath, { args: [FAKE, '--log', logFile, '--ply-score', ...(opts.engineArgs ?? [])] }),
+    launch: () => (opts.launch ? opts.launch(real) : real()),
+    after: (ms, fn) => {
+      delays.push(ms);
+      if (opts.manual) return (fire.push(fn), () => {});
+      const h = setTimeout(fn, 0);
+      return () => clearTimeout(h);
+    },
     source: (id) => (sourceIds.push(id), sources.push((src = new ReplaySource([]))), src),
     now: () => t,
   });
@@ -86,6 +99,12 @@ function until(pred: () => boolean, ms = 2000): Promise<void> {
     state.on('event', check);
   });
 }
+/** For conditions no state event announces (engine up again). */
+async function poll(pred: () => boolean, ms = 2000): Promise<void> {
+  for (const end = Date.now() + ms; !pred(); await new Promise((r) => setTimeout(r, 5))) {
+    if (Date.now() > end) throw new Error('poll: timeout');
+  }
+}
 const idle = () =>
   until(() => sched.running === null && queueView().current.length === 0 && queueView().backfill === 0);
 
@@ -95,9 +114,13 @@ beforeEach(() => {
   sources = [];
   sourceIds = [];
   t = 1000;
+  delays = [];
+  fire = [];
+  vi.spyOn(console, 'error').mockImplementation(() => {});
 });
 afterEach(async () => {
   await sched.stop();
+  vi.restoreAllMocks();
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -315,14 +338,183 @@ describe('Scheduler', () => {
     expect(evalOf('g1', 0)!.lines).toHaveLength(2);
   });
 
-  it('requeues the Job when the engine exits', async () => {
-    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
-    setup({ topN: 1, engineArgs: ['--crash-on', 'e2e4'] });
-    await sched.startRound(roundInfo('R1', ['g1']), null);
+  it('restarts a crashed engine and carries on with the other Jobs', async () => {
+    setup({ topN: 2, engineArgs: ['--crash-on', 'e2e4'] });
+    await sched.startRound(roundInfo('R1', ['g1', 'g2']), null);
     src.push(upd('g1', E4.slice(0, 1)));
-    await until(() => sched.engine === null && queueView().current.length === 1);
-    expect(queueView().current).toEqual([{ boardId: 'g1', ply: 1 }]);
-    expect(errors).toHaveBeenCalled();
-    errors.mockRestore();
+    src.push(upd('g2', D4));
+    await until(() => [0, 1, 2, 3].every((i) => complete('g2', i)));
+    expect(count('uci')).toBeGreaterThanOrEqual(2);
+    expect(count('setoption name MultiPV value 3')).toBeGreaterThanOrEqual(2); // options applied again on relaunch
+    await poll(() => sched.engineState === 'up');
+    expect(delays[0]).toBe(RESTART_MIN_MS);
+    expect(sched.restarts).toBeGreaterThanOrEqual(1);
+  });
+
+  describe('Dead-letter queue', () => {
+    const E4_POS = 'position startpos moves e2e4';
+    async function crashing(): Promise<void> {
+      setup({ topN: 1, engineArgs: ['--crash-on', 'e2e4'] });
+      await sched.startRound(roundInfo('R1', ['g1']), null);
+      src.push(upd('g1', E4.slice(0, 1)));
+      await until(() => state.dead.length === 1 && complete('g1', 0));
+    }
+
+    it('takes a position that crashed the engine three times, and moves on', async () => {
+      await crashing();
+      expect(state.dead.map(({ boardId, ply }) => ({ boardId, ply }))).toEqual([{ boardId: 'g1', ply: 1 }]);
+      expect(evalOf('g1', 1)).toBeNull();
+      expect(queueView().current).toEqual([]);
+      expect(positions().filter((p) => p === E4_POS)).toHaveLength(MAX_CRASHES);
+      expect(delays).toEqual([1000, 2000, 4000]);
+    });
+
+    it('searches a requeued entry again', async () => {
+      await crashing();
+      engineArgs = [];
+      await sched.setEngine({ path: 'fake', options: {} });
+      expect(await sched.requeueDead('g1', 1)).toBe(true);
+      await until(() => complete('g1', 1));
+      expect(state.dead).toEqual([]);
+    });
+
+    it('forgets a discarded entry', async () => {
+      await crashing();
+      expect(await sched.discardDead('g1', 1)).toBe(true);
+      expect(state.dead).toEqual([]);
+      expect(queueView().current).toEqual([]);
+      expect(await sched.discardDead('g1', 1)).toBe(false);
+      expect(await sched.requeueDead('g1', 1)).toBe(false);
+      src.push(upd('g1', E4.slice(0, 2))); // the rebuild of the Board's backfill leaves it out
+      await until(() => complete('g1', 2));
+      await idle();
+      expect(positions().filter((p) => p === E4_POS)).toHaveLength(MAX_CRASHES);
+      expect(evalOf('g1', 1)).toBeNull();
+    });
+
+    it('drops and persists the entries a correction took away', async () => {
+      await crashing();
+      src.push(upd('g1', []));
+      await until(() => state.dead.length === 0);
+      expect(queueView().current).toEqual([]);
+    });
+
+    it('is emptied by a new Round', async () => {
+      await crashing();
+      await sched.startRound(roundInfo('R2', ['h1']), null);
+      expect(state.dead).toEqual([]);
+    });
+
+    it('is restored at boot, so its positions are not searched again', async () => {
+      const ply = (uci: string | null): T.Ply => ({
+        move: uci && { uci, san: uci, clock: null },
+        at: null,
+        eval: null,
+      });
+      const board: T.Board = {
+        id: 'g1',
+        board: 1,
+        white: { name: 'W' },
+        black: { name: 'B' },
+        result: '*',
+        tracked: true,
+        opening: null,
+        clocks: { white: null, black: null },
+        plies: [ply(null), ply('e2e4')],
+      };
+      const round: T.Round = {
+        tourId: 'T1',
+        roundId: 'R1',
+        name: 'R1',
+        eventName: 'E',
+        startsAt: null,
+        boards: [board],
+      };
+      const settings: T.Settings = { event: null, engine: null, jobTimeMs: null, topN: 1 };
+      const dead = [{ boardId: 'g1', board: 1, ply: 1, at: 5 }];
+      setup({ jobTimeMs: null, init: { state: { version: 2, settings, current: null, dead }, round } });
+      await sched.resume();
+      expect(queueView()).toEqual({ current: [], backfill: 1 });
+      expect(state.dead).toEqual(dead);
+      await sched.setJobTime(15);
+      await idle();
+      expect(complete('g1', 0)).toBe(true);
+      expect(positions().some((p) => p.includes('e2e4'))).toBe(false);
+    });
+  });
+
+  describe('restart backoff', () => {
+    it('doubles up to the cap', async () => {
+      setup({ topN: 3, engineArgs: ['--exit-on-go'] });
+      await sched.startRound(roundInfo('R1', ['g1', 'g2', 'g3']), null);
+      await until(() => state.dead.length === 3);
+      await poll(() => delays.length === 9);
+      expect(delays).toEqual([1000, 2000, 4000, 8000, 16000, 32000, 60000, 60000, 60000]);
+      expect(sched.restarts).toBe(9);
+    });
+
+    it('starts over after a Job completes', async () => {
+      setup({ topN: 2, jobTimeMs: null, engineArgs: ['--crash-on', 'e2e4'] });
+      await sched.startRound(roundInfo('R1', ['g1', 'g2']), null);
+      src.push(upd('g1', E4.slice(0, 1)));
+      await sched.setJobTime(15);
+      await until(() => state.dead.length === 1 && complete('g1', 0) && complete('g2', 0)); // searched after the crashes
+      expect(delays).toEqual([1000, 2000, 4000]);
+      src.push(upd('g2', E4.slice(0, 1)));
+      await poll(() => delays.length === 4);
+      expect(delays[3]).toBe(1000);
+    });
+
+    it('survives a failing launch', async () => {
+      let n = 0;
+      setup({
+        topN: 1,
+        launch: (real) => (n++ < 2 ? Promise.reject(new Error('no such engine')) : real()),
+      });
+      await sched.startRound(roundInfo('R1', ['g1']), null); // does not throw
+      expect(sched.engineState).toBe('restarting');
+      await poll(() => sched.engineState === 'up');
+      expect(delays).toEqual([1000, 2000]);
+      await until(() => complete('g1', 0));
+    });
+  });
+
+  describe('engine exit with no running Job', () => {
+    it('restarts without counting a crash', async () => {
+      setup({ topN: 1, jobTimeMs: null, engineArgs: ['--crash-on', 'e2e4'] });
+      await sched.startRound(roundInfo('R1', ['g1']), null);
+      await sched.engine!.quit();
+      await poll(() => sched.engineState === 'up' && count('uci') === 2);
+      expect(delays).toEqual([1000]);
+      expect(state.dead).toEqual([]);
+      src.push(upd('g1', E4.slice(0, 1)));
+      await sched.setJobTime(15);
+      await until(() => state.dead.length === 1);
+      expect(positions().filter((p) => p === 'position startpos moves e2e4')).toHaveLength(MAX_CRASHES);
+    });
+
+    it('is not relaunched twice when a config change got there first', async () => {
+      setup({ jobTimeMs: null, manual: true });
+      await sched.startRound(roundInfo('R1', ['g1']), null);
+      await sched.engine!.quit();
+      await poll(() => fire.length === 1);
+      expect(sched.engineState).toBe('restarting');
+      await sched.setEngine({ path: 'fake', options: {} });
+      expect(sched.engineState).toBe('up');
+      fire[0]();
+      await sched.setJobTime(null); // waits for the timer's turn on the serial chain
+      expect(count('uci')).toBe(2);
+    });
+
+    it('is not relaunched after stop()', async () => {
+      setup({ jobTimeMs: null, manual: true });
+      await sched.startRound(roundInfo('R1', ['g1']), null);
+      await sched.engine!.quit();
+      await poll(() => fire.length === 1);
+      await sched.stop();
+      fire[0]();
+      await sched.setJobTime(null);
+      expect([count('uci'), sched.engineState]).toEqual([1, null]);
+    });
   });
 });
