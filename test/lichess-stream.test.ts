@@ -1,6 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
+import { val } from './helpers/metric.js';
 import { ReplaySource } from './helpers/replay-source.js';
+import { rateLimited, streamReconnects } from '../src/metrics.js';
 import { parseGame, pgnSplitter, RoundStream, type GameUpdate, type StreamStatus } from '../src/lichess/stream.js';
 import { type Fetch, USER_AGENT } from '../src/lichess/api.js';
 
@@ -143,6 +145,7 @@ describe('RoundStream', () => {
     expect(f).toHaveBeenCalledTimes(8);
     expect(statuses).not.toContain('connected');
 
+    const [limited, reconnects] = [await val(rateLimited, { source: 'stream' }), await val(streamReconnects)];
     let n = 0;
     const g: Fetch = async () => {
       n++;
@@ -152,6 +155,8 @@ describe('RoundStream', () => {
     const r = make(g, 2);
     await r.stream.done;
     expect(r.delays).toEqual([60000, 1000]);
+    expect(await val(rateLimited, { source: 'stream' })).toBe(limited + 1);
+    expect(await val(streamReconnects)).toBe(reconnects + 2);
   });
 
   it('keeps following every Board after one finishes, until stop()', async () => {

@@ -48,6 +48,7 @@ Gate before commit: `npm run lint && npm run check && npm test && npm run build`
 | Lichess API | `src/lichess/api.ts` |
 | Lichess stream | `src/lichess/stream.ts` |
 | Site state, persistence, wire types | `src/round-state.ts`, `src/store.ts`, `shared/types.ts` |
+| Prometheus metrics (`GET /api/admin/metrics`, basic auth) | `src/metrics.ts` |
 | Orchestrator (Queue + Jobs over RoundState); derived accuracy/marks | `src/scheduler.ts`, `src/round-state.ts`, `src/pv.ts`, `shared/analysis.ts` |
 | Event following (poll, Round rollover) | `src/follower.ts`, `shared/rollover.ts` |
 | Job time benchmark and the default job time | `scripts/bench-jobtime.mjs`, `docs/jobtime.md` |

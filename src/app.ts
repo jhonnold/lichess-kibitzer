@@ -1,4 +1,5 @@
 import express, { type ErrorRequestHandler } from 'express';
+import { bindMetrics } from './metrics.js';
 import { adminRouter, type AdminDeps } from './routes/admin.js';
 import { eventsRouter, type SseOpts } from './routes/events.js';
 
@@ -7,6 +8,7 @@ export interface AppDeps extends AdminDeps {
 }
 
 export function createApp(deps: AppDeps): express.Express {
+  bindMetrics({ state: deps.state, scheduler: deps.scheduler });
   const app = express();
   app.set('trust proxy', 'loopback, uniquelocal'); // Caddy's X-Forwarded-Proto → req.secure → Secure cookie
   app.get('/healthz', (_req, res) => {

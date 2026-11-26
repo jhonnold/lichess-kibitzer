@@ -1,3 +1,5 @@
+import { rateLimited } from '../metrics.js';
+
 export const USER_AGENT = 'lichess-kibitzer';
 const BASE = 'https://lichess.org';
 export const RATE_LIMIT_MS = 60_000;
@@ -91,7 +93,10 @@ function getJson<T>(path: string, f: Fetch): Promise<T> {
   const run = async () => {
     if (Date.now() < pausedUntil) throw new LichessError(429, 'Lichess rate limit; retry in a minute');
     const res = await f(BASE + path, { headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' } });
-    if (res.status === 429) pausedUntil = Date.now() + RATE_LIMIT_MS;
+    if (res.status === 429) {
+      rateLimited.inc({ source: 'api' });
+      pausedUntil = Date.now() + RATE_LIMIT_MS;
+    }
     if (!res.ok) throw new LichessError(res.status, `Lichess ${path} → HTTP ${res.status}`);
     return (await res.json()) as T;
   };

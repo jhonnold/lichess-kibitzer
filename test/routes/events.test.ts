@@ -4,8 +4,10 @@ import type { AddressInfo } from 'node:net';
 import express from 'express';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Eval, SearchInfo } from '../../shared/types.js';
+import { viewers } from '../../src/metrics.js';
 import { RoundState } from '../../src/round-state.js';
 import { eventsRouter } from '../../src/routes/events.js';
+import { val } from '../helpers/metric.js';
 import { sse } from '../helpers/sse.js';
 
 const round = {
@@ -75,5 +77,13 @@ describe('GET /api/events', () => {
     await vi.waitFor(() => expect(state.listenerCount('event')).toBe(1));
     await c.close();
     await vi.waitFor(() => expect(state.listenerCount('event')).toBe(0));
+  });
+
+  it('counts open streams as viewers', async () => {
+    const before = await val(viewers);
+    const c = await sse(url);
+    await vi.waitFor(async () => expect(await val(viewers)).toBe(before + 1));
+    await c.close();
+    await vi.waitFor(async () => expect(await val(viewers)).toBe(before));
   });
 });

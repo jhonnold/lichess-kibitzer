@@ -5,6 +5,7 @@ import { Engine, type SearchResult } from './engine/engine.js';
 import type { UciInfo } from './engine/uci-parser.js';
 import type { RoundInfo } from './lichess/api.js';
 import { lichessSource, type GameUpdate, type Source, type SourceFactory } from './lichess/stream.js';
+import { jobDepth, jobDuration } from './metrics.js';
 import { pvToSan, toScore } from './pv.js';
 import type { RoundState } from './round-state.js';
 
@@ -387,10 +388,19 @@ export class Scheduler {
     if (run.stop === 'drop') return;
     if (run.stop !== 'restart') {
       const e = toEval(r, ply, run.fen, run.stop ? 'provisional' : 'complete');
-      if (e) this.state.setEval(boardId, ply, e, run.epoch);
+      if (e) {
+        this.recordJob(job, this.now - run.startedAt, e);
+        this.state.setEval(boardId, ply, e, run.epoch);
+      }
     }
     // Stopped, or a correction bumped the epoch (eval refused): search it again if the ply still exists.
     if (run.stop || run.epoch !== this.state.epoch(boardId)) this.queue.requeue(job, this.now);
+  }
+
+  private recordJob(job: Job, ms: number, e: T.Eval): void {
+    const labels = { tier: job.tier, kind: e.kind };
+    jobDuration.observe(labels, ms / 1000);
+    jobDepth.observe(labels, e.depth);
   }
 
   private onInfo(engine: Engine, info: UciInfo): void {

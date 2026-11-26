@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import type { SseEvent } from '../../shared/types.js';
+import { viewers } from '../metrics.js';
 import type { RoundState } from '../round-state.js';
 
 export interface SseOpts {
@@ -22,6 +23,7 @@ export function eventsRouter(state: RoundState, opts: SseOpts = {}): Router {
       'X-Accel-Buffering': 'no', // no proxy buffering
     });
     res.flushHeaders();
+    viewers.inc();
     const send = (e: SseEvent) => res.write(`data: ${JSON.stringify(e)}\n\n`);
     let pending: SseEvent | null = null;
     let timer: NodeJS.Timeout | undefined;
@@ -43,6 +45,7 @@ export function eventsRouter(state: RoundState, opts: SseOpts = {}): Router {
     state.on('event', onEvent);
     send({ type: 'snapshot', snapshot: state.snapshot() });
     res.on('close', () => {
+      viewers.dec();
       state.off('event', onEvent);
       clearInterval(heartbeat);
       clearTimeout(timer);
