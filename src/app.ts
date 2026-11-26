@@ -1,9 +1,11 @@
 import express, { type ErrorRequestHandler } from 'express';
 import { bindMetrics } from './metrics.js';
+import { archiveRouter, type ArchiveDeps } from './routes/archive.js';
 import { adminRouter, type AdminDeps } from './routes/admin.js';
 import { eventsRouter, type SseOpts } from './routes/events.js';
 
 export interface AppDeps extends AdminDeps {
+  store: ArchiveDeps['store'];
   sse?: SseOpts;
 }
 
@@ -16,6 +18,7 @@ export function createApp(deps: AppDeps): express.Express {
   });
   app.use(express.json());
   app.use(eventsRouter(deps.state, deps.sse));
+  app.use(archiveRouter({ store: deps.store, state: deps.state }));
   app.use('/api/admin', adminRouter(deps));
   // Built SPA (vite → build/public). The client router is hash-based, so `/` → index.html is the only page route.
   app.use(express.static('build/public'));

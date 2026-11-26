@@ -29,7 +29,14 @@ function setup(...pw: [string | undefined] | []) {
     register: async () => {},
     clear: async () => {},
   };
-  const app = createApp({ state, scheduler, follower, adminPassword, defaultEngine: { path: 'berserk', options: {} } });
+  const app = createApp({
+    store: { listRounds: async () => [], loadRound: async () => null },
+    state,
+    scheduler,
+    follower,
+    adminPassword,
+    defaultEngine: { path: 'berserk', options: {} },
+  });
   return { state, scheduler, app };
 }
 const basic = (s: string) => `Basic ${Buffer.from(s).toString('base64')}`;

@@ -37,7 +37,7 @@ export async function startServer(opts: ServerOpts): Promise<Running> {
   const scheduler = new Scheduler(state, { ...opts.scheduler, defaultEngine });
   const lichess = opts.lichess ?? { fetchEvent, fetchRound };
   const follower = new Follower(state, scheduler, { ...opts.follow, lichess, store });
-  const app = createApp({ ...opts.app, state, scheduler, follower, defaultEngine, adminPassword });
+  const app = createApp({ ...opts.app, store, state, scheduler, follower, defaultEngine, adminPassword });
   const server = app.listen(opts.port);
   await once(server, 'listening');
   await scheduler.resume().catch((err) => console.error('resume failed:', err));

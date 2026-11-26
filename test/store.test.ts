@@ -1,4 +1,4 @@
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -73,5 +73,60 @@ describe('dataStore', () => {
     expect(written.filter((n) => n !== 'Round 1')).toEqual(['a', 'c']); // 'b' superseded while 'a' was writing
     expect((await s.loadRound('T', 'R'))?.name).toBe('c');
     expect(await s.loadRound('T', 'S')).toEqual(round('S'));
+  });
+});
+
+describe('dataStore.listRounds', () => {
+  const round = (roundId: string, name = 'Round 1', tracked = true): Round => ({
+    tourId: 'ABCDEFGH',
+    roundId,
+    name,
+    eventName: 'Event',
+    startsAt: 5,
+    boards: [{ tracked }, { tracked: false }] as Round['boards'],
+  });
+  const file = () => join(dir, 'state.json');
+
+  it('is empty on a fresh dir', async () => {
+    expect(await dataStore(file()).listRounds()).toEqual([]);
+  });
+
+  it('scans files another store wrote, with Tracked board counts', async () => {
+    const w = dataStore(file());
+    await w.saveRound(round('abcdefg1'));
+    await w.saveRound(round('abcdefg2', 'Round 2'));
+    const metas = await dataStore(file()).listRounds();
+    expect(metas.map((m) => [m.roundId, m.name, m.boards, m.eventName]).sort()).toEqual([
+      ['abcdefg1', 'Round 1', 1, 'Event'],
+      ['abcdefg2', 'Round 2', 1, 'Event'],
+    ]);
+  });
+
+  it('reflects a saveRound after the first listing, without a re-scan', async () => {
+    const s = dataStore(file());
+    await s.saveRound(round('abcdefg1'));
+    expect((await s.listRounds()).map((m) => m.name)).toEqual(['Round 1']);
+    await s.saveRound(round('abcdefg1', 'Renamed', false));
+    await s.saveRound(round('abcdefg2'));
+    expect((await s.listRounds()).map((m) => [m.name, m.boards])).toEqual([
+      ['Renamed', 0],
+      ['Round 1', 1],
+    ]);
+  });
+
+  it('skips junk: bad names, tmp files, other dirs, invalid JSON', async () => {
+    const s = dataStore(file());
+    await s.saveRound(round('abcdefg1'));
+    const tour = join(dir, 'rounds', 'ABCDEFGH');
+    writeFileSync(join(tour, 'x.json'), '{}');
+    writeFileSync(join(tour, 'abcdefg2.json.tmp'), '{}');
+    writeFileSync(join(tour, 'ZZZZZZZZ.json'), '{not json');
+    mkdirSync(join(dir, 'rounds', 'bad'));
+    writeFileSync(join(dir, 'rounds', 'bad', 'abcdefg3.json'), '{}');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const metas = await dataStore(file()).listRounds();
+    expect(metas.map((m) => m.roundId)).toEqual(['abcdefg1']);
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
   });
 });

@@ -1,0 +1,58 @@
+import type { Round } from './types.js';
+
+/** Lichess game, round and tournament ids. Checked before an id from a URL reaches a file path. */
+export const LICHESS_ID = /^[A-Za-z0-9]{8}$/;
+export const isLichessId = (s: string): boolean => LICHESS_ID.test(s);
+
+/** One archived Round, without its Boards. boards = Tracked board count. */
+export interface ArchiveRound {
+  tourId: string;
+  roundId: string;
+  name: string;
+  startsAt: number | null;
+  boards: number;
+}
+export interface ArchiveEvent {
+  tourId: string;
+  name: string;
+  rounds: ArchiveRound[];
+}
+export type RoundMeta = ArchiveRound & { eventName: string };
+
+export const roundMeta = (r: Round): RoundMeta => ({
+  tourId: r.tourId,
+  roundId: r.roundId,
+  name: r.name,
+  eventName: r.eventName,
+  startsAt: r.startsAt,
+  boards: r.boards.filter((b) => b.tracked).length,
+});
+
+const byStart = (a: number | null, b: number | null) => (a === b ? 0 : a === null ? 1 : b === null ? -1 : a - b);
+const collate = new Intl.Collator('en', { numeric: true });
+
+/**
+ * Group by tourId, dropping `current`. Rounds: startsAt ascending (null last), then name (numeric collation).
+ * Events: by their latest Round's startsAt, newest first (null last). Event name = the last Round's non-empty
+ * eventName, else tourId. An Event left with no Rounds is omitted.
+ */
+export function archiveIndex(
+  metas: readonly RoundMeta[],
+  current: { tourId: string; roundId: string } | null,
+): ArchiveEvent[] {
+  const tours = new Map<string, RoundMeta[]>();
+  for (const m of metas) {
+    if (m.tourId === current?.tourId && m.roundId === current.roundId) continue;
+    tours.set(m.tourId, [...(tours.get(m.tourId) ?? []), m]);
+  }
+  const events = [...tours].map(([tourId, ms]) => {
+    ms.sort((a, b) => byStart(a.startsAt, b.startsAt) || collate.compare(a.name, b.name));
+    const name = ms.findLast((m) => m.eventName)?.eventName ?? tourId;
+    const rounds = ms.map(({ eventName: _, ...r }) => r);
+    return { tourId, name, rounds, latest: ms.at(-1)!.startsAt };
+  });
+  events.sort((a, b) =>
+    a.latest === b.latest ? 0 : a.latest === null ? 1 : b.latest === null ? -1 : b.latest - a.latest,
+  );
+  return events.map(({ latest: _, ...e }) => e);
+}

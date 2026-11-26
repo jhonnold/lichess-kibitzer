@@ -1,3 +1,4 @@
+import { LICHESS_ID } from '../../shared/archive.js';
 import { rateLimited } from '../metrics.js';
 
 export const USER_AGENT = 'lichess-kibitzer';
@@ -64,7 +65,6 @@ interface RoundJson {
   }[];
 }
 
-const ID = /^[A-Za-z0-9]{8}$/;
 export function parseEventLink(link: string): EventRef {
   let url: URL;
   try {
@@ -81,7 +81,7 @@ export function parseEventLink(link: string): EventRef {
       : seg.length === 4 || seg.length === 5
         ? { kind: 'round', id: seg[3] }
         : undefined;
-  if (!ref || !ID.test(ref.id)) throw new Error('Unrecognised broadcast link');
+  if (!ref || !LICHESS_ID.test(ref.id)) throw new Error('Unrecognised broadcast link');
   return ref;
 }
 

@@ -9,8 +9,10 @@ const store: DataStore = {
   save: async () => {},
   loadRound: async () => null,
   saveRound: async () => {},
+  listRounds: async () => [],
 };
 const app = createApp({
+  store,
   state: new RoundState(store),
   scheduler: {
     engine: null,
@@ -32,5 +34,11 @@ describe('app', () => {
     const res = await request(app).get('/healthz');
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ ok: true });
+  });
+
+  it('mounts the Archive list', async () => {
+    const res = await request(app).get('/api/archive');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([]);
   });
 });

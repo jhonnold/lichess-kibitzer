@@ -55,6 +55,7 @@ function setup(adminPassword = 'pw') {
     clear: vi.fn(async () => state.setEvent(null)),
   };
   const app = createApp({
+    store: { listRounds: async () => [], loadRound: async () => null },
     state,
     scheduler,
     follower,

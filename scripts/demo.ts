@@ -9,6 +9,7 @@
  * swaps in --swap-in seconds after boot (its start is 10 min later); --poll is the follower's poll interval in ms.
  * --crash-board N: the fake engine crashes on Board N's position at boot (2..boards, not the Upcoming --top Board), so
  * that Job lands in the Dead-letter queue after 3 crashes. Boards sharing its base game and position dead-letter too.
+ * Archived Rounds land in <data>/rounds/demoEvnt/demoRnd1.json (Event id 8 chars: the Archive route validates ids).
  * stdin: a line `n` releases one move on Board n; an empty line, the next round-robin move.
  */
 import { mkdtempSync } from 'node:fs';
@@ -101,7 +102,7 @@ const board = (u: GameUpdate): Board => ({
 });
 const lichess = {
   fetchEvent: async (): Promise<EventInfo> => ({
-    id: 'demo',
+    id: 'demoEvnt',
     name: 'Demo Event',
     rounds: [
       { id: 'demoRnd1', name: 'Round 1', ongoing: true, finished: false },
@@ -112,7 +113,7 @@ const lichess = {
   fetchRound: async (id: string): Promise<RoundInfo> => ({
     id,
     name: id === 'demoRnd2' ? 'Round 2' : 'Round 1',
-    tourId: 'demo',
+    tourId: 'demoEvnt',
     boards: Array.from({ length: count }, (_, k): Board => {
       const u = update(k + 1);
       if (id === 'demoRnd1') return board(u);
