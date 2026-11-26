@@ -1,5 +1,5 @@
 import { Chess } from 'chess.js';
-import { rateLimited, streamReconnects } from '../metrics.js';
+import { rateLimited, streamConnected, streamReconnects } from '../metrics.js';
 import { USER_AGENT, RATE_LIMIT_MS, type Fetch, type Player, type Result } from './api.js';
 
 export type StreamStatus = 'connected' | 'reconnecting';
@@ -139,17 +139,22 @@ export class RoundStream implements Source {
     let delay = MIN_BACKOFF_MS;
     while (!signal.aborted) {
       let wait = delay;
+      let reason: 'eof' | 'http_error' | 'rate_limited' | 'network' = 'network';
+      let connected = false;
       try {
         const res = await (this.opts.fetch ?? fetch)(url, { signal, headers: { 'User-Agent': USER_AGENT } });
         if (res.status === 429) {
           rateLimited.inc({ source: 'stream' });
           void res.body?.cancel();
           wait = RATE_LIMIT_MS;
+          reason = 'rate_limited';
         } else if (!res.ok || !res.body) {
           void res.body?.cancel();
-          throw new Error(`HTTP ${res.status}`);
+          reason = 'http_error';
         } else {
           h.status('connected');
+          streamConnected.inc(); // inc/dec, not set: an old stream closing after a Round swap can't zero the new one
+          connected = true;
           const split = pgnSplitter(),
             dec = new TextDecoder(),
             reader = res.body.getReader();
@@ -168,12 +173,15 @@ export class RoundStream implements Source {
               } // dedupe re-sends after reconnect
             }
           }
+          reason = 'eof';
         }
       } catch {
         /* network error / abort → fall through */
+      } finally {
+        if (connected) streamConnected.dec();
       }
       if (signal.aborted) return;
-      streamReconnects.inc();
+      streamReconnects.inc({ reason });
       h.status('reconnecting');
       await (this.opts.sleep ?? sleep)(wait, signal);
       if (wait !== RATE_LIMIT_MS) delay = Math.min(delay * 2, MAX_BACKOFF_MS);

@@ -112,12 +112,33 @@ export const jobDepth = new Histogram({
 });
 export const streamReconnects = new Counter({
   name: 'kibitzer_lichess_stream_reconnects_total',
-  help: 'Times the Lichess Round stream dropped and was reconnected',
+  help: 'Times the Lichess Round stream ended and was reopened, by reason (eof, http_error, rate_limited, network)',
+  labelNames: ['reason'],
   registers: [register],
 });
+export const streamConnected = new Gauge({
+  name: 'kibitzer_lichess_stream_connected',
+  help: '1 while the Lichess Round stream is open and receiving',
+  registers: [register],
+});
+/** Every Lichess API call (src/lichess/api.ts getJson); `paused` = refused locally during the 60 s pause after a 429. */
+export const lichessRequests = new Counter({
+  name: 'kibitzer_lichess_requests_total',
+  help: 'Lichess API requests by endpoint (event, round, explorer) and outcome',
+  labelNames: ['endpoint', 'outcome'],
+  registers: [register],
+});
+export const lichessDuration = new Histogram({
+  name: 'kibitzer_lichess_request_duration_seconds',
+  help: 'Duration of Lichess API requests that got a response, by endpoint',
+  labelNames: ['endpoint'],
+  buckets: [0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10],
+  registers: [register],
+});
+/** Deprecated: kibitzer_lichess_requests_total{outcome="rate_limited"} and reconnects{reason="rate_limited"}. */
 export const rateLimited = new Counter({
   name: 'kibitzer_lichess_rate_limited_total',
-  help: 'HTTP 429 responses from Lichess',
+  help: 'Deprecated (use kibitzer_lichess_requests_total): HTTP 429 responses from Lichess',
   labelNames: ['source'],
   registers: [register],
 });
@@ -139,8 +160,9 @@ export const viewers = new Gauge({
   help: 'Open GET /api/events streams (the Admin page counts as a Viewer)',
   registers: [register],
 });
+/** Deprecated: kibitzer_lichess_requests_total{endpoint="explorer"}. */
 export const openingLookups = new Counter({
   name: 'kibitzer_opening_lookups_total',
-  help: 'Masters-explorer opening lookups (a lookup paused locally by a rate limit is counted too)',
+  help: 'Deprecated (use kibitzer_lichess_requests_total): Masters-explorer opening lookups, paused ones included',
   registers: [register],
 });

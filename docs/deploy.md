@@ -91,9 +91,16 @@ the Admin cookie; with no `ADMIN_PASSWORD` it always answers 401.
 - `kibitzer_dead_letter_queue_size`: Jobs in the Dead-letter queue
 - `kibitzer_engine_up`: 1 while the engine is up; `kibitzer_engine_restarts_total`: restarts since boot
 - `kibitzer_job_duration_seconds` and `kibitzer_job_depth` (histograms, `tier` and `kind` labels): Jobs that recorded an Eval
-- `kibitzer_lichess_stream_reconnects_total`, `kibitzer_lichess_rate_limited_total{source}` (`stream` or `api`)
+- `kibitzer_lichess_requests_total{endpoint,outcome}`: every Lichess API call. `endpoint` is `event`, `round` or
+  `explorer`; `outcome` is `ok`, `http_error`, `rate_limited` (a 429), `timeout`, `network` (no response, or a broken
+  or non-JSON body) or `paused` (refused locally during the minute after a 429).
+  `kibitzer_lichess_request_duration_seconds{endpoint}` (histogram): calls that got a response.
+- `kibitzer_lichess_stream_connected`: 1 while the Round stream is open and receiving.
+  `kibitzer_lichess_stream_reconnects_total{reason}`: the stream ended and was reopened; `reason` is `eof` (Lichess
+  closed it, about once a minute after a Round finishes), `http_error`, `rate_limited` or `network`
+- Deprecated, to be removed: `kibitzer_lichess_rate_limited_total{source}` (`stream` or `api`) and
+  `kibitzer_opening_lookups_total`; use `kibitzer_lichess_requests_total` and the reconnect `reason`
 - `kibitzer_evictions_total{reason}`: running Jobs stopped early (`stale`, `live`, `backfill`)
-- `kibitzer_opening_lookups_total`: Masters-explorer opening lookups (a locally paused one included)
 - `kibitzer_viewers`: open live streams (the Admin page counts as one)
 - `kibitzer_http_requests_total{route,method,status}` and `kibitzer_http_request_duration_seconds` (histogram, same
   labels): `route` is the Express pattern (`/api/archive/:tourId/:roundId`), `<static>` for the SPA, `/api/admin/*`
