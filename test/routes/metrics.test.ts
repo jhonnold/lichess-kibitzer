@@ -30,7 +30,7 @@ function setup(...pw: [string | undefined] | []) {
     timing: { jobs: 0, provisional: 0, ms: null, depth: null },
   };
   const follower = {
-    status: { next: null, swapAt: null, polledAt: null, error: null },
+    status: { next: null, swapAt: null, polledAt: null as number | null, error: null },
     register: async () => {},
     clear: async () => {},
   };
@@ -42,7 +42,7 @@ function setup(...pw: [string | undefined] | []) {
     adminPassword,
     defaultEngine: { path: 'berserk', options: {} },
   });
-  return { state, scheduler, app };
+  return { state, scheduler, follower, app };
 }
 const basic = (s: string) => `Basic ${Buffer.from(s).toString('base64')}`;
 const scrape = (app: ReturnType<typeof setup>['app'], auth?: string) => {
@@ -86,6 +86,20 @@ describe('GET /api/admin/metrics', () => {
       'kibitzer_opening_lookups_total',
       'kibitzer_evictions_total',
       'kibitzer_build_info{rev="',
+      'kibitzer_engine_state{state="up"}',
+      'kibitzer_jobs_total',
+      'kibitzer_job_nps',
+      'kibitzer_lichess_requests_total',
+      'kibitzer_lichess_request_duration_seconds',
+      'kibitzer_lichess_stream_connected',
+      'kibitzer_http_requests_total',
+      'kibitzer_http_request_duration_seconds',
+      'kibitzer_following',
+      'kibitzer_follower_polls_total',
+      'kibitzer_follower_last_success_timestamp_seconds',
+      'kibitzer_store_writes_total',
+      'kibitzer_store_last_save_timestamp_seconds',
+      'kibitzer_archive_reads_total',
       'kibitzer_process_cpu_user_seconds_total',
     ])
       expect(res.text).toContain(name);
@@ -117,6 +131,18 @@ describe('GET /api/admin/metrics', () => {
       for (const st of ['up', 'restarting', 'idle'])
         expect(text).toContain(`kibitzer_engine_state{state="${st}"} ${st === on ? 1 : 0}`);
     }
+  });
+
+  it('reports whether an Event is followed and when it was last fetched', async () => {
+    const { app, state, follower } = setup();
+    let body = (await scrape(app, basic('admin:pw'))).text;
+    expect(body).toContain('kibitzer_following 0');
+    expect(body).toContain('kibitzer_follower_last_success_timestamp_seconds 0');
+    state.setEvent({ tourId: 'T', name: 'E', link: 'https://lichess.org/broadcast/x/T' });
+    follower.status.polledAt = 1_700_000_000_000;
+    body = (await scrape(app, basic('admin:pw'))).text;
+    expect(body).toContain('kibitzer_following 1');
+    expect(body).toContain('kibitzer_follower_last_success_timestamp_seconds 1700000000');
   });
 
   it('reports the build and the configured engine, which follows the saved config', async () => {

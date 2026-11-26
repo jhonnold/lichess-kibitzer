@@ -1,5 +1,6 @@
 import { rollover } from '../shared/rollover.js';
 import type { EventInfo, RoundInfo } from './lichess/api.js';
+import { followerPolls } from './metrics.js';
 import type { RoundState } from './round-state.js';
 import type { Scheduler } from './scheduler.js';
 import type { DataStore } from './store.js';
@@ -95,9 +96,11 @@ export class Follower {
         ev = await this.opts.lichess.fetchEvent(event.link);
       } catch (err) {
         this.st = { ...this.st, error: message(err) };
+        followerPolls.inc({ outcome: 'error' });
         return;
       }
       await this.apply(ev);
+      followerPolls.inc({ outcome: this.st.error ? 'error' : 'ok' });
     });
   }
 

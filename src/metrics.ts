@@ -184,6 +184,50 @@ export const httpDuration = new Histogram({
   labelNames: ['route', 'method', 'status'],
   registers: [register],
 });
+export const followerPolls = new Counter({
+  name: 'kibitzer_follower_polls_total',
+  help: 'Event polls by outcome (error: the Event fetch or the Round swap failed)',
+  labelNames: ['outcome'],
+  registers: [register],
+});
+export const followerLastSuccess = new Gauge({
+  name: 'kibitzer_follower_last_success_timestamp_seconds',
+  help: 'When the Event was last fetched (even if the Round swap after it failed); 0 before the first fetch',
+  registers: [register],
+  collect() {
+    this.reset();
+    const at = src?.follower.status.polledAt;
+    if (at != null) this.set(at / 1000);
+  },
+});
+export const following = new Gauge({
+  name: 'kibitzer_following',
+  help: '1 while an Event is registered',
+  registers: [register],
+  collect() {
+    this.reset();
+    if (src) this.set(src.state.settings.event ? 1 : 0);
+  },
+});
+/** One per file write, not per save request: writes are coalesced (src/store.ts jsonWriter). */
+export const storeWrites = new Counter({
+  name: 'kibitzer_store_writes_total',
+  help: 'State and Round file writes, by store (state, round) and outcome (ok, error)',
+  labelNames: ['store', 'outcome'],
+  registers: [register],
+});
+export const storeLastSave = new Gauge({
+  name: 'kibitzer_store_last_save_timestamp_seconds',
+  help: 'When a file of the store (state, round) was last written',
+  labelNames: ['store'],
+  registers: [register],
+});
+export const archiveReads = new Counter({
+  name: 'kibitzer_archive_reads_total',
+  help: 'Archive list and Round reads, by outcome (ok, error; a missing Round file is ok)',
+  labelNames: ['outcome'],
+  registers: [register],
+});
 export const viewers = new Gauge({
   name: 'kibitzer_viewers',
   help: 'Open GET /api/events streams (the Admin page counts as a Viewer)',

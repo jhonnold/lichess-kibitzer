@@ -107,6 +107,13 @@ the Admin cookie; with no `ADMIN_PASSWORD` it always answers 401.
 - Deprecated, to be removed: `kibitzer_lichess_rate_limited_total{source}` (`stream` or `api`) and
   `kibitzer_opening_lookups_total`; use `kibitzer_lichess_requests_total` and the reconnect `reason`
 - `kibitzer_evictions_total{reason}`: running Jobs stopped early (`stale`, `live`, `backfill`)
+- `kibitzer_following`: 1 while an Event is registered. `kibitzer_follower_polls_total{outcome}`: Event polls (every
+  60 s), `ok` or `error` (the Event fetch or the Round swap failed). `kibitzer_follower_last_success_timestamp_seconds`:
+  when the Event was last fetched, 0 before the first fetch; with `kibitzer_following == 1`, a value more than 5 min
+  old means the follower is stale
+- `kibitzer_store_writes_total{store,outcome}`: state file (`state`) and Round file (`round`) writes, `ok` or `error`
+  (one per write: quick saves are coalesced). `kibitzer_store_last_save_timestamp_seconds{store}`: the last write
+- `kibitzer_archive_reads_total{outcome}`: Archive list and Round reads, `ok` (a missing Round file included) or `error`
 - `kibitzer_viewers`: open live streams (the Admin page counts as one)
 - `kibitzer_http_requests_total{route,method,status}` and `kibitzer_http_request_duration_seconds` (histogram, same
   labels): `route` is the Express pattern (`/api/archive/:tourId/:roundId`), `<static>` for the SPA, `/api/admin/*`

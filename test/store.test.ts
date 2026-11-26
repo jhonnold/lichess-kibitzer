@@ -2,7 +2,9 @@ import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { storeLastSave, storeWrites } from '../src/metrics.js';
 import { dataStore } from '../src/store.js';
+import { val } from './helpers/metric.js';
 import type { PersistedState, Round } from '../shared/types.js';
 
 let dir: string;
@@ -39,6 +41,26 @@ describe('dataStore', () => {
     await s.save(state);
     expect(await s.load()).toEqual(state);
     expect(readdirSync(dir)).toEqual(['state.json']);
+  });
+
+  it('counts each file write by store and outcome, coalesced saves once', async () => {
+    const writes = async (store: string) => [
+      await val(storeWrites, { store, outcome: 'ok' }),
+      await val(storeWrites, { store, outcome: 'error' }),
+    ];
+    const s = dataStore(join(dir, 'state.json'));
+    const [ok, err] = await writes('state');
+    await s.save(state);
+    expect(await writes('state')).toEqual([ok + 1, err]);
+    expect(await val(storeLastSave, { store: 'state' })).toBeGreaterThan(0);
+    const [rOk] = await writes('round');
+    await s.saveRound(round('R'));
+    expect((await writes('round'))[0]).toBe(rOk + 1);
+
+    writeFileSync(join(dir, 'file'), ''); // a regular file where the state file's dir should be: mkdir fails
+    const bad = dataStore(join(dir, 'file', 'state.json'));
+    await expect(bad.save(state)).rejects.toThrow();
+    expect(await writes('state')).toEqual([ok + 1, err + 1]);
   });
 
   it('discards a version 1 file and rejects an unknown version', async () => {

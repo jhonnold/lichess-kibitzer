@@ -10,6 +10,8 @@ import { LichessError, type EventInfo, type RoundInfo } from '../src/lichess/api
 import { RoundState } from '../src/round-state.js';
 import { Scheduler } from '../src/scheduler.js';
 import { dataStore, type DataStore } from '../src/store.js';
+import { followerPolls } from '../src/metrics.js';
+import { val } from './helpers/metric.js';
 import { ReplaySource } from './helpers/replay-source.js';
 
 const FAKE = fileURLToPath(new URL('./fixtures/fake-uci.mjs', import.meta.url));
@@ -69,6 +71,7 @@ const idle = async () => {
 };
 const complete = (id: string) => state.board(id)!.plies[0].eval?.kind === 'complete';
 const roundId = () => state.round?.roundId;
+const polls = async () => [await val(followerPolls, { outcome: 'ok' }), await val(followerPolls, { outcome: 'error' })];
 
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), 'follower-'));
@@ -173,21 +176,26 @@ describe('Follower', () => {
 
   it('keeps the Current Round on a failed poll and recovers on the next', async () => {
     await follower.register(LINK);
+    const [ok, err] = await polls(); // register is not a poll
     const keep = state.round;
     fetchEvent.mockRejectedValueOnce(new LichessError(429, 'rate limited'));
     await follower.tick();
     expect(follower.status.error).toBe('rate limited');
     expect(state.round).toBe(keep);
+    expect(await polls()).toEqual([ok, err + 1]);
     await follower.tick();
     expect(follower.status.error).toBeNull();
+    expect(await polls()).toEqual([ok + 1, err + 1]);
   });
 
   it('keeps the Current Round when the next Round cannot be fetched, and retries', async () => {
     await follower.register(LINK);
     t = follower.status.swapAt!;
     const fail = vi.spyOn(sched, 'startRound').mockRejectedValueOnce(new Error('launch failed'));
+    const [ok, err] = await polls();
     await follower.tick();
     expect(follower.status.error).toBe('launch failed');
+    expect(await polls()).toEqual([ok, err + 1]); // the Event was fetched, but the swap failed
     expect(roundId()).toBe('R1');
     fail.mockRestore();
     await follower.tick();

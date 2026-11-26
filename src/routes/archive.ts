@@ -1,5 +1,6 @@
 import { Router, type Response } from 'express';
 import { archiveIndex, isLichessId } from '../../shared/archive.js';
+import { archiveReads } from '../metrics.js';
 import type { RoundState } from '../round-state.js';
 import type { DataStore } from '../store.js';
 
@@ -14,6 +15,7 @@ const notFound = (res: Response) => res.status(404).json({ error: 'not found' })
 export function archiveRouter({ store, state }: ArchiveDeps): Router {
   const router = Router();
   const fail = (res: Response, err: unknown) => {
+    archiveReads.inc({ outcome: 'error' });
     console.error('archive read failed:', err);
     res.status(500).json({ error: 'archive read failed' });
   };
@@ -21,6 +23,7 @@ export function archiveRouter({ store, state }: ArchiveDeps): Router {
     try {
       const { round } = state;
       const events = archiveIndex(await store.listRounds(), round && { tourId: round.tourId, roundId: round.roundId });
+      archiveReads.inc({ outcome: 'ok' });
       res.set('Cache-Control', 'no-cache').json(events);
     } catch (err) {
       fail(res, err);
@@ -35,6 +38,7 @@ export function archiveRouter({ store, state }: ArchiveDeps): Router {
     }
     try {
       const round = await store.loadRound(tourId, roundId);
+      archiveReads.inc({ outcome: 'ok' });
       if (!round) {
         notFound(res);
         return;
