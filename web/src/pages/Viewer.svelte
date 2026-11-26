@@ -13,6 +13,8 @@
   import type { SnapSource } from '$lib/live.svelte';
   import type { ArchiveCtx } from '$shared/archive';
   import { clockOf } from '$lib/position';
+  import type { Color } from '$shared/accuracy';
+  import { material } from '$shared/material';
   import {
     back,
     cursorNote,
@@ -33,6 +35,7 @@
     panelInfo,
     selectedBoard,
     statusLine,
+    tickingClock,
     viewerMessage,
   } from '$shared/viewer';
 
@@ -83,8 +86,16 @@
       ? (snap.search.lines[0]?.score ?? null)
       : null,
   );
-  const clock = (color: 'white' | 'black') =>
-    (game && view && (clockOf(game.plies.slice(0, view.ply + 1), color) ?? game.clocks[color])) ?? null;
+  // Only a Live Board's clock on the live Cursor ticks (not in the Archive); `now` is server time.
+  const ticking = $derived(!ctx && live && !!view?.live);
+  const clock = (color: Color) =>
+    game && view
+      ? view.live
+        ? tickingClock(game, color, ticking, now - store.skew)
+        : (clockOf(game.plies.slice(0, view.ply + 1), color) ?? game.clocks[color])
+      : null;
+  const mat = $derived(view && material(view.position.fen));
+  const toMove = (color: Color) => !ctx && live && !!view?.live && view.position.turn === color;
 
   const ARROWS_KEY = 'kibitzer.arrows';
   let showArrows = $state(
@@ -99,6 +110,25 @@
   // No panel (own moves, a ply without lines) → no arrows.
   const shapes = $derived(showArrows && panel && view ? arrows(panel.lines, view.position.turn) : []);
 
+  const FLIP_KEY = 'kibitzer.flip';
+  let flipped = $state(
+    (() => {
+      try {
+        return localStorage.getItem(FLIP_KEY) === '1';
+      } catch {
+        return false;
+      }
+    })(),
+  );
+  function flip() {
+    flipped = !flipped;
+    try {
+      localStorage.setItem(FLIP_KEY, flipped ? '1' : '0');
+    } catch {
+      // storage unavailable: the choice lasts until reload
+    }
+  }
+
   function onKey(e: KeyboardEvent) {
     const t = e.target as HTMLElement | null;
     if (
@@ -109,6 +139,7 @@
       /^(INPUT|TEXTAREA|SELECT)$/.test(t?.tagName ?? '')
     )
       return;
+    if (e.key === 'f' || e.key === 'F') return flip();
     if (e.key === 'a' || e.key === 'A') {
       showArrows = !showArrows;
       try {
@@ -143,31 +174,31 @@
 {:else if !game || !analysis || !view || !bar}
   <main class="message">{viewerMessage(snap) ?? 'Nothing live right now'}</main>
 {:else}
+  {#snippet playerBar(color: Color)}
+    <PlayerBar
+      player={game[color]}
+      clock={clock(color)}
+      accuracy={analysis[color]}
+      toMove={toMove(color)}
+      material={mat![color]}
+    />
+  {/snippet}
   <main class="viewer">
     <div class="boardCol">
-      <EvalBar score={bar.score} dim={bar.dim || view.inBranch} />
+      <EvalBar score={bar.score} dim={bar.dim || view.inBranch} flip={flipped} />
       <div class="stack">
-        <PlayerBar
-          player={game.black}
-          clock={clock('black')}
-          accuracy={analysis.black}
-          toMove={!ctx && live && view.live && view.position.turn === 'black'}
-        />
+        {@render playerBar(flipped ? 'white' : 'black')}
         <Board
           position={view.position}
           arrows={shapes}
+          orientation={flipped ? 'black' : 'white'}
           onMove={(from, to) => (cursor = playOwn(view.cursor, from + to, view.latest))}
         />
-        <PlayerBar
-          player={game.white}
-          clock={clock('white')}
-          accuracy={analysis.white}
-          toMove={!ctx && live && view.live && view.position.turn === 'white'}
-        />
+        {@render playerBar(flipped ? 'black' : 'white')}
       </div>
     </div>
     <aside>
-      <BoardStrip {boards} selected={game.board} {ctx} />
+      <BoardStrip {boards} selected={game.board} {ctx} onFlip={flip} />
       {#if notTracked}<div class="warn">Board {board} is not tracked · showing board {game.board}</div>{/if}
       {#if ctx}<div class="banner">
           Archive · {snap.event?.name} · {snap.round?.name} · {archivedResult(game)}

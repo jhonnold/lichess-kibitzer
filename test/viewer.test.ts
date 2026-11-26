@@ -18,6 +18,8 @@ import {
   selectedBoard,
   shortName,
   statusLine,
+  tickingClock,
+  turnOf,
   uciMove,
   viewerMessage,
 } from '../shared/viewer.js';
@@ -368,5 +370,48 @@ describe('clockOf', () => {
   it('is null when that side has not moved', () => {
     expect(clockOf(plies.slice(0, 2), 'black')).toBeNull();
     expect(clockOf(plies.slice(0, 1), 'white')).toBeNull();
+  });
+});
+
+describe('turnOf', () => {
+  it('is White after an even number of moves', () => {
+    expect(turnOf([{ move: null, at: null, eval: null }])).toBe('white');
+    expect(
+      turnOf([
+        { move: null, at: null, eval: null },
+        { move: null, at: 1, eval: null },
+      ]),
+    ).toBe('black');
+  });
+});
+
+describe('tickingClock', () => {
+  const mv = (clock: number, at: number | null): Ply => ({ move: { san: 'x', uci: 'a1a2', clock }, at, eval: null });
+  const start: Ply = { move: null, at: null, eval: null };
+  const b = (plies: Ply[]) => ({ plies, clocks: { white: 90000, black: 80000 } });
+  const game = b([start, mv(60000, 500), mv(50000, 1000)]); // White to move
+
+  it('counts down the side to move; the other clock stays', () => {
+    expect(tickingClock(game, 'white', true, 6000)).toBe(55000);
+    expect(tickingClock(game, 'black', true, 6000)).toBe(50000);
+  });
+
+  it('is static when not ticking or the latest ply has no arrival time', () => {
+    expect(tickingClock(game, 'white', false, 6000)).toBe(60000);
+    expect(tickingClock(b([start, mv(60000, 500), mv(50000, null)]), 'white', true, 6000)).toBe(60000);
+  });
+
+  it('never goes below 0, nor up when server time is before the arrival', () => {
+    expect(tickingClock(game, 'white', true, 1e9)).toBe(0);
+    expect(tickingClock(game, 'white', true, 10)).toBe(60000);
+  });
+
+  it('falls back to the Board clock when the mover has not moved yet', () => {
+    expect(tickingClock(b([start, mv(60000, 500)]), 'black', true, 9000)).toBe(80000);
+  });
+
+  it('upcoming: the Board clocks', () => {
+    expect(tickingClock(b([start]), 'white', true, 9000)).toBe(90000);
+    expect(tickingClock(b([start]), 'black', true, 9000)).toBe(80000);
   });
 });

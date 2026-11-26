@@ -2,16 +2,17 @@
   import { winPercent, type Score } from '$shared/accuracy';
   import { formatScore } from '$lib/format';
 
-  type Props = { score: Score | null; dim?: boolean };
-  const { score, dim = false }: Props = $props();
+  // flip: White's part at the top (Black at the bottom of the board).
+  type Props = { score: Score | null; dim?: boolean; flip?: boolean };
+  const { score, dim = false, flip = false }: Props = $props();
 
   const white = $derived(score ? winPercent(score) : 50);
   const label = $derived(score ? formatScore(score) : '');
 </script>
 
-<div class="bar" class:dim role="img" aria-label={score ? `Evaluation ${label} for White` : 'No evaluation'}>
+<div class="bar" class:dim class:flip role="img" aria-label={score ? `Evaluation ${label} for White` : 'No evaluation'}>
   <div class="white" style:height="{white}%"></div>
-  <span class:top={white < 50}>{label}</span>
+  <span class:top={white < 50 !== flip} class:light={white < 50}>{label}</span>
 </div>
 
 <style>
@@ -21,6 +22,9 @@
     flex-direction: column-reverse;
     width: 40px;
     background: var(--evalB);
+  }
+  .flip {
+    flex-direction: column;
   }
   .dim {
     opacity: 0.45;
@@ -40,6 +44,8 @@
   span.top {
     top: 4px;
     bottom: auto;
+  }
+  span.light {
     color: var(--evalW);
   }
 </style>

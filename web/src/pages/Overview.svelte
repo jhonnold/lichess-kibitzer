@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import type { SnapSource } from '$lib/live.svelte';
   import type { ArchiveCtx } from '$shared/archive';
   import { archiveHash } from '$shared/route';
@@ -9,6 +10,11 @@
   const { store, back, ctx = null }: { store: SnapSource; back: string; ctx?: ArchiveCtx | null } = $props();
   const href = $derived(ctx ? (n: number) => archiveHash(ctx.tourId, ctx.roundId, n) : undefined);
   const snap = $derived(store.snap);
+  let now = $state(Date.now());
+  onMount(() => {
+    const tick = setInterval(() => (now = Date.now()), 1000);
+    return () => clearInterval(tick);
+  });
 </script>
 
 {#if !snap}
@@ -23,7 +29,7 @@
     </header>
     <div class="grid">
       {#each snap.round.boards as b (b.id)}
-        <BoardTile board={b} search={snap.search} queue={snap.queue} {href} archived={!!ctx} />
+        <BoardTile board={b} search={snap.search} queue={snap.queue} {href} archived={!!ctx} now={now - store.skew} />
       {/each}
     </div>
   </main>

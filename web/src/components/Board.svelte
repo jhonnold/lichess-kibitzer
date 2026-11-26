@@ -29,8 +29,9 @@
     onMove?: (from: string, to: string) => void;
     arrows?: ArrowSpec[];
     coordinates?: boolean;
+    orientation?: 'white' | 'black';
   };
-  const { position, onMove, arrows = [], coordinates = true }: Props = $props();
+  const { position, onMove, arrows = [], coordinates = true, orientation = 'white' }: Props = $props();
 
   let host: HTMLDivElement;
   let cg: Api | undefined;
@@ -49,7 +50,7 @@
   $effect(() => {
     const { fen, turn, check, lastMove } = position;
     const dests = (onMove ? legalDests(fen) : new Map()) as Dests;
-    cg?.set({ fen, turnColor: turn, check, lastMove: lastMove as Key[] | undefined, movable: { dests } });
+    cg?.set({ fen, turnColor: turn, check, lastMove: lastMove as Key[] | undefined, orientation, movable: { dests } });
   });
   // Fresh shape objects each run: chessground fills in label colours on them.
   $effect(() => {
