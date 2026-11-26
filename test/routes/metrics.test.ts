@@ -78,6 +78,9 @@ describe('GET /api/admin/metrics', () => {
       'kibitzer_lichess_stream_reconnects_total',
       'kibitzer_lichess_rate_limited_total',
       'kibitzer_viewers',
+      'kibitzer_opening_lookups_total',
+      'kibitzer_evictions_total',
+      'kibitzer_build_info{rev="',
       'kibitzer_process_cpu_user_seconds_total',
     ])
       expect(res.text).toContain(name);
@@ -99,5 +102,16 @@ describe('GET /api/admin/metrics', () => {
     expect(body).toContain('kibitzer_engine_restarts_total 2');
     scheduler.engineState = 'restarting';
     expect((await scrape(app, basic('admin:pw'))).text).toContain('kibitzer_engine_up 0');
+  });
+
+  it('reports the build and the configured engine, which follows the saved config', async () => {
+    const { app, state } = setup();
+    expect((await scrape(app, basic('admin:pw'))).text).toMatch(
+      /^kibitzer_build_info\{rev="[^"]+",engine="berserk"\} 1$/m,
+    );
+    state.setEngine({ path: '/usr/local/bin/stockfish', options: {} });
+    expect((await scrape(app, basic('admin:pw'))).text).toMatch(
+      /^kibitzer_build_info\{rev="[^"]+",engine="stockfish"\} 1$/m,
+    );
   });
 });

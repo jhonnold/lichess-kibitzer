@@ -92,7 +92,12 @@ the Admin cookie; with no `ADMIN_PASSWORD` it always answers 401.
 - `kibitzer_engine_up`: 1 while the engine is up; `kibitzer_engine_restarts_total`: restarts since boot
 - `kibitzer_job_duration_seconds` and `kibitzer_job_depth` (histograms, `tier` and `kind` labels): Jobs that recorded an Eval
 - `kibitzer_lichess_stream_reconnects_total`, `kibitzer_lichess_rate_limited_total{source}` (`stream` or `api`)
+- `kibitzer_evictions_total{reason}`: running Jobs stopped early (`stale`, `live`, `backfill`)
+- `kibitzer_opening_lookups_total`: Masters-explorer opening lookups (a locally paused one included)
 - `kibitzer_viewers`: open live streams (the Admin page counts as one)
+- `kibitzer_build_info{rev,engine}`: always 1; `rev` is the git sha `npm run build` ran on (`unknown` outside a
+  checkout, or set `GIT_REV`), `engine` the file name of the configured engine path. Changes on a deploy or an
+  engine swap.
 - `kibitzer_process_*`, `kibitzer_nodejs_*`: Node defaults
 
 ```yaml

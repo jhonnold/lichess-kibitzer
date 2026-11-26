@@ -10,7 +10,12 @@ export interface AppDeps extends AdminDeps {
 }
 
 export function createApp(deps: AppDeps): express.Express {
-  bindMetrics({ state: deps.state, scheduler: deps.scheduler });
+  bindMetrics({
+    state: deps.state,
+    scheduler: deps.scheduler,
+    follower: deps.follower,
+    defaultEngine: deps.defaultEngine,
+  });
   const app = express();
   app.set('trust proxy', 'loopback, uniquelocal'); // Caddy's X-Forwarded-Proto → req.secure → Secure cookie
   app.get('/healthz', (_req, res) => {

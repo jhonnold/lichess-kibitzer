@@ -1,4 +1,8 @@
+import { readFileSync } from 'node:fs';
+import { basename } from 'node:path';
 import { collectDefaultMetrics, Counter, Gauge, Histogram, Registry } from 'prom-client';
+import type { EngineConfig } from '../shared/types.js';
+import type { Follower } from './follower.js';
 import type { RoundState } from './round-state.js';
 import type { Scheduler } from './scheduler.js';
 
@@ -8,13 +12,39 @@ collectDefaultMetrics({ register, prefix: 'kibitzer_' });
 
 /** What the scrape-time metrics read. Set by createApp; before that they report nothing. */
 export interface MetricSources {
-  state: Pick<RoundState, 'queue' | 'dead'>;
+  state: Pick<RoundState, 'queue' | 'dead' | 'settings'>;
   scheduler: Pick<Scheduler, 'engineState' | 'restarts'>;
+  follower: Pick<Follower, 'status'>;
+  defaultEngine: EngineConfig;
 }
 let src: MetricSources | null = null;
 export function bindMetrics(sources: MetricSources): void {
   src = sources;
 }
+
+/** The git sha written to build/rev by `npm run build` (scripts/rev.mjs); else $GIT_REV; else "unknown". */
+function buildRev(): string {
+  try {
+    const rev = readFileSync(new URL('../rev', import.meta.url), 'utf8').trim(); // build/src/metrics.js → build/rev
+    if (rev) return rev;
+  } catch {
+    /* not built (dev, tests) */
+  }
+  return process.env.GIT_REV || 'unknown';
+}
+const rev = buildRev();
+
+export const buildInfo = new Gauge({
+  name: 'kibitzer_build_info',
+  help: 'Always 1. rev = git sha of the build, engine = file name of the configured engine path',
+  labelNames: ['rev', 'engine'],
+  registers: [register],
+  collect() {
+    this.reset();
+    if (!src) return;
+    this.set({ rev, engine: basename((src.state.settings.engine ?? src.defaultEngine).path) }, 1);
+  },
+});
 
 /** Jobs waiting per tier, read at scrape time (the running Job is not counted). */
 export const queueDepth = new Gauge({
