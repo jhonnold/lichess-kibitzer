@@ -1,5 +1,6 @@
 import { Chess, DEFAULT_POSITION } from 'chess.js';
 import { winPercent, type Color, type Score } from './accuracy.js';
+import { outcomeOf } from './archive.js';
 import type { Board, PvLine, Ply, QueueView, Result, SearchInfo, Snapshot } from './types.js';
 
 /** A board position as the Viewer draws it. lastMove = [from, to] of the move into it. */
@@ -108,7 +109,8 @@ export const formatResult = (r: Result): string => (r === '1/2-1/2' ? '½-½' : 
 
 /** How a Board ended up in the Archive: its result, 'unfinished' (moves but no result) or 'not played'. */
 export function archivedResult(b: Board): string {
-  return b.result !== '*' ? formatResult(b.result) : b.plies.length > 1 ? 'unfinished' : 'not played';
+  const o = outcomeOf(b);
+  return o === 'finished' ? formatResult(b.result) : o === 'unfinished' ? 'unfinished' : 'not played';
 }
 
 /** 'Hoefelsauer, Thomas' → 'Hoefelsauer'; 'Magnus Carlsen' → 'Carlsen'; 'Gukesh D' → 'Gukesh' (initials skipped). */

@@ -12,14 +12,19 @@ describe('isLichessId', () => {
 });
 
 describe('roundMeta', () => {
-  it('counts Tracked boards only', () => {
+  it('counts Tracked boards only, split by outcome', () => {
     const r = {
       tourId: 'T',
       roundId: 'R',
       name: 'Round 1',
       eventName: 'E',
       startsAt: 3,
-      boards: [{ tracked: true }, { tracked: false }, { tracked: true }],
+      boards: [
+        { tracked: true, result: '1-0', plies: [{}, {}] },
+        { tracked: false, result: '*', plies: [{}] },
+        { tracked: true, result: '*', plies: [{}, {}] },
+        { tracked: true, result: '*', plies: [{}] },
+      ],
     } as Round;
     expect(roundMeta(r)).toEqual({
       tourId: 'T',
@@ -27,7 +32,8 @@ describe('roundMeta', () => {
       name: 'Round 1',
       eventName: 'E',
       startsAt: 3,
-      boards: 2,
+      boards: 3,
+      outcomes: { finished: 1, unfinished: 1, notPlayed: 1 },
     });
   });
 });
@@ -40,6 +46,7 @@ describe('archiveIndex', () => {
     eventName,
     startsAt,
     boards: 4,
+    outcomes: { finished: 4, unfinished: 0, notPlayed: 0 },
   });
 
   it('drops the Current Round and groups the rest by Event', () => {
@@ -52,8 +59,8 @@ describe('archiveIndex', () => {
         tourId: 'T',
         name: 'Ev',
         rounds: [
-          { tourId: 'T', roundId: 'R1', name: 'Round 1', startsAt: 1, boards: 4 },
-          { tourId: 'T', roundId: 'R2', name: 'Round 2', startsAt: 2, boards: 4 },
+          { tourId: 'T', roundId: 'R1', name: 'Round 1', startsAt: 1, boards: 4, outcomes: m('', '', '', 0).outcomes },
+          { tourId: 'T', roundId: 'R2', name: 'Round 2', startsAt: 2, boards: 4, outcomes: m('', '', '', 0).outcomes },
         ],
       },
     ]);
