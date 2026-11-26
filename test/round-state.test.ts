@@ -4,6 +4,7 @@ import type { RoundInfo } from '../src/lichess/api.js';
 import type { DataStore } from '../src/store.js';
 import { DEFAULT_JOB_TIME_MS } from '../shared/types.js';
 import type * as T from '../shared/types.js';
+import { engineConfig } from '../shared/engine-config.js';
 
 const mv = (uci: string): T.Move => ({ uci, san: uci, clock: null });
 const ev = (cp: number, kind: T.EvalKind = 'complete'): T.Eval => ({
@@ -255,7 +256,7 @@ describe('RoundState', () => {
 
   it('settings mutators persist silently; setEvent drops the Round and transient state', async () => {
     const { rs, events, states } = started();
-    rs.setEngine({ path: 'p', options: {} });
+    rs.setEngine(engineConfig('p'));
     rs.setJobTime(7000);
     rs.setTopN(2);
     expect(events).toEqual([]);

@@ -1,6 +1,7 @@
 import { mkdir, readdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { isLichessId, roundMeta, type RoundMeta } from '../shared/archive.js';
+import { migrateEngine } from '../shared/engine-config.js';
 import type { PersistedRound, PersistedState, Round } from '../shared/types.js';
 import { storeLastSave, storeWrites } from './metrics.js';
 
@@ -104,7 +105,9 @@ export function dataStore(file = process.env.DATA_FILE || DEFAULT_DATA_FILE): Da
       if (!isObj(data) || data.version !== 2 || !isObj(data.settings) || !Array.isArray(data.dead)) {
         throw new Error(`${file}: not a lichess-kibitzer state file`);
       }
-      return data as unknown as PersistedState;
+      const state = data as unknown as PersistedState;
+      const engine = state.settings.engine && migrateEngine(state.settings.engine); // pre-copies configs
+      return { ...state, settings: { ...state.settings, engine } };
     },
     save: writeState,
     async loadRound(tourId, roundId) {

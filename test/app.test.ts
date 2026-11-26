@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createApp } from '../src/app.js';
 import { RoundState } from '../src/round-state.js';
 import type { DataStore } from '../src/store.js';
+import { engineConfig } from '../shared/engine-config.js';
 
 const store: DataStore = {
   load: async () => null,
@@ -26,7 +27,7 @@ const app = createApp({
     register: vi.fn(),
     clear: vi.fn(),
   },
-  defaultEngine: { path: 'berserk', options: {} },
+  defaultEngine: engineConfig('berserk'),
 });
 
 describe('app', () => {

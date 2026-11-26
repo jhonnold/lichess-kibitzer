@@ -12,6 +12,7 @@ import { startServer, type Running } from '../src/server.js';
 import { dataStore } from '../src/store.js';
 import { ReplaySource } from './helpers/replay-source.js';
 import { sse } from './helpers/sse.js';
+import { engineConfig } from '../shared/engine-config.js';
 
 // PRD top-level test: real wiring (startServer), recorded round stream, fake UCI engine, assertions over SSE.
 const FAKE = fileURLToPath(new URL('./fixtures/fake-uci.mjs', import.meta.url));
@@ -47,7 +48,7 @@ const boot = async () => {
   return startServer({
     port: 0,
     store: dataStore(join(dir, 'state.json')),
-    defaultEngine: { path: 'fake', options: {} },
+    defaultEngine: engineConfig('fake'),
     adminPassword: 'pw',
     scheduler: {
       launch: () => Engine.start(process.execPath, { args: [FAKE, '--log', logFile] }),

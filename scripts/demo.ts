@@ -17,6 +17,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { parseArgs } from 'node:util';
+import { engineConfig } from '../shared/engine-config.js';
 import { SWAP_LEAD_MS } from '../shared/rollover.js';
 import { Engine, probeEngine } from '../src/engine/engine.js';
 import type { Board, EventInfo, RoundInfo } from '../src/lichess/api.js';
@@ -167,7 +168,7 @@ const crash =
 const running = await startServer({
   port,
   store: dataStore(join(data, 'state.json')),
-  defaultEngine: { path: 'fake', options: { MultiPV: '5' } },
+  defaultEngine: engineConfig('fake'),
   adminPassword: v.password,
   scheduler: {
     launch: () => Engine.start(process.execPath, { args: [FAKE, '--legal-pv', ...crash] }),

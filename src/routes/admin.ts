@@ -3,6 +3,7 @@ import { Router, type NextFunction, type Request, type Response } from 'express'
 import type { EngineConfig, Player, QueueView, RegisteredEvent, Result, StreamStatus } from '../../shared/types.js';
 import type { DeadJob, EvictedJob, Job } from '../../shared/queue.js';
 import type { JobTiming } from '../../shared/timing.js';
+import { COPY_OPTIONS, MAX_MULTI_PV } from '../../shared/engine-config.js';
 import { probeEngine } from '../engine/engine.js';
 import type { UciOption } from '../engine/uci-parser.js';
 import type { Follower, FollowStatus } from '../follower.js';
@@ -61,6 +62,9 @@ export interface AdminStatus {
 }
 
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null;
+const intIn = (x: unknown, min: number, max: number) =>
+  Number.isInteger(x) && (x as number) >= min && (x as number) <= max;
+const isCopy = (c: unknown) => isObj(c) && intIn(c.threads, 1, 1024) && intIn(c.hash, 1, 1 << 24);
 const h = (s: string) => createHash('sha256').update(s).digest();
 const same = (a: string, b: string) => timingSafeEqual(h(a), h(b));
 /** Admin text that goes onto a UCI command line: a CR/LF would inject a second command. */
@@ -131,15 +135,29 @@ export function adminRouter(deps: AdminDeps): Router {
     res.sendStatus(204);
   });
   r.put('/config', (req, res) => {
-    const { path, options } = req.body ?? {};
+    const { path, options, main, multi } = req.body ?? {};
     const ok =
       typeof path === 'string' &&
       path &&
       isObj(options) &&
-      Object.entries(options).every(([k, v]) => k && oneLine(k) && oneLine(v));
-    if (!ok) return void res.status(400).json({ error: 'expected { path, options: { name: value } }' });
+      Object.entries(options).every(([k, v]) => k && oneLine(k) && oneLine(v) && !COPY_OPTIONS.includes(k)) &&
+      isCopy(main) &&
+      isCopy(multi) &&
+      intIn(multi.multiPv, 2, MAX_MULTI_PV);
+    if (!ok)
+      return void res.status(400).json({
+        error:
+          'expected { path, options: { name: value } (no Threads/Hash/MultiPV), main: { threads, hash }, ' +
+          `multi: { threads, hash, multiPv: 2-${MAX_MULTI_PV} } }`,
+      });
+    const copy = (c: { threads: number; hash: number }) => ({ threads: c.threads, hash: c.hash });
     scheduler
-      .setEngine({ path, options: options as Record<string, string> })
+      .setEngine({
+        path,
+        options: options as Record<string, string>,
+        main: copy(main),
+        multi: { ...copy(multi), multiPv: multi.multiPv },
+      })
       .then(() => res.sendStatus(204), fail(res));
   });
   /** Register an Event: from then on the Follower picks the Current Round. */
