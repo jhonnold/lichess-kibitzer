@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Lichess Kibitzer: full-screen live engine analysis of a Lichess broadcast game. Plan: [docs/plans/live-analysis.md](./docs/plans/live-analysis.md). v2 plan: [docs/plans/v2.md](./docs/plans/v2.md).
+Lichess Kibitzer: full-screen live engine analysis of the top boards of a Lichess broadcast Round. Plan: [docs/plans/live-analysis.md](./docs/plans/live-analysis.md). v2 plan: [docs/plans/v2.md](./docs/plans/v2.md).
 
 ## Commands
 
@@ -46,7 +46,7 @@ Gate before commit: `npm run lint && npm run check && npm test && npm run build`
 | UCI engine | `src/engine/` (parser, Engine), `test/fixtures/fake-uci.mjs` |
 | Lichess API | `src/lichess/api.ts` |
 | Lichess stream | `src/lichess/stream.ts` |
-| Site state, persistence, wire types | `src/round-state.ts`, `src/store.ts`, `shared/types.ts`, `shared/types-v2.ts` |
+| Site state, persistence, wire types | `src/round-state.ts`, `src/store.ts`, `shared/types.ts` |
 | Orchestrator (Queue + Jobs over RoundState); derived accuracy/marks | `src/scheduler.ts`, `src/round-state.ts`, `src/pv.ts`, `shared/analysis.ts` |
 | Tests | `test/` |
 | Build config | `vite.config.ts`, `vitest.config.ts`, `tsconfig.backend.json`, `web/svelte.config.js`, `web/tsconfig.json` |

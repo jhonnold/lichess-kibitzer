@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type * as T from '../shared/types-v2.js';
+import type * as T from '../shared/types.js';
 import { Engine } from '../src/engine/engine.js';
 import type { RoundInfo } from '../src/lichess/api.js';
 import type { GameUpdate } from '../src/lichess/stream.js';

@@ -1,6 +1,6 @@
 import { Chess } from 'chess.js';
 import { winPercent, type Color, type Score } from './accuracy.js';
-import type { Ply } from './types.js';
+import type { Board, PvLine, Ply, SearchInfo } from './types.js';
 
 /** A board position as the Viewer draws it. lastMove = [from, to] of the move into it. */
 export interface Position {
@@ -35,10 +35,42 @@ export function legalDests(fen: string): Map<string, string[]> {
 
 /**
  * Eval graph data: White win % per ply (null = no eval), the Live search's score standing in for the current
- * position, and which plies hold a Backfill eval (drawn differently).
+ * position, and which plies hold a Provisional eval (drawn differently).
  */
-export function evalSeries(plies: Ply[], live: Score | null): { win: (number | null)[]; backfill: boolean[] } {
+export function evalSeries(plies: Ply[], live: Score | null): { win: (number | null)[]; provisional: boolean[] } {
   const win = plies.map((p) => (p.eval ? winPercent(p.eval.score) : null));
   if (live) win[win.length - 1] = winPercent(live);
-  return { win, backfill: plies.map((p) => p.eval?.kind === 'backfill') };
+  return { win, provisional: plies.map((p) => p.eval?.kind === 'provisional') };
+}
+
+/** What the engine panel shows for one Board. */
+export interface PanelInfo {
+  ply: number;
+  searching: boolean;
+  engine: string | null;
+  depth: number;
+  nps: number | null;
+  lines: PvLine[];
+}
+
+/**
+ * The running search if it is for this Board's latest ply (empty lines at Job start: an empty panel, not older
+ * lines); else the latest ply whose eval has lines; else null.
+ */
+export function panelInfo(board: Board, search: SearchInfo | null): PanelInfo | null {
+  const latest = board.plies.length - 1;
+  if (search?.boardId === board.id && search.ply === latest) {
+    return {
+      ply: latest,
+      searching: true,
+      engine: search.engine,
+      depth: search.depth,
+      nps: search.nps,
+      lines: search.lines,
+    };
+  }
+  const ply = board.plies.findLastIndex((p) => p.eval?.lines.length);
+  if (ply < 0) return null;
+  const e = board.plies[ply].eval!;
+  return { ply, searching: false, engine: null, depth: e.depth, nps: null, lines: e.lines };
 }

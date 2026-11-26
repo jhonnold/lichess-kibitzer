@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import type { SseEvent } from '../../shared/types-v2.js';
+import type { SseEvent } from '../../shared/types.js';
 import type { RoundState } from '../round-state.js';
 
 export interface SseOpts {

@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import * as T from '../shared/types-v2.js'; // namespace import: v1 types.ts names clash until layer 6
+import * as T from '../shared/types.js';
 import type { RoundInfo } from './lichess/api.js';
 import type { DataStore } from './store.js';
 

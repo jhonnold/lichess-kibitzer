@@ -10,19 +10,24 @@
   import PlayerBar from '../components/PlayerBar.svelte';
   import { LiveStore } from '$lib/live.svelte';
   import { clockOf, positionOf, type Position } from '$lib/position';
-  import { play } from '$shared/viewer';
+  import { panelInfo, play } from '$shared/viewer';
 
   const store = new LiveStore();
   onMount(() => store.connect());
 
   const snap = $derived(store.snap);
-  const game = $derived(snap?.game ?? null);
+  // Board 1: the lowest-numbered Tracked board of the Current Round.
+  const game = $derived(snap?.round?.boards[0] ?? null);
   const analysis = $derived(game && analyse(game.plies));
   const position = $derived(game && positionOf(game.plies));
-  // Live search first; else the latest stored eval (a finished game's last position has none).
-  const score = $derived<Score | null>(
-    snap?.live?.lines[0]?.score ?? game?.plies.findLast((p) => p.eval)?.eval?.score ?? null,
-  );
+  const upcoming = $derived(!!game && game.result === '*' && game.plies.length === 1);
+  const live = $derived(!!game && game.result === '*' && !upcoming);
+  const panel = $derived(game && panelInfo(game, snap?.search ?? null));
+  const panelFen = $derived(panel && game && positionOf(game.plies.slice(0, panel.ply + 1)).fen);
+  // The running search's score only while it is for this Board's latest position; else the latest stored eval.
+  const liveScore = $derived<Score | null>(panel?.searching ? (panel.lines[0]?.score ?? null) : null);
+  const score = $derived<Score | null>(liveScore ?? game?.plies.findLast((p) => p.eval)?.eval?.score ?? null);
+  const clock = (color: 'white' | 'black') => (game && (clockOf(game.plies, color) ?? game.clocks[color])) ?? null;
 
   // The Viewer's own line, local to this tab. Live updates don't move the board meanwhile; a new game drops it.
   let explore = $state.raw<{ gameId: string; plies: number; position: Position } | null>(null);
@@ -47,21 +52,22 @@
       <div class="stack">
         <PlayerBar
           player={game.black}
-          clock={clockOf(game.plies, 'black')}
+          clock={clock('black')}
           accuracy={analysis.black}
-          toMove={snap.site === 'live' && position.turn === 'black'}
+          toMove={live && position.turn === 'black'}
         />
         <Board position={exploring?.position ?? position} {onMove} />
         <PlayerBar
           player={game.white}
-          clock={clockOf(game.plies, 'white')}
+          clock={clock('white')}
           accuracy={analysis.white}
-          toMove={snap.site === 'live' && position.turn === 'white'}
+          toMove={live && position.turn === 'white'}
         />
       </div>
     </div>
     <aside>
-      {#if snap.site === 'finished'}<div class="banner">Game over · {game.result.replace('1/2', '½')}</div>{/if}
+      {#if upcoming}<div class="banner">Upcoming · {snap.round?.name}</div>{/if}
+      {#if !upcoming && !live}<div class="banner">Game over · {game.result.replace('1/2', '½')}</div>{/if}
       {#if !store.connected}<div class="warn">Reconnecting to server…</div>{/if}
       {#if snap.stream === 'reconnecting'}<div class="warn">Lichess stream reconnecting…</div>{/if}
       {#if exploring}
@@ -70,11 +76,13 @@
           <button onclick={() => (explore = null)}>Back to live</button>
         </div>
       {/if}
-      <EnginePanel live={snap.live} fen={position.fen} />
-      <EvalGraph plies={game.plies} live={snap.live?.lines[0]?.score ?? null} />
+      <EnginePanel info={panel} fen={panelFen ?? position.fen} />
+      <EvalGraph plies={game.plies} live={liveScore} />
       <MoveList plies={game.plies} marks={analysis.marks} />
       <p class="from">
-        {analysis.fromMove === null ? 'Accuracy: no scored moves yet' : `Accuracy from move ${analysis.fromMove}`}
+        {analysis.scored === 0
+          ? 'Accuracy: no scored moves yet'
+          : `Accuracy: ${analysis.scored} of ${analysis.total} moves scored`}
       </p>
     </aside>
   </main>

@@ -3,7 +3,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Board, Snapshot } from '../shared/types-v2.js';
+import { analyse } from '../shared/analysis.js';
+import { applyEvent } from '../shared/live.js';
+import type { Board, Snapshot, SseEvent } from '../shared/types.js';
 import { Engine } from '../src/engine/engine.js';
 import type { Board as LichessBoard, EventInfo, RoundInfo } from '../src/lichess/api.js';
 import { startServer, type Running } from '../src/server.js';
@@ -81,6 +83,7 @@ const drained = () => {
   const s = srv.state.snapshot();
   return s.queue.current.length === 0 && s.queue.backfill === 0 && s.search === null && srv.scheduler.running === null;
 };
+const rebuild = (events: SseEvent[]) => events.reduce<Snapshot | null>(applyEvent, null);
 const freshSnapshot = async (): Promise<Snapshot> => {
   const c = await sse(`http://127.0.0.1:${srv.port}/api/events`);
   await vi.waitFor(() => expect(c.events).toHaveLength(1), WAIT);
@@ -140,6 +143,13 @@ describe('live analysis over SSE', () => {
       await vi.waitFor(async () => expect((await freshSnapshot()).stream).toBe('reconnecting'), WAIT);
       src.status('connected');
       await vi.waitFor(async () => expect((await freshSnapshot()).stream).toBe('connected'), WAIT);
+
+      await vi.waitFor(() => expect(rebuild(c.events)).toEqual(srv.state.snapshot()), WAIT); // the stream alone rebuilds it
+      for (const b of tracked()) {
+        const a = analyse(b.plies);
+        const mated = b.plies.at(-1)!.eval === null && b.result !== '*' ? 1 : 0; // no eval after the move into mate
+        expect([a.scored, a.white !== null, a.black !== null]).toEqual([a.total - mated, true, true]);
+      }
 
       await admin('POST', '/clear');
       await vi.waitFor(

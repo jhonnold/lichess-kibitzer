@@ -1,10 +1,10 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { changedOptions, initialValues, type UciOption } from '$shared/engine-form';
-  import { adminApi, ApiError, type AdminStatus, type EventInfo, type Probe, type RoundInfo } from '$lib/admin-api';
+  import { adminApi, ApiError, type AdminStatus, type EventInfo, type Probe } from '$lib/admin-api';
   import { LiveStore } from '$lib/live.svelte';
 
-  type Section = 'login' | 'game' | 'engine' | 'status';
+  type Section = 'login' | 'round' | 'engine' | 'status';
 
   const store = new LiveStore(); // site state + Lichess stream status, same feed as the Viewer
   let authed = $state<boolean | null>(null); // null: checking the cookie
@@ -14,7 +14,6 @@
   let link = $state('');
   let event = $state<EventInfo | null>(null);
   let roundId = $state('');
-  let round = $state<RoundInfo | null>(null);
   let path = $state('');
   let config: Record<string, string> = {};
   let engineName = $state('');
@@ -52,25 +51,11 @@
     });
 
   const loadEvent = () =>
-    run('game', async () => {
+    run('round', async () => {
       event = await adminApi<EventInfo>('GET', `/event?link=${encodeURIComponent(link)}`);
-      round = null;
       roundId = event.defaultRoundId ?? event.rounds[0]?.id ?? '';
-      if (roundId) await loadRound();
     });
-  async function loadRound(): Promise<void> {
-    round = await adminApi<RoundInfo>('GET', `/rounds/${roundId}`);
-  }
-  const pick = (b: RoundInfo['boards'][number]) =>
-    run('game', () =>
-      adminApi('POST', '/pick', {
-        tourId: round!.tourId,
-        roundId: round!.id,
-        id: b.id,
-        white: b.white,
-        black: b.black,
-      }),
-    );
+  const track = () => run('round', () => adminApi('POST', '/round', { link, roundId }));
 
   async function probe(): Promise<void> {
     const p = await adminApi<Probe>('POST', '/engine/probe', { path });
@@ -95,7 +80,7 @@
   });
 
   const snap = $derived(store.snap);
-  const live = $derived(snap?.site === 'live');
+  const running = $derived(!!snap?.round); // an engine runs while there is a Current Round
 </script>
 
 <main class="admin">
@@ -109,19 +94,20 @@
   {:else if authed}
     <section>
       <h2>Status</h2>
+      <p>Event: <b>{snap?.event?.name ?? '–'}</b></p>
       <p>
-        Site: <b>{snap?.site ?? '…'}</b>
-        {#if snap?.game}· {snap.game.white.name} – {snap.game.black.name} ({snap.game.result}){/if}
+        Current Round: <b>{snap?.round?.name ?? '–'}</b>
+        {#if snap?.round}· {snap.round.boards.length} Tracked boards{/if}
       </p>
       <p>
         Lichess stream: <b>{snap?.stream ?? '–'}</b> · Server: <b>{store.connected ? 'connected' : 'reconnecting…'}</b>
       </p>
-      <button disabled={busy || !snap?.game} onclick={clear}>Clear Featured game</button>
+      <button disabled={busy || !snap?.event} onclick={clear}>Clear Event</button>
       {#if errors.status}<p class="error">{errors.status}</p>{/if}
     </section>
 
     <section>
-      <h2>Featured game</h2>
+      <h2>Round</h2>
       <form onsubmit={(e) => (e.preventDefault(), loadEvent())}>
         <label>
           Event link
@@ -130,31 +116,19 @@
         <button disabled={busy}>Load</button>
       </form>
       {#if event}
-        <label>
-          Round
-          <select bind:value={roundId} onchange={() => run('game', loadRound)} disabled={busy}>
-            {#each event.rounds as r (r.id)}
-              <option value={r.id}>{r.name}{r.ongoing ? ' (live)' : r.finished ? ' (finished)' : ''}</option>
-            {/each}
-          </select>
-        </label>
+        <form onsubmit={(e) => (e.preventDefault(), track())}>
+          <label>
+            Round
+            <select bind:value={roundId} disabled={busy}>
+              {#each event.rounds as r (r.id)}
+                <option value={r.id}>{r.name}{r.ongoing ? ' (live)' : r.finished ? ' (finished)' : ''}</option>
+              {/each}
+            </select>
+          </label>
+          <button disabled={busy || !roundId}>Track this Round</button>
+        </form>
       {/if}
-      {#if round}
-        <table>
-          <tbody>
-            {#each round.boards as b (b.id)}
-              <tr>
-                <td>{b.white.name} – {b.black.name}</td>
-                <td>{b.result}</td>
-                <td><button disabled={busy} onclick={() => pick(b)}>Feature</button></td>
-              </tr>
-            {:else}
-              <tr><td>No boards in this round</td></tr>
-            {/each}
-          </tbody>
-        </table>
-      {/if}
-      {#if errors.game}<p class="error">{errors.game}</p>{/if}
+      {#if errors.round}<p class="error">{errors.round}</p>{/if}
     </section>
 
     <section>
@@ -169,7 +143,7 @@
           {#each options as o (o.name)}
             {#if o.type === 'button'}
               <p>
-                <button type="button" disabled={busy || !live} onclick={() => press(o.name)}>{o.name}</button>
+                <button type="button" disabled={busy || !running} onclick={() => press(o.name)}>{o.name}</button>
                 <small>sent to the running engine, between searches</small>
               </p>
             {:else}
@@ -201,7 +175,7 @@
             {/if}
           {/each}
           <button disabled={busy}>Save</button>
-          {#if saved}<span>Saved. Applies on the next pick.</span>{/if}
+          {#if saved}<span>Saved. A running engine restarts.</span>{/if}
         </form>
       {/if}
       {#if errors.engine}<p class="error">{errors.engine}</p>{/if}
@@ -236,9 +210,6 @@
   }
   form {
     margin: 6px 0;
-  }
-  td {
-    padding: 2px 12px 2px 0;
   }
   .error {
     color: var(--blunder);

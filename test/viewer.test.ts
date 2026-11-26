@@ -1,8 +1,8 @@
 import { DEFAULT_POSITION } from 'chess.js';
 import { describe, expect, it } from 'vitest';
 import { winPercent } from '../shared/accuracy.js';
-import type { Ply } from '../shared/types.js';
-import { evalSeries, legalDests, play } from '../shared/viewer.js';
+import type { Board, Ply, SearchInfo } from '../shared/types.js';
+import { evalSeries, legalDests, panelInfo, play } from '../shared/viewer.js';
 
 describe('play', () => {
   it('plays a SAN line (PV) to its end position', () => {
@@ -48,18 +48,64 @@ describe('legalDests', () => {
 });
 
 describe('evalSeries', () => {
-  const ply = (cp: number | null, kind: 'backfill' | 'final' = 'final'): Ply => ({
+  const ply = (cp: number | null, kind: 'provisional' | 'complete' = 'complete'): Ply => ({
     move: null,
-    eval: cp === null ? null : { score: { cp }, depth: 1, kind, bestmove: null },
+    at: null,
+    eval: cp === null ? null : { score: { cp }, depth: 1, kind, bestmove: null, lines: [] },
   });
 
-  it('White win % per ply, gaps for no eval, Backfill flagged', () => {
-    const s = evalSeries([ply(0, 'backfill'), ply(100), ply(null)], null);
+  it('White win % per ply, gaps for no eval, Provisional flagged', () => {
+    const s = evalSeries([ply(0, 'provisional'), ply(100), ply(null)], null);
     expect(s.win).toEqual([50, winPercent({ cp: 100 }), null]);
-    expect(s.backfill).toEqual([true, false, false]);
+    expect(s.provisional).toEqual([true, false, false]);
   });
 
   it('the Live score stands in for the current position', () => {
     expect(evalSeries([ply(0), ply(null)], { mate: -3 }).win).toEqual([50, winPercent({ mate: -3 })]);
+  });
+});
+
+describe('panelInfo', () => {
+  const line = (cp: number) => ({ score: { cp }, depth: 9, move: 'e2e4', san: ['e4'] });
+  const withLines = (cp: number, lines = [line(cp)]): Ply => ({
+    move: null,
+    at: null,
+    eval: { score: { cp }, depth: 9, kind: 'complete', bestmove: null, lines },
+  });
+  const board = {
+    id: 'g',
+    plies: [withLines(5), withLines(7), { move: null, at: null, eval: null }],
+  } as unknown as Board;
+  const search = (boardId: string, ply: number, lines = [line(1)]): SearchInfo => ({
+    boardId,
+    ply,
+    engine: 'E',
+    depth: 3,
+    nps: 100,
+    lines,
+    startedAt: 0,
+  });
+
+  it('a search on the latest ply is searching, even with no lines yet', () => {
+    expect(panelInfo(board, search('g', 2))).toEqual({
+      ply: 2,
+      searching: true,
+      engine: 'E',
+      depth: 3,
+      nps: 100,
+      lines: [line(1)],
+    });
+    expect(panelInfo(board, search('g', 2, []))?.lines).toEqual([]);
+  });
+
+  it('another Board or an earlier ply falls back to the latest stored lines', () => {
+    const stored = { ply: 1, searching: false, engine: null, depth: 9, nps: null, lines: [line(7)] };
+    expect(panelInfo(board, search('other', 2))).toEqual(stored);
+    expect(panelInfo(board, search('g', 0))).toEqual(stored);
+    expect(panelInfo(board, null)).toEqual(stored);
+  });
+
+  it('no search and no stored lines is null', () => {
+    expect(panelInfo({ id: 'g', plies: [withLines(0, [])] } as unknown as Board, null)).toBeNull();
   });
 });

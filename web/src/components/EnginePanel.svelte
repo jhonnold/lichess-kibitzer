@@ -1,15 +1,14 @@
 <script lang="ts">
-  import type { LiveInfo } from '$shared/types';
-  import { play } from '$shared/viewer';
+  import { play, type PanelInfo } from '$shared/viewer';
   import { formatLine, formatNps, formatScore } from '$lib/format';
   import Board from './Board.svelte';
 
-  // fen: the Live position, which the lines are played from.
-  type Props = { live: LiveInfo | null; fen: string };
-  const { live, fen }: Props = $props();
+  // fen: the position at info.ply, which the lines are played from.
+  type Props = { info: PanelInfo | null; fen: string };
+  const { info, fen }: Props = $props();
 
   let hovered = $state<number | null>(null);
-  const pv = $derived(hovered === null ? undefined : live?.lines[hovered]?.san);
+  const pv = $derived(hovered === null ? undefined : info?.lines[hovered]?.san);
   const preview = $derived.by(() => {
     try {
       return pv && play(fen, pv);
@@ -20,18 +19,22 @@
 </script>
 
 <section>
-  {#if live}
+  {#if info}
     <header>
-      <span class="engine">{live.engine}</span>
-      <span>depth {live.depth}</span>
-      <span>{formatNps(live.nps)}</span>
+      {#if info.searching}
+        <span class="engine">{info.engine}</span>
+        <span>depth {info.depth}</span>
+        <span>{formatNps(info.nps)}</span>
+      {:else}
+        <span>Stored · depth {info.depth}</span>
+      {/if}
     </header>
     <ol>
-      {#each live.lines as line, i (i)}
+      {#each info.lines as line, i (i)}
         <li class="line" onmouseenter={() => (hovered = i)} onmouseleave={() => (hovered = null)}>
           <span class="score">{formatScore(line.score)}</span>
           <span class="depth">d{line.depth}</span>
-          <span class="pv">{formatLine(live.ply, line.san)}</span>
+          <span class="pv">{formatLine(info.ply, line.san)}</span>
         </li>
       {/each}
     </ol>
