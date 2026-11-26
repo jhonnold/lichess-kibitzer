@@ -1,8 +1,19 @@
 import { DEFAULT_POSITION } from 'chess.js';
 import { describe, expect, it } from 'vitest';
 import { winPercent } from '../shared/accuracy.js';
-import type { Board, Ply, SearchInfo } from '../shared/types.js';
-import { evalSeries, legalDests, panelInfo, play } from '../shared/viewer.js';
+import type { Board, Eval, Ply, QueueView, Result, SearchInfo } from '../shared/types.js';
+import {
+  boardState,
+  evalSeries,
+  formatResult,
+  legalDests,
+  ordinal,
+  panelInfo,
+  play,
+  selectedBoard,
+  shortName,
+  statusLine,
+} from '../shared/viewer.js';
 
 describe('play', () => {
   it('plays a SAN line (PV) to its end position', () => {
@@ -107,5 +118,131 @@ describe('panelInfo', () => {
 
   it('no search and no stored lines is null', () => {
     expect(panelInfo({ id: 'g', plies: [withLines(0, [])] } as unknown as Board, null)).toBeNull();
+  });
+});
+
+const mk = (n: number, plies: number, result: Result = '*'): Board =>
+  ({
+    id: `g${n}`,
+    board: n,
+    result,
+    plies: Array.from({ length: plies }, () => ({ move: null, at: null, eval: null })),
+  }) as unknown as Board;
+
+describe('selectedBoard', () => {
+  const boards = [mk(5, 1), mk(2, 1), mk(9, 1)];
+  it('finds the Tracked board by number', () => expect(selectedBoard(boards, 9)?.id).toBe('g9'));
+  it('falls back to the lowest-numbered board, whatever the order', () => {
+    expect(selectedBoard(boards, 3)?.id).toBe('g2');
+    expect(selectedBoard(boards, null)?.id).toBe('g2');
+  });
+  it('is null with no boards', () => expect(selectedBoard([], 1)).toBeNull());
+});
+
+describe('boardState / formatResult / shortName / ordinal', () => {
+  it('classifies a Board', () => {
+    expect(boardState(mk(1, 1))).toBe('upcoming');
+    expect(boardState(mk(1, 4))).toBe('live');
+    expect(boardState(mk(1, 4, '0-1'))).toBe('finished');
+  });
+  it('formats results', () => {
+    expect(['1-0', '0-1', '1/2-1/2', '*'].map((r) => formatResult(r as Result))).toEqual(['1-0', '0-1', '½-½', '*']);
+  });
+  it('shortens names', () => {
+    expect(shortName('Hoefelsauer, Thomas')).toBe('Hoefelsauer');
+    expect(shortName('Magnus Carlsen')).toBe('Carlsen');
+    expect(shortName('  Nepo ')).toBe('Nepo');
+  });
+  it('writes ordinals', () => {
+    expect([1, 2, 3, 4, 11, 12, 13, 21, 22, 101, 111].map(ordinal)).toEqual([
+      '1st',
+      '2nd',
+      '3rd',
+      '4th',
+      '11th',
+      '12th',
+      '13th',
+      '21st',
+      '22nd',
+      '101st',
+      '111th',
+    ]);
+  });
+});
+
+describe('statusLine', () => {
+  const ev = (kind: Eval['kind'], depth = 12): Eval => ({
+    score: { cp: 0 },
+    depth,
+    kind,
+    bestmove: null,
+    lines: [],
+  });
+  const withEval = (b: Board, ply: number, e: Eval): Board => {
+    b.plies[ply] = { ...b.plies[ply], eval: e };
+    return b;
+  };
+  const srch = (boardId: string, ply: number, depth: number) => ({ boardId, ply, depth }) as SearchInfo;
+  const q = (current: [string, number][] = [], backfill = 0): QueueView => ({
+    current: current.map(([boardId, ply]) => ({ boardId, ply })),
+    backfill,
+  });
+
+  it('a Complete eval is Done, even while a search names the same ply', () => {
+    expect(statusLine(withEval(mk(1, 3), 2, ev('complete', 21)), 2, srch('g1', 2, 5), q())).toEqual({
+      state: 'done',
+      text: 'Done · depth 21',
+    });
+  });
+  it('the running search is Searching; depth 0 has no depth', () => {
+    expect(statusLine(mk(1, 3), 2, srch('g1', 2, 21), q())).toEqual({
+      state: 'searching',
+      text: 'Searching · depth 21',
+    });
+    expect(statusLine(mk(1, 3), 2, srch('g1', 2, 0), q()).text).toBe('Searching');
+  });
+  it("another Board's search is ignored", () => {
+    expect(statusLine(mk(1, 3), 2, srch('g2', 2, 9), q()).state).toBe('none');
+  });
+  it('a queued ply shows its position, with a Provisional eval too', () => {
+    const queue = q([
+      ['g2', 1],
+      ['g3', 4],
+      ['g1', 2],
+    ]);
+    expect(statusLine(mk(1, 3), 2, null, queue)).toEqual({ state: 'queued', text: 'Queued · 3rd' });
+    expect(statusLine(withEval(mk(1, 3), 2, ev('provisional')), 2, null, queue).text).toBe('Queued · 3rd');
+  });
+  it('an earlier ply waits in the backfill tier, or just waits when it is empty', () => {
+    expect(statusLine(mk(1, 3), 1, null, q([], 2))).toEqual({ state: 'queued', text: 'Queued · backfill' });
+    expect(statusLine(mk(1, 3), 1, null, q()).text).toBe('Waiting');
+  });
+  it('a finished Board with no eval at its latest ply is Game over', () => {
+    expect(statusLine(mk(1, 3, '1-0'), 2, null, q())).toEqual({ state: 'none', text: 'Game over' });
+  });
+  it('a Provisional eval that is not queued says so; nothing at all is Waiting', () => {
+    expect(statusLine(withEval(mk(1, 3), 2, ev('provisional', 7)), 2, null, q())).toEqual({
+      state: 'none',
+      text: 'Provisional · depth 7',
+    });
+    expect(statusLine(mk(1, 3), 2, null, q()).text).toBe('Waiting');
+  });
+  it('an Upcoming Board queued at ply 0', () => {
+    expect(
+      statusLine(
+        mk(1, 1),
+        0,
+        null,
+        q([
+          ['g4', 0],
+          ['g5', 0],
+          ['g6', 0],
+          ['g1', 0],
+        ]),
+      ),
+    ).toEqual({
+      state: 'queued',
+      text: 'Queued · 4th',
+    });
   });
 });

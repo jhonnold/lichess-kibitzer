@@ -30,10 +30,11 @@
     "prebuild": "vite build",
     "build": "tsc -p tsconfig.backend.json",
     "check": "svelte-check --tsconfig ./web/tsconfig.json --fail-on-warnings",
+    "demo": "TS_NODE_PROJECT=tsconfig.backend.json node --loader ts-node/esm scripts/demo.ts",
     "dev-public": "vite build --watch",
     "dev-server": "TS_NODE_PROJECT=tsconfig.backend.json nodemon --watch src -x node --loader ts-node/esm src/main.ts",
     "format": "prettier --write \"{src,shared,test,web}/**/*.{ts,svelte,css,html}\"",
-    "lint": "eslint --fix src shared test web",
+    "lint": "eslint --fix src shared test web scripts",
     "start": "node build/src/main.js",
     "test": "vitest run"
   },

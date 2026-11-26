@@ -3,8 +3,10 @@
   import { changedOptions, initialValues, type UciOption } from '$shared/engine-form';
   import { adminApi, ApiError, type AdminStatus, type EventInfo, type Probe } from '$lib/admin-api';
   import { LiveStore } from '$lib/live.svelte';
+  import { formatJobTime, jobTimeMs } from '$shared/admin-form';
+  import { formatResult } from '$shared/viewer';
 
-  type Section = 'login' | 'round' | 'engine' | 'status';
+  type Section = 'login' | 'round' | 'engine' | 'status' | 'tracking';
 
   const store = new LiveStore(); // site state + Lichess stream status, same feed as the Viewer
   let authed = $state<boolean | null>(null); // null: checking the cookie
@@ -20,6 +22,10 @@
   let options = $state<UciOption[]>([]);
   let values = $state<Record<string, string>>({});
   let saved = $state(false);
+  let status = $state<AdminStatus | null>(null);
+  let topN = $state('');
+  let jobSeconds = $state('');
+  let checked = $state<string[]>([]); // ids of the boards ticked in the Tracked set
 
   /** One action at a time; failures show inline in their section. A 401 means the cookie is gone: back to login. */
   async function run(section: Section, action: () => Promise<void>): Promise<void> {
@@ -37,8 +43,14 @@
     }
   }
 
+  /** GET /status into `status`; the Tracking form follows the server's values. */
+  async function refresh(): Promise<AdminStatus> {
+    const s = (status = await adminApi<AdminStatus>('GET', '/status'));
+    [topN, checked] = [String(s.topN), s.round?.boards.filter((b) => b.tracked).map((b) => b.id) ?? []];
+    return s;
+  }
   async function loadStatus(): Promise<void> {
-    const s = await adminApi<AdminStatus>('GET', '/status');
+    const s = await refresh();
     authed = true;
     ({ path, options: config } = s.engine);
     await run('engine', probe); // form prefilled with the current (or default) config
@@ -55,7 +67,11 @@
       event = await adminApi<EventInfo>('GET', `/event?link=${encodeURIComponent(link)}`);
       roundId = event.defaultRoundId ?? event.rounds[0]?.id ?? '';
     });
-  const track = () => run('round', () => adminApi('POST', '/round', { link, roundId }));
+  const track = () =>
+    run('round', async () => {
+      await adminApi('POST', '/round', { link, roundId });
+      await refresh();
+    });
 
   async function probe(): Promise<void> {
     const p = await adminApi<Probe>('POST', '/engine/probe', { path });
@@ -68,7 +84,22 @@
       [config, saved] = [cfg.options, true];
     });
   const press = (name: string) => run('engine', () => adminApi('POST', '/engine/button', { name }));
-  const clear = () => run('status', () => adminApi('POST', '/clear'));
+  const clear = () =>
+    run('status', async () => {
+      await adminApi('POST', '/clear');
+      await refresh();
+    });
+  /** One Tracking control: send it, then re-read the status. */
+  const control = (path: string, body: unknown) =>
+    run('tracking', async () => {
+      await adminApi('PUT', path, body);
+      await refresh();
+    });
+  const setJobTime = () => {
+    const ms = jobTimeMs(String(jobSeconds));
+    if (ms === null) errors.tracking = 'Enter seconds > 0';
+    else control('/jobtime', { ms });
+  };
 
   onMount(() => {
     // A valid cookie skips the login form; a 401 here is just "not logged in yet".
@@ -130,6 +161,43 @@
       {/if}
       {#if errors.round}<p class="error">{errors.round}</p>{/if}
     </section>
+
+    {#if status}
+      <section>
+        <h2>Tracking</h2>
+        <form onsubmit={(e) => (e.preventDefault(), control('/topn', { n: Number(topN) }))}>
+          <label>
+            Tracked boards in the next Round (top N)
+            <input type="number" min="1" max="64" step="1" required bind:value={topN} />
+          </label>
+          <button disabled={busy}>Save</button>
+        </form>
+        <form onsubmit={(e) => (e.preventDefault(), setJobTime())}>
+          <p>Job time: <b>{formatJobTime(status.jobTimeMs)}</b></p>
+          <label>
+            Seconds
+            <input type="number" min="0.1" step="0.1" bind:value={jobSeconds} />
+          </label>
+          <button disabled={busy}>Set</button>
+          <button type="button" disabled={busy} onclick={() => control('/jobtime', { ms: null })}>Unset</button>
+        </form>
+        {#if status.round}
+          <form onsubmit={(e) => (e.preventDefault(), control('/tracked', { boardIds: checked }))}>
+            {#each status.round.boards as b (b.id)}
+              <label>
+                <input type="checkbox" value={b.id} bind:group={checked} />
+                Board {b.board} · {b.white.name} – {b.black.name} ({formatResult(b.result)})
+              </label>
+            {/each}
+            <button disabled={busy}>Save tracked boards</button>
+            <small>Applies to this Round only</small>
+          </form>
+        {:else}
+          <p>No Current Round</p>
+        {/if}
+        {#if errors.tracking}<p class="error">{errors.tracking}</p>{/if}
+      </section>
+    {/if}
 
     <section>
       <h2>Kibitzer</h2>

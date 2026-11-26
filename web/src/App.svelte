@@ -2,9 +2,11 @@
   import { onMount } from 'svelte';
   import Viewer from './pages/Viewer.svelte';
   import Admin from './pages/Admin.svelte';
+  import { parseHash } from '$shared/route';
 
-  // Hash router: `#/admin` → Admin, anything else → Viewer.
+  // Hash router: see shared/route.ts. Viewer stays mounted across hash changes (one EventSource).
   let hash = $state(location.hash);
+  const route = $derived(parseHash(hash).route);
 
   onMount(() => {
     const onHashChange = () => (hash = location.hash);
@@ -13,8 +15,8 @@
   });
 </script>
 
-{#if hash === '#/admin'}
+{#if route.page === 'admin'}
   <Admin />
 {:else}
-  <Viewer />
+  <Viewer board={route.board} />
 {/if}

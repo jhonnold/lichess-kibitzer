@@ -7,21 +7,27 @@
   import EvalBar from '../components/EvalBar.svelte';
   import EvalGraph from '../components/EvalGraph.svelte';
   import MoveList from '../components/MoveList.svelte';
+  import BoardStrip from '../components/BoardStrip.svelte';
   import PlayerBar from '../components/PlayerBar.svelte';
   import { LiveStore } from '$lib/live.svelte';
   import { clockOf, positionOf, type Position } from '$lib/position';
-  import { panelInfo, play } from '$shared/viewer';
+  import { boardState, formatResult, panelInfo, play, selectedBoard, statusLine } from '$shared/viewer';
+
+  const { board }: { board: number | null } = $props();
 
   const store = new LiveStore();
   onMount(() => store.connect());
 
   const snap = $derived(store.snap);
-  // Board 1: the lowest-numbered Tracked board of the Current Round.
-  const game = $derived(snap?.round?.boards[0] ?? null);
+  const boards = $derived(snap?.round?.boards ?? []);
+  const game = $derived(selectedBoard(boards, board));
+  const notTracked = $derived(board !== null && !!game && game.board !== board);
   const analysis = $derived(game && analyse(game.plies));
   const position = $derived(game && positionOf(game.plies));
-  const upcoming = $derived(!!game && game.result === '*' && game.plies.length === 1);
-  const live = $derived(!!game && game.result === '*' && !upcoming);
+  const bState = $derived(game && boardState(game));
+  const upcoming = $derived(bState === 'upcoming');
+  const live = $derived(bState === 'live');
+  const status = $derived(game && statusLine(game, game.plies.length - 1, snap?.search ?? null, snap!.queue));
   const panel = $derived(game && panelInfo(game, snap?.search ?? null));
   const panelFen = $derived(panel && game && positionOf(game.plies.slice(0, panel.ply + 1)).fen);
   // The running search's score only while it is for this Board's latest position; else the latest stored eval.
@@ -66,8 +72,10 @@
       </div>
     </div>
     <aside>
+      <BoardStrip {boards} selected={game.board} />
+      {#if notTracked}<div class="warn">Board {board} is not tracked · showing board {game.board}</div>{/if}
       {#if upcoming}<div class="banner">Upcoming · {snap.round?.name}</div>{/if}
-      {#if !upcoming && !live}<div class="banner">Game over · {game.result.replace('1/2', '½')}</div>{/if}
+      {#if !upcoming && !live}<div class="banner">Game over · {formatResult(game.result)}</div>{/if}
       {#if !store.connected}<div class="warn">Reconnecting to server…</div>{/if}
       {#if snap.stream === 'reconnecting'}<div class="warn">Lichess stream reconnecting…</div>{/if}
       {#if exploring}
@@ -76,7 +84,7 @@
           <button onclick={() => (explore = null)}>Back to live</button>
         </div>
       {/if}
-      <EnginePanel info={panel} fen={panelFen ?? position.fen} />
+      <EnginePanel info={panel} fen={panelFen ?? position.fen} {status} />
       <EvalGraph plies={game.plies} live={liveScore} />
       <MoveList plies={game.plies} marks={analysis.marks} />
       <p class="from">
