@@ -121,36 +121,60 @@ describe('panelInfo', () => {
     id: 'g',
     plies: [withLines(5), withLines(7), { move: null, at: null, eval: null }],
   } as unknown as Board;
-  const search = (boardId: string, ply: number, lines = [line(1)]): SearchInfo => ({
+  const search = (boardId: string, ply: number, lines = [line(1)], multi = [line(2), line(0)]): SearchInfo => ({
     boardId,
     ply,
     engine: 'E',
     depth: 3,
     nps: 100,
     lines,
+    multi: { depth: 2, nps: 50, lines: multi },
     startedAt: 0,
+    tier: 'current',
   });
 
-  it('a search on the ply is searching, even with no lines yet', () => {
+  it('a search on the ply is searching: the main line above the Lines, each filling in on its own', () => {
     expect(panelInfo(board, 2, search('g', 2))).toEqual({
       ply: 2,
       searching: true,
       engine: 'E',
       depth: 3,
       nps: 100,
-      lines: [line(1)],
+      main: line(1),
+      lines: [line(2), line(0)],
+      linesDepth: 2,
+      linesNps: 50,
     });
-    expect(panelInfo(board, 2, search('g', 2, []))?.lines).toEqual([]);
+    expect(panelInfo(board, 2, search('g', 2, []))).toMatchObject({ main: null, lines: [line(2), line(0)] });
+    expect(panelInfo(board, 2, { ...search('g', 2, []), multi: null })).toMatchObject({ main: null, lines: [] });
   });
 
   it('a search on an earlier ply the Cursor is on is searching', () => {
-    expect(panelInfo(board, 1, search('g', 1))).toMatchObject({ ply: 1, searching: true, lines: [line(1)] });
+    expect(panelInfo(board, 1, search('g', 1))).toMatchObject({ ply: 1, searching: true, main: line(1) });
   });
 
-  it("else the ply's stored eval", () => {
-    const stored = { ply: 1, searching: false, engine: null, depth: 9, nps: null, lines: [line(7)] };
-    expect(panelInfo(board, 1, search('other', 2))).toEqual(stored);
-    expect(panelInfo(board, 1, null)).toEqual(stored);
+  it("else the ply's stored eval: main line and the multi copy's Lines", () => {
+    const e = { score: { cp: 7 }, depth: 30, kind: 'complete', bestmove: null, lines: [line(7)] } as const;
+    const two = { id: 'g', plies: [{ move: null, at: null, eval: { ...e, multi: { depth: 20, lines: [line(9)] } } }] };
+    expect(panelInfo(two as unknown as Board, 0, null)).toEqual({
+      ply: 0,
+      searching: false,
+      engine: null,
+      depth: 30,
+      nps: null,
+      main: line(7),
+      lines: [line(9)],
+      linesDepth: 20,
+      linesNps: null,
+    });
+    const none = { id: 'g', plies: [{ move: null, at: null, eval: { ...e, multi: null } }] }; // the multi copy gave none
+    expect(panelInfo(none as unknown as Board, 0, null)).toMatchObject({ main: line(7), lines: [], linesDepth: 0 });
+  });
+
+  it('an eval from before the second copy: its first line is the main line, all of them the Lines', () => {
+    const stored = { ply: 1, searching: false, main: line(7), lines: [line(7)], depth: 9, linesDepth: 9 };
+    expect(panelInfo(board, 1, search('other', 2))).toMatchObject(stored);
+    expect(panelInfo(board, 1, null)).toMatchObject(stored);
     expect(panelInfo(board, 0, search('g', 2))).toMatchObject({ ply: 0, searching: false, lines: [line(5)] });
   });
 

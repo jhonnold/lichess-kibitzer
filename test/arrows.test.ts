@@ -62,4 +62,24 @@ describe('arrows', () => {
     expect(arrows([], 'white')).toEqual([]);
     expect(arrows([line(10, 'e2e4')], 'white')).toMatchObject([{ rank: 0, strength: 'best' }]);
   });
+
+  describe('with the main line', () => {
+    it('draws it best, then the Lines judged against their own line 1, skipping its move', () => {
+      const a = arrows(table([40, 30, -20, -100]), 'white', line(25, 'd2d4'));
+      expect(a.map((x) => [x.rank, x.strength, x.label, x.from])).toEqual([
+        [0, 'best', '+0.25', 'd2'],
+        [1, 'good', '+0.40', 'e2'],
+        [3, 'inaccuracy', '-0.20', 'g1'],
+      ]);
+    });
+
+    it('without a usable main line, line 1 is best', () => {
+      expect(arrows(table([40, 30]), 'white', line(25, 'd2d4', []))[0]).toMatchObject({ rank: 0, from: 'e2' });
+      expect(arrows(table([40]), 'white', null)[0]).toMatchObject({ rank: 0, strength: 'best' });
+    });
+
+    it('draws it alone when there are no Lines', () => {
+      expect(arrows([], 'white', line(25, 'd2d4')).map((x) => x.strength)).toEqual(['best']);
+    });
+  });
 });

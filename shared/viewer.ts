@@ -65,28 +65,58 @@ export function evalSeries(plies: Ply[], live: Score | null): { win: (number | n
 export const formatScore = (s: Score): string =>
   'mate' in s ? `#${s.mate}` : `${s.cp > 0 ? '+' : ''}${(s.cp / 100).toFixed(2)}`;
 
-/** What the engine panel shows for one Board. */
+/** What the engine panel shows for one Board: the main copy's line (main, depth, nps) above the multi copy's Lines
+ *  (lines, linesDepth, linesNps). nps only while searching. */
 export interface PanelInfo {
   ply: number;
   searching: boolean;
   engine: string | null;
   depth: number;
   nps: number | null;
+  main: PvLine | null;
   lines: PvLine[];
+  linesDepth: number;
+  linesNps: number | null;
 }
 
 /**
- * The panel at the Cursor's `ply`: the running search if it is for this ply (empty lines at Job start: an empty
- * panel, not older lines); else that ply's stored eval with lines; else null (no fallback to an earlier ply).
+ * The panel at the Cursor's `ply`: the running search if it is for this ply (nothing yet at Job start: an empty
+ * panel, not older lines; each copy's part fills in on its own); else that ply's stored eval with a line or Lines;
+ * else null (no fallback to an earlier ply).
  */
 export function panelInfo(board: Board, ply: number, search: SearchInfo | null): PanelInfo | null {
   if (search?.boardId === board.id && search.ply === ply) {
-    const lines = search.multi?.lines.length ? search.multi.lines : search.lines;
-    return { ply, searching: true, engine: search.engine, depth: search.depth, nps: search.nps, lines };
+    const { engine, depth, nps, multi } = search;
+    const lines = multi?.lines ?? [];
+    const main = search.lines[0] ?? null;
+    return {
+      ply,
+      searching: true,
+      engine,
+      depth,
+      nps,
+      main,
+      lines,
+      linesDepth: multi?.depth ?? 0,
+      linesNps: multi?.nps ?? null,
+    };
   }
   const e = board.plies[ply]?.eval;
-  const lines = (e && multiOf(e)?.lines.length ? multiOf(e)!.lines : e?.lines) ?? [];
-  return e && lines.length ? { ply, searching: false, engine: null, depth: e.depth, nps: null, lines } : null;
+  const multi = e && multiOf(e);
+  const main = e?.lines[0] ?? null;
+  if (!e || (!main && !multi?.lines.length)) return null;
+  const lines = multi?.lines ?? [];
+  return {
+    ply,
+    searching: false,
+    engine: null,
+    depth: e.depth,
+    nps: null,
+    main,
+    lines,
+    linesDepth: multi?.depth ?? 0,
+    linesNps: null,
+  };
 }
 
 /**

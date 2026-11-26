@@ -141,7 +141,7 @@
   );
   const arrowsOn = $derived(layout.arrows ?? showArrows);
   // No panel (own moves, a ply without lines) → no arrows.
-  const shapes = $derived(arrowsOn && panel && view ? arrows(panel.lines, view.position.turn) : []);
+  const shapes = $derived(arrowsOn && panel && view ? arrows(panel.lines, view.position.turn, panel.main) : []);
 
   const FLIP_KEY = 'kibitzer.flip';
   let flipped = $state(
