@@ -1,11 +1,11 @@
 <script lang="ts">
-  import { play, type PanelInfo, type StatusLine } from '$shared/viewer';
+  import { play, type PanelInfo } from '$shared/viewer';
   import { formatLine, formatNps, formatScore } from '$lib/format';
   import Board from './Board.svelte';
 
   // fen: the position at info.ply, which the lines are played from.
-  type Props = { info: PanelInfo | null; fen: string; status: StatusLine | null };
-  const { info, fen, status }: Props = $props();
+  type Props = { info: PanelInfo | null; fen: string };
+  const { info, fen }: Props = $props();
 
   let hovered = $state<number | null>(null);
   const pv = $derived(hovered === null ? undefined : info?.lines[hovered]?.san);
@@ -16,96 +16,130 @@
       return undefined; // a line that doesn't fit the board (stale after a move upsert): no preview
     }
   });
+  const meta = $derived(
+    info
+      ? [
+          info.engine,
+          info.searching ? formatNps(info.nps) : null,
+          `${info.lines.length} ${info.lines.length === 1 ? 'line' : 'lines'}`,
+          info.depth ? `d${info.depth}` : null,
+        ]
+          .filter(Boolean)
+          .join(' · ')
+      : '',
+  );
 </script>
 
-<section>
-  {#if status}<div class="status {status.state}">{status.text}</div>{/if}
-  {#if info}
-    <!-- The status line above has the state and depth; this adds only what it lacks. -->
-    {#if info.searching}
-      <header>
-        <span class="engine">{info.engine}</span>
-        <span>{formatNps(info.nps)}</span>
-      </header>
-    {/if}
+<section class="card" aria-label="Engine lines">
+  <header>
+    <h2>Engine</h2>
+    <span>{meta}</span>
+  </header>
+  {#if info?.lines.length}
     <ol>
       {#each info.lines as line, i (i)}
-        <li class="line" onmouseenter={() => (hovered = i)} onmouseleave={() => (hovered = null)}>
-          <span class="score">{formatScore(line.score)}</span>
-          <span class="depth">d{line.depth}</span>
-          <span class="pv">{formatLine(info.ply, line.san)}</span>
+        <li onmouseenter={() => (hovered = i)} onmouseleave={() => (hovered = null)}>
+          <span class="score" class:best={i === 0}>{formatScore(line.score)}</span>
+          <span class="pv">
+            {#each formatLine(info.ply, line.san).split(' ') as t, j (j)}<span class:num={/^\d+\.+$/.test(t)}>
+                {t + ' '}
+              </span>{/each}
+          </span>
         </li>
       {/each}
     </ol>
     {#if preview}<div class="preview"><Board position={preview} /></div>{/if}
   {:else}
-    <header><span class="muted">No engine output</span></header>
+    <p>{info ? 'Waiting for lines…' : 'No engine output'}</p>
   {/if}
 </section>
 
 <style>
-  section {
+  .card {
     position: relative;
-  }
-  .status {
-    padding: 6px 12px;
-    color: var(--muted);
-    background: var(--surface2);
-  }
-  .status.searching {
-    color: var(--accent);
-  }
-  .status.done {
-    color: var(--text);
+    border-radius: var(--radius);
+    background: var(--surface);
   }
   header {
     display: flex;
-    gap: 16px;
-    padding: 8px 12px;
-    background: var(--surface);
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 16px 6px;
+  }
+  h2 {
+    margin: 0;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
     color: var(--muted);
   }
-  .engine {
-    color: var(--text);
-    font-weight: 600;
+  header span {
+    overflow: hidden;
+    font-size: 12px;
+    color: var(--muted);
+    white-space: nowrap;
+    text-overflow: ellipsis;
   }
   ol {
     margin: 0;
     padding: 0;
     list-style: none;
   }
-  .line {
+  li {
     display: flex;
-    gap: 10px;
-    padding: 6px 12px;
-    border-bottom: 1px solid var(--line);
-    font-family: var(--fontMono);
-    white-space: nowrap;
+    align-items: center;
+    gap: 12px;
+    min-height: 34px;
+    padding: 0 16px;
+    border-top: 1px solid var(--surface3);
+  }
+  li:last-child {
+    border-radius: 0 0 var(--radius) var(--radius);
+  }
+  li:hover {
+    background: var(--surface3);
   }
   .score {
-    min-width: 56px;
-    font-weight: 700;
+    flex: none;
+    width: 58px;
+    padding: 2px 0;
+    border-radius: 4px;
+    background: var(--line);
+    font: 600 13px var(--fontMono);
+    text-align: center;
   }
-  .depth {
-    color: var(--muted);
+  .score.best {
+    background: var(--evalW);
+    color: var(--onLight);
   }
   .pv {
+    flex: 1 1 0;
+    min-width: 0;
     overflow: hidden;
+    font: 400 13.5px var(--fontMono);
+    white-space: nowrap;
     text-overflow: ellipsis;
   }
-  .line:hover {
-    background: var(--surface);
+  .num {
+    color: var(--dim);
   }
-  /* End position of the hovered line, over the graph and move list below. */
+  p {
+    margin: 0;
+    padding: 8px 16px 14px;
+    color: var(--muted);
+  }
+  /* End position of the hovered line, over the cards below. */
   .preview {
     position: absolute;
     top: 100%;
     right: 12px;
-    z-index: 1;
+    z-index: 2;
     width: 320px;
+    overflow: hidden;
     border: 4px solid var(--surface);
-  }
-  .muted {
-    color: var(--muted);
+    border-radius: var(--radius);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
   }
 </style>
