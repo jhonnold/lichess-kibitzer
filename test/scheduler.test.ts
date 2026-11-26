@@ -42,7 +42,7 @@ const upd = (gameId: string, uci: string[], result: T.Result = '*'): GameUpdate 
   status: result === '*' ? 'ongoing' : 'finished',
 });
 
-let dir: string, logFile: string, t: number;
+let dir: string, logFile: string, multiLog: string, t: number;
 let state: RoundState, sched: Scheduler, src: ReplaySource, sources: ReplaySource[], sourceIds: string[];
 let engineArgs: string[]; // read per launch
 let delays: number[]; // restart delays asked of `after`
@@ -55,7 +55,9 @@ function setup(
     topN?: number;
     engineArgs?: string[];
     manual?: boolean; // restart timers wait in `fire` instead of running at once
-    launch?: (real: () => Promise<Engine>) => Promise<Engine>;
+    launch?: (real: () => Promise<Engine>) => Promise<Engine>; // the main copy
+    multiArgs?: string[]; // the multi copy: its own log (multiLog), --offset 5 so its scores differ from main's
+    launchMulti?: (real: () => Promise<Engine>) => Promise<Engine>;
     init?: ConstructorParameters<typeof RoundState>[1];
     fetchOpening?: (uci: readonly string[]) => Promise<string | null>;
   } = {},
@@ -68,9 +70,18 @@ function setup(
   state.setJobTime(opts.jobTimeMs === undefined ? 15 : opts.jobTimeMs);
   engineArgs = opts.engineArgs ?? [];
   const real = () => Engine.start(process.execPath, { args: [FAKE, '--log', logFile, '--ply-score', ...engineArgs] });
+  const multiArgs = ['--log', multiLog, '--ply-score', '--offset', '5', ...(opts.multiArgs ?? [])];
+  const realMulti = () => Engine.start(process.execPath, { args: [FAKE, ...multiArgs] });
   sched = new Scheduler(state, {
     defaultEngine: engineConfig('fake', {}, 3),
-    launch: () => (opts.launch ? opts.launch(real) : real()),
+    launch: (_cfg, role) =>
+      role === 'main'
+        ? opts.launch
+          ? opts.launch(real)
+          : real()
+        : opts.launchMulti
+          ? opts.launchMulti(realMulti)
+          : realMulti(),
     after: (ms, fn) => {
       delays.push(ms);
       if (opts.manual) return (fire.push(fn), () => {});
@@ -83,7 +94,8 @@ function setup(
     fetchOpening: opts.fetchOpening,
   });
 }
-const readLog = () => readFileSync(logFile, 'utf8').trim().split('\n');
+/** The main copy's UCI log (multi: the multi copy's). */
+const readLog = (file = logFile) => readFileSync(file, 'utf8').trim().split('\n');
 const positions = () => readLog().filter((l) => l.startsWith('position '));
 const count = (cmd: string) => readLog().filter((l) => l === cmd || l.startsWith(cmd + ' ')).length;
 const evalOf = (id: string, ply: number) => state.board(id)!.plies[ply].eval;
@@ -123,6 +135,7 @@ const idle = () =>
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'scheduler-'));
   logFile = join(dir, 'uci.log');
+  multiLog = join(dir, 'multi.log');
   sources = [];
   sourceIds = [];
   t = 1000;
@@ -153,15 +166,17 @@ describe('Scheduler', () => {
   });
 
   it('observes job duration, depth and nps for each recorded Eval', async () => {
-    const count = async (m: typeof jobDuration | typeof jobDepth | typeof jobNps) => {
-      const one = (tier: string) => val(m, { tier, kind: 'complete' }, `${m.name}_count`);
+    const count = async (m: typeof jobDuration | typeof jobDepth | typeof jobNps, role?: string) => {
+      const one = (tier: string) => val(m, { tier, kind: 'complete', ...(role && { role }) }, `${m.name}_count`);
       return (await one('current')) + (await one('backfill'));
     };
-    const [d0, p0, n0, r0] = [
+    const [d0, p0, n0, r0, mp0, mn0] = [
       await count(jobDuration),
-      await count(jobDepth),
-      await count(jobNps),
+      await count(jobDepth, 'main'),
+      await count(jobNps, 'main'),
       await outcomes('recorded'),
+      await count(jobDepth, 'multi'),
+      await count(jobNps, 'multi'),
     ];
     setup();
     await sched.startRound(roundInfo('R1', ['g1']), null);
@@ -170,8 +185,10 @@ describe('Scheduler', () => {
     const done = [0, 1, 2, 3].filter((p) => complete('g1', p)).length;
     expect(done).toBeGreaterThanOrEqual(1);
     expect((await count(jobDuration)) - d0).toBeGreaterThanOrEqual(done);
-    expect((await count(jobDepth)) - p0).toBeGreaterThanOrEqual(done);
-    expect((await count(jobNps)) - n0).toBeGreaterThanOrEqual(done); // the fake engine sends nps
+    expect((await count(jobDepth, 'main')) - p0).toBeGreaterThanOrEqual(done);
+    expect((await count(jobNps, 'main')) - n0).toBeGreaterThanOrEqual(done); // the fake engine sends nps
+    expect((await count(jobDepth, 'multi')) - mp0).toBeGreaterThanOrEqual(done);
+    expect((await count(jobNps, 'multi')) - mn0).toBeGreaterThanOrEqual(done);
     expect((await outcomes('recorded')) - r0).toBeGreaterThanOrEqual((await count(jobDuration)) - d0); // + Provisional
   });
 
@@ -267,20 +284,98 @@ describe('Scheduler', () => {
     expect(slices).toEqual([]);
   });
 
-  it('records the engine lines White POV', async () => {
+  it("records the main line and the multi copy's Lines White POV; score is the main line's", async () => {
     setup({ topN: 1 });
     await sched.startRound(roundInfo('R1', ['g1']), null);
     src.push(upd('g1', []));
     await until(() => complete('g1', 0));
     const e = evalOf('g1', 0)!;
-    expect(e.lines).toHaveLength(3);
-    expect(e.lines[0]).toEqual({ score: { cp: 29 }, depth: 3, move: 'e2e4', san: ['e4', 'e5'] });
-    expect(e.lines[1].score).toEqual({ cp: 28 });
+    expect(e.lines).toEqual([{ score: { cp: 29 }, depth: 3, move: 'e2e4', san: ['e4', 'e5'] }]);
     expect(e.score).toEqual(e.lines[0].score);
     expect(e.bestmove).toBe('e2e4');
+    expect(e.multi!.depth).toBe(3);
+    expect(e.multi!.lines.map((l) => l.score)).toEqual([{ cp: 34 }, { cp: 33 }, { cp: 32 }]); // --offset 5
     src.push(upd('g1', ['e2e4']));
     await until(() => complete('g1', 1));
     expect(evalOf('g1', 1)!.score).toEqual({ cp: -129 });
+    expect(evalOf('g1', 1)!.multi!.lines[0].score).toEqual({ cp: -134 });
+  });
+
+  it('sends each copy the shared options, its Threads/Hash, then its MultiPV last', async () => {
+    setup({ topN: 1 });
+    await sched.setEngine({ ...engineConfig('fake', { Style: 'Risky' }, 4), main: { threads: 2, hash: 64 } });
+    await sched.startRound(roundInfo('R1', ['g1']), null);
+    const opts = (file: string) => readLog(file).filter((l) => l.startsWith('setoption'));
+    expect(opts(logFile)).toEqual([
+      'setoption name Style value Risky',
+      'setoption name Threads value 2',
+      'setoption name Hash value 64',
+      'setoption name MultiPV value 1',
+    ]);
+    expect(opts(multiLog)).toEqual([
+      'setoption name Style value Risky',
+      'setoption name Threads value 1',
+      'setoption name Hash value 1024',
+      'setoption name MultiPV value 4',
+    ]);
+  });
+
+  it('searches each position on both copies at once and stops them together', async () => {
+    setup({ topN: 1, jobTimeMs: 5000 });
+    await sched.startRound(roundInfo('R1', ['g1']), null);
+    await until(
+      () => state.snapshot().search?.multi?.lines.length === 3 && state.snapshot().search!.lines.length === 1,
+    );
+    expect(state.snapshot().search).toMatchObject({ depth: 3, multi: { depth: 3, nps: 100000 } });
+    await sched.engine!.stop(); // the main copy ends the Job: the multi copy is stopped with it
+    await until(() => complete('g1', 0));
+    expect(readLog(multiLog)).toContain('stop');
+    expect(evalOf('g1', 0)!.multi!.lines).toHaveLength(3);
+  });
+
+  it('keeps accuracy on the main copy: a multi crash records the main eval without Lines, no crash counted', async () => {
+    const crashed = await outcomes('crashed');
+    setup({ topN: 1, multiArgs: ['--crash-on', 'e2e4'] });
+    await sched.startRound(roundInfo('R1', ['g1']), null);
+    src.push(upd('g1', ['e2e4', 'e7e5']));
+    await idle();
+    expect(evalOf('g1', 1)).toMatchObject({ kind: 'complete', score: { cp: -129 }, multi: null });
+    expect(evalOf('g1', 2)!.multi!.lines).toHaveLength(3);
+    expect(state.dead).toEqual([]);
+    expect((await outcomes('crashed')) - crashed).toBe(0);
+    await poll(() => sched.copyState('multi') === 'up');
+    expect(sched.copyRestarts('multi')).toBeGreaterThanOrEqual(1);
+    expect(sched.copyRestarts('main')).toBe(0);
+  });
+
+  it('fixes the Job outcome when the main copy ends, not while it waits for the multi copy', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    setup({
+      topN: 1,
+      launchMulti: async (real) => {
+        const e = await real();
+        const search = e.search.bind(e);
+        e.search = (...args) => search(...args).then(async (r) => (await gate, r)); // held until released
+        return e;
+      },
+    });
+    await sched.startRound(roundInfo('R1', ['g1']), null);
+    await poll(() => readLog().includes('> bestmove e2e4')); // the main copy finished the start position
+    src.push(upd('g1', ['e2e4'])); // its Board moved on: would have evicted the Job as stale
+    release();
+    await until(() => complete('g1', 0));
+    expect(sched.evictions).toEqual([]);
+  });
+
+  it('runs Jobs on the main copy alone while the multi copy is down', async () => {
+    setup({ topN: 1, manual: true, launchMulti: () => Promise.reject(new Error('no multi')) });
+    await sched.startRound(roundInfo('R1', ['g1']), null);
+    src.push(upd('g1', ['e2e4']));
+    await idle();
+    expect(sched.copyState('multi')).toBe('restarting');
+    expect(evalOf('g1', 1)).toMatchObject({ kind: 'complete', multi: null });
+    expect(evalOf('g1', 0)).toMatchObject({ kind: 'complete', multi: null });
   });
 
   it('searches a corrected latest move again', async () => {
@@ -439,13 +534,14 @@ describe('Scheduler', () => {
     await sched.setJobTime(null); // keep the requeued Job from starting on the new engine
     await sched.setEngine(engineConfig('fake', {}, 2));
     expect(count('uci')).toBe(2);
-    expect(readLog()).toContain('setoption name MultiPV value 2');
+    expect(readLog(multiLog).filter((l) => l === 'uci')).toHaveLength(2); // both copies restart
+    expect(readLog(multiLog)).toContain('setoption name MultiPV value 2');
     expect(sched.running).toBeNull();
     expect(queueView().current).toEqual([{ boardId: 'g1', ply: 0 }]);
     expect((await outcomes('interrupted')) - interrupted).toBe(1);
     await sched.setJobTime(15);
     await until(() => complete('g1', 0));
-    expect(evalOf('g1', 0)!.lines).toHaveLength(2);
+    expect(evalOf('g1', 0)!.multi!.lines).toHaveLength(2);
   });
 
   it('restarts a crashed engine and carries on with the other Jobs', async () => {
@@ -455,10 +551,10 @@ describe('Scheduler', () => {
     src.push(upd('g2', D4));
     await until(() => [0, 1, 2, 3].every((i) => complete('g2', i)));
     expect(count('uci')).toBeGreaterThanOrEqual(2);
-    expect(count('setoption name MultiPV value 3')).toBeGreaterThanOrEqual(2); // options applied again on relaunch
-    await poll(() => sched.engineState === 'up');
+    expect(count('setoption name MultiPV value 1')).toBeGreaterThanOrEqual(2); // options applied again on relaunch
+    await poll(() => sched.copyState('main') === 'up');
     expect(delays[0]).toBe(RESTART_MIN_MS);
-    expect(sched.restarts).toBeGreaterThanOrEqual(1);
+    expect(sched.copyRestarts('main')).toBeGreaterThanOrEqual(1);
   });
 
   describe('Dead-letter queue', () => {
@@ -565,7 +661,7 @@ describe('Scheduler', () => {
       await until(() => state.dead.length === 3);
       await poll(() => delays.length === 9);
       expect(delays).toEqual([1000, 2000, 4000, 8000, 16000, 32000, 60000, 60000, 60000]);
-      expect(sched.restarts).toBe(9);
+      expect(sched.copyRestarts('main')).toBe(9);
     });
 
     it('starts over after a Job completes', async () => {
@@ -587,8 +683,8 @@ describe('Scheduler', () => {
         launch: (real) => (n++ < 2 ? Promise.reject(new Error('no such engine')) : real()),
       });
       await sched.startRound(roundInfo('R1', ['g1']), null); // does not throw
-      expect(sched.engineState).toBe('restarting');
-      await poll(() => sched.engineState === 'up');
+      expect(sched.copyState('main')).toBe('restarting');
+      await poll(() => sched.copyState('main') === 'up');
       expect(delays).toEqual([1000, 2000]);
       await until(() => complete('g1', 0));
     });
@@ -599,7 +695,7 @@ describe('Scheduler', () => {
       setup({ topN: 1, jobTimeMs: null, engineArgs: ['--crash-on', 'e2e4'] });
       await sched.startRound(roundInfo('R1', ['g1']), null);
       await sched.engine!.quit();
-      await poll(() => sched.engineState === 'up' && count('uci') === 2);
+      await poll(() => sched.copyState('main') === 'up' && count('uci') === 2);
       expect(delays).toEqual([1000]);
       expect(state.dead).toEqual([]);
       src.push(upd('g1', E4.slice(0, 1)));
@@ -613,9 +709,9 @@ describe('Scheduler', () => {
       await sched.startRound(roundInfo('R1', ['g1']), null);
       await sched.engine!.quit();
       await poll(() => fire.length === 1);
-      expect(sched.engineState).toBe('restarting');
+      expect(sched.copyState('main')).toBe('restarting');
       await sched.setEngine(engineConfig('fake'));
-      expect(sched.engineState).toBe('up');
+      expect(sched.copyState('main')).toBe('up');
       fire[0]();
       await sched.setJobTime(null); // waits for the timer's turn on the serial chain
       expect(count('uci')).toBe(2);
@@ -629,7 +725,7 @@ describe('Scheduler', () => {
       await sched.stop();
       fire[0]();
       await sched.setJobTime(null);
-      expect([count('uci'), sched.engineState]).toEqual([1, null]);
+      expect([count('uci'), sched.copyState('main')]).toEqual([1, null]);
     });
   });
 });

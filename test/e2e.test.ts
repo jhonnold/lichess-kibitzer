@@ -40,8 +40,9 @@ const ROUND_INFO: RoundInfo = {
 const fetchEvent = vi.fn(async () => EVENT);
 const WAIT = { timeout: 15_000 }; // slow CI
 const TEST_TIMEOUT = 30_000;
-let dir: string, logFile: string, cookie: string, src: ReplaySource, srv: Running;
-const readLog = () => (existsSync(logFile) ? readFileSync(logFile, 'utf8').trim().split('\n') : []);
+let dir: string, logFile: string, multiLog: string, cookie: string, src: ReplaySource, srv: Running;
+/** The main copy's UCI log (multiLog: the multi copy's). */
+const readLog = (file = logFile) => (existsSync(file) ? readFileSync(file, 'utf8').trim().split('\n') : []);
 const positions = () => readLog().filter((l) => l.startsWith('position startpos moves '));
 const boot = async () => {
   cookie = '';
@@ -51,7 +52,8 @@ const boot = async () => {
     defaultEngine: engineConfig('fake'),
     adminPassword: 'pw',
     scheduler: {
-      launch: () => Engine.start(process.execPath, { args: [FAKE, '--log', logFile] }),
+      launch: (_cfg, role) =>
+        Engine.start(process.execPath, { args: [FAKE, '--log', role === 'main' ? logFile : multiLog] }),
       source: () => (src = ReplaySource.fromFile(PGN)), // 3 Boards, 7 updates
     },
     app: { sse: { throttleMs: 20 } },
@@ -97,6 +99,7 @@ const freshSnapshot = async (): Promise<Snapshot> => {
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), 'e2e-'));
   logFile = join(dir, 'uci.log');
+  multiLog = join(dir, 'multi.log');
   srv = await boot();
 });
 afterEach(async () => {
@@ -142,6 +145,7 @@ describe('live analysis over SSE', () => {
           .slice(2)
           .filter((p) => lastTwo.includes(p)),
       ).toEqual([]); // each latest searched once, first
+      expect(readLog(multiLog).filter((l) => l.startsWith('position startpos moves '))).toEqual(positions()); // paired
       const qb = srv.state.board('qbPxmdQ2')!;
       expect([qb.plies.length > 1, qb.tracked, qb.result]).toEqual([true, false, '0-1']); // recorded, not analysed
       expect((await freshSnapshot()).round?.boards.some((b) => b.id === qb.id)).toBe(false);

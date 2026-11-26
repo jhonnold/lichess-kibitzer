@@ -47,13 +47,22 @@ export interface PvLine {
   san: string[];
 }
 
-/** score White POV (= lines[0].score); bestmove UCI; lines by multipv, best first, may be empty. */
+/** The multi copy's Lines of a position: by multipv, best first; depth = lines[0].depth. */
+export interface MultiLines {
+  depth: number;
+  lines: PvLine[];
+}
+
+/** The main copy's search: score White POV (= lines[0].score); bestmove UCI; lines = its line (MultiPV 1), may be
+ *  empty. multi: the multi copy's Lines of the same Job; null = it gave none (down, crashed). Absent in evals recorded
+ *  before the second copy, whose `lines` held every MultiPV line: read the Lines with multiOf. */
 export interface Eval {
   score: Score;
   depth: number;
   kind: EvalKind;
   bestmove: string | null;
   lines: PvLine[];
+  multi?: MultiLines | null;
 }
 
 /** plies[0] = start position (move null, at null). at = arrival ms epoch; null = start or already played when first seen. */
@@ -103,7 +112,7 @@ export const DEFAULT_TOP_N = 8;
 /** Job time of a fresh state file (existing state keeps its value). Chosen in docs/jobtime.md. */
 export const DEFAULT_JOB_TIME_MS = 15_000;
 
-/** Running Job's output so far. Transient. */
+/** Running Job's output so far: the main copy's (depth, nps, lines) and the multi copy's (null: not searching). Transient. */
 export interface SearchInfo {
   boardId: string;
   ply: number;
@@ -111,6 +120,7 @@ export interface SearchInfo {
   depth: number;
   nps: number | null;
   lines: PvLine[];
+  multi: (MultiLines & { nps: number | null }) | null;
   startedAt: number; // ms epoch
   tier: Tier; // of the running Job
 }

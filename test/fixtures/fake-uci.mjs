@@ -2,7 +2,8 @@
 // --crash-on <moves> (exit 3 on go after `position startpos moves <moves>`; '' = start position),
 // --ply-score (cp = 100 * plies + 10 * depth - multipv, so 29 at depth 3 / multipv 1 from the start),
 // --legal-pv (line k = the k-th legal move + the first legal reply; cp = 10 * depth + [40, 30, -20, -100, -300][k - 1]
-// from the side to move, so 70/60/10/-70/-270 at depth 3; overrides --ply-score).
+// from the side to move, so 70/60/10/-70/-270 at depth 3; overrides --ply-score), --offset <cp> (added to every score).
+// bestmove = the first move of the last multipv 1 line (e2e4 before any).
 import { appendFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 
@@ -18,13 +19,15 @@ const out = (l) => process.stdout.write(l + '\n');
 let multipv = 1;
 let moves = ''; // space-joined UCI moves of the last `position`
 let pending = null; // { timer } while searching
+let best = 'e2e4';
+const offset = argv.includes('--offset') ? Number(argv[argv.indexOf('--offset') + 1]) : 0;
 
 const finish = () => {
   if (!pending) return;
   clearTimeout(pending.timer);
   pending = null;
-  log('> bestmove e2e4');
-  out('bestmove e2e4 ponder e7e5');
+  log(`> bestmove ${best}`);
+  out(`bestmove ${best}`);
 };
 
 createInterface({ input: process.stdin }).on('line', (line) => {
@@ -50,7 +53,8 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     let legal = null;
     if (Chess) {
       const chess = new Chess();
-      for (const m of moves ? moves.split(' ') : []) chess.move({ from: m.slice(0, 2), to: m.slice(2, 4), promotion: m[4] });
+      for (const m of moves ? moves.split(' ') : [])
+        chess.move({ from: m.slice(0, 2), to: m.slice(2, 4), promotion: m[4] });
       legal = chess.moves({ verbose: true });
     }
     const lan = (m) => m.from + m.to + (m.promotion ?? '');
@@ -66,7 +70,11 @@ createInterface({ input: process.stdin }).on('line', (line) => {
           pv = lan(legal[k - 1]) + (reply ? ' ' + lan(reply) : '');
           score = 10 * d + (OFFSET[k - 1] ?? -300 - 100 * (k - 5));
         }
-        out(`info depth ${d} seldepth ${d + 2} multipv ${k} score cp ${score} nodes ${1000 * d} nps 100000 time ${d} pv ${pv}`);
+        score += offset;
+        if (k === 1) best = pv.split(' ')[0];
+        out(
+          `info depth ${d} seldepth ${d + 2} multipv ${k} score cp ${score} nodes ${1000 * d} nps 100000 time ${d} pv ${pv}`,
+        );
       }
     out('info depth 4 multipv 1 score cp 99 lowerbound nodes 4000 nps 100000 time 4 pv e2e4');
     const mt = rest[0] === 'movetime' ? Number(rest[1]) : null;

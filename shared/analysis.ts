@@ -1,5 +1,5 @@
 import { gameAccuracy, moveMark, type Color, type Mark, type Score } from './accuracy.js';
-import type { Ply } from './types.js';
+import type { Eval, MultiLines, Ply } from './types.js';
 
 export interface Analysis {
   white: number | null; // game accuracy %, unrounded; null = no scored move
@@ -38,3 +38,7 @@ export const MARK_GLYPH: Record<Mark, string> = { inaccuracy: '?!', mistake: '?'
 export function latestMark(plies: readonly Ply[]): Mark | null {
   return analyse(plies).marks.at(-1) ?? null;
 }
+
+/** An eval's Lines: the multi copy's (null: it gave none). Evals recorded before the second copy kept them in `lines`. */
+export const multiOf = (e: Eval): MultiLines | null =>
+  e.multi === undefined ? { depth: e.depth, lines: e.lines } : e.multi;

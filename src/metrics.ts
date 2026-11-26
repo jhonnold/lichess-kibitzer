@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { basename } from 'node:path';
 import { collectDefaultMetrics, Counter, Gauge, Histogram, Registry } from 'prom-client';
-import type { EngineConfig } from '../shared/types.js';
+import type { EngineConfig, EngineRole } from '../shared/types.js';
 import type { Follower } from './follower.js';
 import type { RoundState } from './round-state.js';
 import type { Scheduler } from './scheduler.js';
@@ -13,7 +13,7 @@ collectDefaultMetrics({ register, prefix: 'kibitzer_' });
 /** What the scrape-time metrics read. Set by createApp; before that they report nothing. */
 export interface MetricSources {
   state: Pick<RoundState, 'queue' | 'dead' | 'settings'>;
-  scheduler: Pick<Scheduler, 'engineState' | 'restarts'>;
+  scheduler: Pick<Scheduler, 'copyState' | 'copyRestarts'>;
   follower: Pick<Follower, 'status'>;
   defaultEngine: EngineConfig;
 }
@@ -33,6 +33,8 @@ function buildRev(): string {
   return process.env.GIT_REV || 'unknown';
 }
 const rev = buildRev();
+
+const ROLES: readonly EngineRole[] = ['main', 'multi'];
 
 export const buildInfo = new Gauge({
   name: 'kibitzer_build_info',
@@ -68,26 +70,30 @@ export const deadLetterSize = new Gauge({
     if (src) this.set(src.state.dead.length);
   },
 });
+/** `role`: the engine copy, main (MultiPV 1) or multi (MultiPV N). */
 export const engineUp = new Gauge({
   name: 'kibitzer_engine_up',
-  help: '1 while the engine is up, 0 while restarting or without a Round',
+  help: '1 while the engine copy is up, 0 while restarting or without a Round, by role (main, multi)',
+  labelNames: ['role'],
   registers: [register],
   collect() {
     this.reset();
-    if (src) this.set(src.scheduler.engineState === 'up' ? 1 : 0);
+    if (src) for (const role of ROLES) this.set({ role }, src.scheduler.copyState(role) === 'up' ? 1 : 0);
   },
 });
 /** `idle`: no engine wanted (no Round, or stopped). Every state is exported, the current one as 1. */
 export const engineState = new Gauge({
   name: 'kibitzer_engine_state',
-  help: '1 for the engine state: up, restarting, or idle (no Round)',
-  labelNames: ['state'],
+  help: '1 for the engine copy state: up, restarting, or idle (no Round), by role (main, multi)',
+  labelNames: ['role', 'state'],
   registers: [register],
   collect() {
     this.reset();
     if (!src) return;
-    const now = src.scheduler.engineState ?? 'idle';
-    for (const state of ['up', 'restarting', 'idle']) this.set({ state }, state === now ? 1 : 0);
+    for (const role of ROLES) {
+      const now = src.scheduler.copyState(role) ?? 'idle';
+      for (const state of ['up', 'restarting', 'idle']) this.set({ role, state }, state === now ? 1 : 0);
+    }
   },
 });
 /** One outcome per Job run: recorded (an Eval, evicted Provisional ones included), empty (no scored line), dropped,
@@ -107,11 +113,12 @@ export const evictions = new Counter({
 /** The Scheduler's restart count is already monotonic for the process, so the counter mirrors it at scrape time. */
 export const engineRestarts = new Counter({
   name: 'kibitzer_engine_restarts_total',
-  help: 'Engine restarts since the process started',
+  help: 'Engine copy restarts since the process started, by role (main, multi)',
+  labelNames: ['role'],
   registers: [register],
   collect() {
     this.reset();
-    if (src) this.inc(src.scheduler.restarts);
+    if (src) for (const role of ROLES) this.inc({ role }, src.scheduler.copyRestarts(role));
   },
 });
 
@@ -126,15 +133,15 @@ export const jobDuration = new Histogram({
 });
 export const jobDepth = new Histogram({
   name: 'kibitzer_job_depth',
-  help: 'Search depth reached by Jobs that recorded an Eval',
-  labelNames: ['tier', 'kind'],
+  help: 'Search depth reached by Jobs that recorded an Eval, by engine copy (role: main, multi)',
+  labelNames: ['tier', 'kind', 'role'],
   buckets: [5, 10, 15, 20, 25, 30, 35, 40, 50],
   registers: [register],
 });
 export const jobNps = new Histogram({
   name: 'kibitzer_job_nps',
-  help: 'Engine nodes per second at the end of Jobs that recorded an Eval',
-  labelNames: ['tier', 'kind'],
+  help: 'Engine nodes per second at the end of Jobs that recorded an Eval, by engine copy (role: main, multi)',
+  labelNames: ['tier', 'kind', 'role'],
   // Berserk benches ~1.95M nps on one thread (docs/jobtime.md).
   buckets: [1e5, 2.5e5, 5e5, 1e6, 1.5e6, 2e6, 2.5e6, 3e6, 4e6, 6e6],
   registers: [register],

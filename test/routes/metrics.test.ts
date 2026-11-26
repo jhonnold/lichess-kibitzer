@@ -6,6 +6,7 @@ import { createApp } from '../../src/app.js';
 import { httpDuration, httpRequests } from '../../src/metrics.js';
 import { RoundState } from '../../src/round-state.js';
 import type { EngineState } from '../../src/scheduler.js';
+import type { EngineRole } from '../../shared/types.js';
 import { val } from '../helpers/metric.js';
 import { sse } from '../helpers/sse.js';
 
@@ -25,8 +26,11 @@ function setup(...pw: [string | undefined] | []) {
     setEngine: async () => {},
     requeueDead: async () => true,
     discardDead: async () => true,
-    engineState: 'up' as EngineState,
-    restarts: 2,
+    states: { main: 'up', multi: 'up' } as Record<EngineRole, EngineState>,
+    copyState(role: EngineRole) {
+      return this.states[role];
+    },
+    copyRestarts: (role: EngineRole) => (role === 'main' ? 2 : 5),
     timing: { jobs: 0, provisional: 0, ms: null, depth: null },
   };
   const follower = {
@@ -76,8 +80,8 @@ describe('GET /api/admin/metrics', () => {
       'kibitzer_queue_depth{tier="current"}',
       'kibitzer_queue_depth{tier="backfill"}',
       'kibitzer_dead_letter_queue_size',
-      'kibitzer_engine_up',
-      'kibitzer_engine_restarts_total',
+      'kibitzer_engine_up{role="main"}',
+      'kibitzer_engine_restarts_total{role="multi"}',
       'kibitzer_job_duration_seconds',
       'kibitzer_job_depth',
       'kibitzer_lichess_stream_reconnects_total',
@@ -86,7 +90,7 @@ describe('GET /api/admin/metrics', () => {
       'kibitzer_opening_lookups_total',
       'kibitzer_evictions_total',
       'kibitzer_build_info{rev="',
-      'kibitzer_engine_state{state="up"}',
+      'kibitzer_engine_state{role="main",state="up"}',
       'kibitzer_jobs_total',
       'kibitzer_job_nps',
       'kibitzer_lichess_requests_total',
@@ -117,19 +121,22 @@ describe('GET /api/admin/metrics', () => {
     expect(body).toContain('kibitzer_queue_depth{tier="current"} 1');
     expect(body).toContain('kibitzer_queue_depth{tier="backfill"} 4');
     expect(body).toContain('kibitzer_dead_letter_queue_size 1');
-    expect(body).toContain('kibitzer_engine_up 1');
-    expect(body).toContain('kibitzer_engine_restarts_total 2');
-    expect(body).toContain('kibitzer_engine_state{state="up"} 1');
-    scheduler.engineState = 'restarting';
-    expect((await scrape(app, basic('admin:pw'))).text).toContain('kibitzer_engine_up 0');
+    expect(body).toContain('kibitzer_engine_up{role="main"} 1');
+    expect(body).toContain('kibitzer_engine_restarts_total{role="main"} 2');
+    expect(body).toContain('kibitzer_engine_restarts_total{role="multi"} 5');
+    expect(body).toContain('kibitzer_engine_state{role="main",state="up"} 1');
+    scheduler.states.multi = 'restarting';
+    const text = (await scrape(app, basic('admin:pw'))).text;
+    expect(text).toContain('kibitzer_engine_up{role="multi"} 0');
+    expect(text).toContain('kibitzer_engine_up{role="main"} 1');
     for (const [engineState, on] of [
       ['restarting', 'restarting'],
       [null, 'idle'],
     ] as const) {
-      scheduler.engineState = engineState;
+      scheduler.states.main = engineState;
       const text = (await scrape(app, basic('admin:pw'))).text;
       for (const st of ['up', 'restarting', 'idle'])
-        expect(text).toContain(`kibitzer_engine_state{state="${st}"} ${st === on ? 1 : 0}`);
+        expect(text).toContain(`kibitzer_engine_state{role="main",state="${st}"} ${st === on ? 1 : 0}`);
     }
   });
 

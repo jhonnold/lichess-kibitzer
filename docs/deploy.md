@@ -1,16 +1,17 @@
 # Deploying
 
 How to run Lichess Kibitzer as a systemd service. The host, `proxy-dmz` (Caddy + CrowdSec), DNS for
-`analysis.ccrl.live` and the Berserk build are managed in homelab, not here (see the PRD's *Deployment
-requirements*, kept outside this repo). This doc says what the app needs from them.
+`analysis.ccrl.live` and the Berserk build are managed in homelab, not here (see the PRD's _Deployment
+requirements_, kept outside this repo). This doc says what the app needs from them.
 
 ## What the app needs
 
 - **Node** `^20.19.0 || >=22.12.0` and npm (check `node -v`).
 - **A UCI engine binary** readable and executable by the `kibitzer` user, outside `/home` (the unit sets
   `ProtectHome=true`). Default: Berserk at `/usr/local/bin/berserk`.
-- **Memory** for the engine defaults: Hash=1024 MB plus Node's own footprint (sizing is homelab's). One engine
-  process at a time, none when Idle.
+- **Memory** for the engine defaults: Hash=1024 MB per copy plus Node's own footprint (sizing is homelab's). Two
+  copies of the engine run while a Round is followed (main MultiPV 1, Lines MultiPV N), none when Idle; CPU is both
+  copies' Threads.
 - **Outbound HTTPS** to `lichess.org` (broadcast API and PGN stream) and `explorer.lichess.org` (opening names, only
   for Boards whose PGN has no `Opening` tag).
 - **Inbound** TCP on `PORT` (default 8080) from the reverse proxy only. The app binds all interfaces.
@@ -41,12 +42,12 @@ before dropping privileges. If `node` is not `/usr/bin/node` (`command -v node`)
 All set in `/opt/lichess-kibitzer/.env` (template: [`.env.example`](../.env.example)). The unit adds
 `NODE_ENV=production`.
 
-| Var | Default | Notes |
-|-----|---------|-------|
-| `PORT` | `8080` | HTTP port. |
-| `ADMIN_PASSWORD` | unset | Unset or empty refuses every login. Also the basic-auth password of `/api/admin/metrics` (user `admin`). |
-| `DATA_FILE` | `data/state.json` (relative to the working dir) | Set to `/var/lib/lichess-kibitzer/state.json`: the only writable dir under `ProtectSystem=strict`. |
-| `DEFAULT_ENGINE` | `berserk` (PATH lookup) | Engine path prefilled on the Admin page; each copy Threads=1, Hash=1024, the Lines copy MultiPV=5. |
+| Var              | Default                                         | Notes                                                                                                    |
+| ---------------- | ----------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `PORT`           | `8080`                                          | HTTP port.                                                                                               |
+| `ADMIN_PASSWORD` | unset                                           | Unset or empty refuses every login. Also the basic-auth password of `/api/admin/metrics` (user `admin`). |
+| `DATA_FILE`      | `data/state.json` (relative to the working dir) | Set to `/var/lib/lichess-kibitzer/state.json`: the only writable dir under `ProtectSystem=strict`.       |
+| `DEFAULT_ENGINE` | `berserk` (PATH lookup)                         | Engine path prefilled on the Admin page; each copy Threads=1, Hash=1024, the Lines copy MultiPV=5.       |
 
 The Archive is the Round files under `<dir of DATA_FILE>/rounds/<tourId>/<roundId>.json` (with the default
 `DATA_FILE`, `/var/lib/lichess-kibitzer/rounds/`). Back that directory up with `state.json`; never edit the files by hand.
@@ -89,14 +90,14 @@ the Admin cookie; with no `ADMIN_PASSWORD` it always answers 401.
 
 - `kibitzer_queue_depth{tier}`: Jobs waiting, `current` and `backfill`
 - `kibitzer_dead_letter_queue_size`: Jobs in the Dead-letter queue
-- `kibitzer_engine_state{state}`: 1 for the current state (`up`, `restarting`, or `idle` with no Round), 0 for the
-  others. `kibitzer_engine_up`: 1 while up (0 both while restarting and when idle); `kibitzer_engine_restarts_total`:
-  restarts since boot
+- `kibitzer_engine_state{role,state}`: per engine copy (`role` `main` or `multi`), 1 for the current state (`up`,
+  `restarting`, or `idle` with no Round), 0 for the others. `kibitzer_engine_up{role}`: 1 while up (0 both while
+  restarting and when idle); `kibitzer_engine_restarts_total{role}`: restarts since boot
 - `kibitzer_jobs_total{tier,outcome}`: one outcome per Job run. `recorded` (an Eval, evicted Provisional ones
   included), `empty` (the search gave no scored line), `dropped` (a Round swap, an untrack or a stop),
   `interrupted` (engine restart), `crashed` (the engine died; requeued) or `dead_lettered` (its last crash)
 - `kibitzer_job_duration_seconds`, `kibitzer_job_depth` and `kibitzer_job_nps` (histograms, `tier` and `kind`
-  labels): Jobs that recorded an Eval; nps is the engine's last report
+  labels; depth and nps also `role`): Jobs that recorded an Eval; nps is the copy's last report
 - `kibitzer_lichess_requests_total{endpoint,outcome}`: every Lichess API call. `endpoint` is `event`, `round` or
   `explorer`; `outcome` is `ok`, `http_error`, `rate_limited` (a 429), `timeout`, `network` (no response, or a broken
   or non-JSON body) or `paused` (refused locally during the minute after a 429).

@@ -1,5 +1,6 @@
 import { Chess, DEFAULT_POSITION } from 'chess.js';
 import { winPercent, type Color, type Score } from './accuracy.js';
+import { multiOf } from './analysis.js';
 import { outcomeOf } from './archive.js';
 import type { Board, PvLine, Ply, QueueView, Result, SearchInfo, Snapshot } from './types.js';
 
@@ -80,10 +81,12 @@ export interface PanelInfo {
  */
 export function panelInfo(board: Board, ply: number, search: SearchInfo | null): PanelInfo | null {
   if (search?.boardId === board.id && search.ply === ply) {
-    return { ply, searching: true, engine: search.engine, depth: search.depth, nps: search.nps, lines: search.lines };
+    const lines = search.multi?.lines.length ? search.multi.lines : search.lines;
+    return { ply, searching: true, engine: search.engine, depth: search.depth, nps: search.nps, lines };
   }
   const e = board.plies[ply]?.eval;
-  return e?.lines.length ? { ply, searching: false, engine: null, depth: e.depth, nps: null, lines: e.lines } : null;
+  const lines = (e && multiOf(e)?.lines.length ? multiOf(e)!.lines : e?.lines) ?? [];
+  return e && lines.length ? { ply, searching: false, engine: null, depth: e.depth, nps: null, lines } : null;
 }
 
 /**
