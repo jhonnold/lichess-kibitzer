@@ -3,7 +3,7 @@ import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import express from 'express';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Eval, SearchInfo } from '../../shared/types-v2.js';
+import type { Eval, SearchInfo } from '../../shared/types.js';
 import { RoundState } from '../../src/round-state.js';
 import { eventsRouter } from '../../src/routes/events.js';
 import { sse } from '../helpers/sse.js';

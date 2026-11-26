@@ -1,6 +1,6 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import type { PersistedRound, PersistedState, Round } from '../shared/types-v2.js';
+import type { PersistedRound, PersistedState, Round } from '../shared/types.js';
 
 export const DEFAULT_DATA_FILE = 'data/state.json';
 

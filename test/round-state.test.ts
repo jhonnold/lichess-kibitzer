@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { RoundState } from '../src/round-state.js';
 import type { RoundInfo } from '../src/lichess/api.js';
 import type { DataStore } from '../src/store.js';
-import type * as T from '../shared/types-v2.js';
+import type * as T from '../shared/types.js';
 
 const mv = (uci: string): T.Move => ({ uci, san: uci, clock: null });
 const ev = (cp: number, kind: T.EvalKind = 'complete'): T.Eval => ({

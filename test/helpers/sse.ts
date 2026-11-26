@@ -1,4 +1,4 @@
-import type { SseEvent } from '../../shared/types-v2.js';
+import type { SseEvent } from '../../shared/types.js';
 
 /** Streaming SSE reader (supertest buffers until the response ends, so it can't read SSE). */
 export async function sse(url: string) {

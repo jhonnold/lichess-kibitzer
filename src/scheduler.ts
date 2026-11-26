@@ -1,6 +1,6 @@
 import { Chess } from 'chess.js';
 import { Queue, type Job } from '../shared/queue.js';
-import type * as T from '../shared/types-v2.js';
+import type * as T from '../shared/types.js';
 import { Engine, type SearchResult } from './engine/engine.js';
 import type { UciInfo } from './engine/uci-parser.js';
 import type { RoundInfo } from './lichess/api.js';

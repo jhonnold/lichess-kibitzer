@@ -1,8 +1,7 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { Router, type NextFunction, type Request, type Response } from 'express';
-import type { DeadJob } from '../../shared/queue.js';
-import type { EngineConfig, Player, QueueView, RegisteredEvent, Result, StreamStatus } from '../../shared/types-v2.js';
-import type { Job } from '../../shared/queue.js';
+import type { EngineConfig, Player, QueueView, RegisteredEvent, Result, StreamStatus } from '../../shared/types.js';
+import type { DeadJob, Job } from '../../shared/queue.js';
 import { probeEngine } from '../engine/engine.js';
 import type { UciOption } from '../engine/uci-parser.js';
 import { fetchEvent, fetchRound, LichessError, type EventInfo, type RoundInfo } from '../lichess/api.js';

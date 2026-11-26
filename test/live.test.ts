@@ -1,55 +1,101 @@
 import { describe, expect, it } from 'vitest';
 import { applyEvent } from '../shared/live.js';
-import type { LiveInfo, Ply, Snapshot } from '../shared/types.js';
+import type { Board, Ply, SearchInfo, Snapshot } from '../shared/types.js';
 
-const ref = { tourId: 't', roundId: 'r', id: 'g', white: { name: 'W' }, black: { name: 'B' } };
-const move = (uci: string): Ply => ({ move: { uci, san: uci, clock: null }, eval: null });
-const evald: Ply = { move: null, eval: { score: { cp: 20 }, depth: 10, kind: 'final', bestmove: 'e2e4' } };
-const info = (ply: number): LiveInfo => ({ ply, engine: 'E', depth: 5, nps: 1, lines: [] });
-const live = (): Snapshot => ({
-  site: 'live',
-  game: { ...ref, result: '*', plies: [{ move: null, eval: null }, move('e2e4')] },
-  live: info(1),
-  stream: 'connected',
+const ply = (uci?: string): Ply => ({ move: uci ? { uci, san: uci, clock: null } : null, at: null, eval: null });
+const board = (id: string, n: number, plies = [ply()]): Board => ({
+  id,
+  board: n,
+  white: { name: 'W' },
+  black: { name: 'B' },
+  result: '*',
+  tracked: true,
+  opening: null,
+  clocks: { white: null, black: null },
+  plies,
 });
+const snap = (): Snapshot => ({
+  event: null,
+  round: {
+    tourId: 't',
+    roundId: 'r',
+    name: 'R1',
+    eventName: 'E',
+    startsAt: null,
+    boards: [board('a', 1, [ply(), ply('e2e4')]), board('c', 3)],
+  },
+  search: null,
+  queue: { current: [], backfill: 0 },
+  stream: null,
+});
+const idle = (): Snapshot => ({ ...snap(), round: null });
+const search: SearchInfo = { boardId: 'a', ply: 1, engine: 'E', depth: 5, nps: 1, lines: [], startedAt: 0 };
+const ids = (s: Snapshot | null) => s?.round?.boards.map((b) => b.id);
 
 describe('applyEvent', () => {
   it('snapshot replaces everything, even before the first one', () => {
-    const s = live();
+    const s = snap();
     expect(applyEvent(null, { type: 'snapshot', snapshot: s })).toBe(s);
-    const idle: Snapshot = { site: 'idle', game: null, live: null, stream: null };
-    expect(applyEvent(s, { type: 'snapshot', snapshot: idle })).toBe(idle);
+    const i = idle();
+    expect(applyEvent(s, { type: 'snapshot', snapshot: i })).toBe(i);
   });
 
-  it('ignores patches with no snapshot or no game', () => {
-    expect(applyEvent(null, { type: 'info', live: info(0) })).toBeNull();
-    const idle: Snapshot = { site: 'idle', game: null, live: null, stream: null };
-    expect(applyEvent(idle, { type: 'ply', index: 0, ply: evald })).toBe(idle);
+  it('returns the same reference for patches before a snapshot or with no Round', () => {
+    const i = idle();
+    expect(applyEvent(null, { type: 'search', search })).toBeNull();
+    expect(applyEvent(i, { type: 'ply', boardId: 'a', index: 0, ply: ply() })).toBe(i);
+    expect(applyEvent(i, { type: 'untrack', boardId: 'a' })).toBe(i);
+    expect(applyEvent(i, { type: 'board', board: board('a', 1) })).toBe(i);
+    expect(applyEvent(i, { type: 'result', boardId: 'a', result: '1-0' })).toBe(i);
   });
 
-  it('ply replaces an eval in place and keeps the Live info', () => {
-    const s = live();
-    const next = applyEvent(s, { type: 'ply', index: 0, ply: evald })!;
-    expect(next.game!.plies).toEqual([evald, move('e2e4')]);
-    expect(next.live).toBe(s.live);
-    expect(s.game!.plies[0]).toEqual({ move: null, eval: null }); // not mutated
+  it('board replaces by id, else inserts in board order', () => {
+    const replaced = applyEvent(snap(), { type: 'board', board: board('a', 1, [ply()]) });
+    expect(replaced?.round?.boards[0].plies).toHaveLength(1);
+    expect(ids(applyEvent(snap(), { type: 'board', board: board('b', 2) }))).toEqual(['a', 'b', 'c']);
+    expect(ids(applyEvent(snap(), { type: 'board', board: board('z', 0) }))).toEqual(['z', 'a', 'c']);
   });
 
-  it('ply appends a new move and drops the now-stale info', () => {
-    const next = applyEvent(live(), { type: 'ply', index: 2, ply: move('e7e5') })!;
-    expect(next.game!.plies.map((p) => p.move?.uci)).toEqual([undefined, 'e2e4', 'e7e5']);
-    expect(next.live).toBeNull();
-    expect(applyEvent(live(), { type: 'ply', index: 5, ply: move('x') })).toEqual(live()); // gap: ignored
+  it('untrack removes a Board; an unknown id changes nothing', () => {
+    expect(ids(applyEvent(snap(), { type: 'untrack', boardId: 'a' }))).toEqual(['c']);
+    const s = snap();
+    expect(applyEvent(s, { type: 'untrack', boardId: 'x' })).toBe(s);
   });
 
-  it('info is kept only for the Live position; null clears it', () => {
-    const s = live();
-    expect(applyEvent(s, { type: 'info', live: info(0) })).toBe(s);
-    expect(applyEvent(s, { type: 'info', live: info(1) })!.live).toEqual(info(1));
-    expect(applyEvent(s, { type: 'info', live: null })!.live).toBeNull();
+  it('ply appends at the end, replaces below it, ignores a gap or an unknown Board', () => {
+    const appended = applyEvent(snap(), { type: 'ply', boardId: 'a', index: 2, ply: ply('e7e5') });
+    expect(appended?.round?.boards[0].plies.map((p) => p.move?.uci)).toEqual([undefined, 'e2e4', 'e7e5']);
+    const eval1: Ply = {
+      ...ply('e2e4'),
+      eval: { score: { cp: 1 }, depth: 1, kind: 'complete', bestmove: null, lines: [] },
+    };
+    const replaced = applyEvent(snap(), { type: 'ply', boardId: 'a', index: 1, ply: eval1 });
+    expect(replaced?.round?.boards[0].plies).toEqual([ply(), eval1]);
+    const s = snap();
+    expect(applyEvent(s, { type: 'ply', boardId: 'a', index: 5, ply: ply('x') })).toBe(s);
+    expect(applyEvent(s, { type: 'ply', boardId: 'x', index: 0, ply: ply() })).toBe(s);
   });
 
-  it('stream-status updates the stream', () => {
-    expect(applyEvent(live(), { type: 'stream-status', status: 'reconnecting' })!.stream).toBe('reconnecting');
+  it('result sets the result of that Board only', () => {
+    const next = applyEvent(snap(), { type: 'result', boardId: 'a', result: '1-0' });
+    expect(next?.round?.boards.map((b) => b.result)).toEqual(['1-0', '*']);
+    const s = snap();
+    expect(applyEvent(s, { type: 'result', boardId: 'x', result: '1-0' })).toBe(s);
+  });
+
+  it('search, queue and stream-status are set as sent', () => {
+    expect(applyEvent(snap(), { type: 'search', search })?.search).toBe(search);
+    expect(applyEvent(snap(), { type: 'queue', queue: { current: [], backfill: 4 } })?.queue.backfill).toBe(4);
+    expect(applyEvent(snap(), { type: 'stream-status', status: 'reconnecting' })?.stream).toBe('reconnecting');
+  });
+
+  it('never mutates its input', () => {
+    const s = snap();
+    const before = structuredClone(s);
+    applyEvent(s, { type: 'ply', boardId: 'a', index: 2, ply: ply('e7e5') });
+    applyEvent(s, { type: 'board', board: board('b', 2) });
+    applyEvent(s, { type: 'untrack', boardId: 'a' });
+    applyEvent(s, { type: 'result', boardId: 'a', result: '0-1' });
+    expect(s).toEqual(before);
   });
 });

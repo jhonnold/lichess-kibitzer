@@ -4,7 +4,8 @@ import type { Ply } from './types.js';
 export interface Analysis {
   white: number | null; // game accuracy %, unrounded; null = no scored move
   black: number | null;
-  fromMove: number | null; // full-move number of the first scored move ("from move 21"); null = none
+  scored: number; // moves with a Complete eval before and after them
+  total: number; // moves played
   marks: (Mark | null)[]; // marks[i] = mark of the move into plies[i]; marks[0] is always null
 }
 
@@ -12,19 +13,20 @@ export interface Analysis {
 const mover = (i: number): Color => (i % 2 === 1 ? 'white' : 'black');
 
 /**
- * Lichess accuracy and marks from Final evals only (Backfill counts as missing).
- * A move is judged only when the evals before and after it are both Final, and (lila) only when it
+ * Lichess accuracy and marks from Complete evals only (Provisional counts as missing).
+ * A move is judged only when the evals before and after it are both Complete, and (lila) only when it
  * differs from the engine's best move in the position before it.
  */
 export function analyse(plies: Ply[]): Analysis {
-  const finals: (Score | null)[] = plies.map((p) => (p.eval?.kind === 'final' ? p.eval.score : null));
+  const done: (Score | null)[] = plies.map((p) => (p.eval?.kind === 'complete' ? p.eval.score : null));
   const marks = plies.map((p, i) => {
-    const [before, after] = [finals[i - 1], finals[i]];
+    const [before, after] = [done[i - 1], done[i]];
     if (!before || !after || p.move?.uci === plies[i - 1].eval?.bestmove) return null;
     return moveMark(before, after, mover(i));
   });
-  const first = finals.findIndex((s, i) => s && finals[i + 1]); // position the first scored move is played from
-  if (first < 0) return { white: null, black: null, fromMove: null, marks };
-  const acc = gameAccuracy(finals.slice(first), mover(first + 1));
-  return { ...acc, fromMove: Math.floor(first / 2) + 1, marks };
+  const scored = done.filter((s, i) => i > 0 && s && done[i - 1]).length;
+  const first = done.findIndex((s, i) => s && done[i + 1]); // position the first scored move is played from
+  const total = plies.length - 1;
+  if (first < 0) return { white: null, black: null, scored, total, marks };
+  return { ...gameAccuracy(done.slice(first), mover(first + 1)), scored, total, marks };
 }

@@ -1,9 +1,8 @@
-import type { EngineConfig } from '$shared/types';
 import type { UciOption } from '$shared/engine-form';
 
-export type { Board, EventInfo, RoundInfo } from '../../../src/lichess/api';
+export type { EventInfo } from '../../../src/lichess/api';
+export type { AdminStatus } from '../../../src/routes/admin';
 export type Probe = { name: string; options: UciOption[] };
-export type AdminStatus = { engine: EngineConfig }; // GET /status: the saved config, else the server default
 
 export class ApiError extends Error {
   constructor(

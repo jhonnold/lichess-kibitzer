@@ -1,8 +1,8 @@
 # lichess-kibitzer
 
-Full-screen live engine analysis of a Lichess broadcast game. An Admin picks one Board from a Lichess
-broadcast and a UCI engine (default Berserk); Viewers see the board, clocks, eval bar and graph, MultiPV
-lines, move marks and accuracy, streamed over SSE.
+Full-screen live engine analysis of a Lichess broadcast. An Admin tracks a Round of an Event; one UCI engine
+(default Berserk) works through a Queue of Jobs over its Tracked boards; Viewers see board 1's clocks, eval bar
+and graph, MultiPV lines, move marks and accuracy, streamed over SSE.
 
 ## Development
 

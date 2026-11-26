@@ -17,41 +17,56 @@ const scores: Score[] = [
   fixture.initialEval,
   ...fixture.analysis.map((p): Score => (p.mate !== undefined ? { mate: p.mate } : { cp: p.eval! })),
 ];
-/** Plies of game sTbk79vJ; positions before `pick` are Backfill. Played move = best unless lila gives `best`. */
+/** Plies of game sTbk79vJ; positions before `pick` are Provisional. Played move = best unless lila gives `best`. */
 const plies = (pick = 0): Ply[] => [
   ...scores.map((score, i): Ply => {
-    const kind: EvalKind = i < pick ? 'backfill' : 'final';
+    const kind: EvalKind = i < pick ? 'provisional' : 'complete';
     const move = i ? { uci: uci[i - 1], san: '', clock: null } : null;
-    return { move, eval: { score, depth: 20, kind, bestmove: fixture.analysis[i]?.best ?? uci[i] ?? null } };
+    const bestmove = fixture.analysis[i]?.best ?? uci[i] ?? null;
+    return { move, at: null, eval: { score, depth: 20, kind, bestmove, lines: [] } };
   }),
-  { move: { uci: uci.at(-1)!, san: '', clock: null }, eval: null }, // checkmate: no eval
+  { move: { uci: uci.at(-1)!, san: '', clock: null }, at: null, eval: null }, // checkmate: no eval
 ];
 
 describe('analyse', () => {
   it('reproduces Lichess accuracy and every judgment for game sTbk79vJ', () => {
     const a = analyse(plies());
-    expect([Math.round(a.white!), Math.round(a.black!), a.fromMove]).toEqual([82, 71, 1]);
+    expect([Math.round(a.white!), Math.round(a.black!)]).toEqual([82, 71]);
+    expect([a.scored, a.total]).toEqual([plies().length - 2, plies().length - 1]); // the move into mate has no eval
     expect(a.marks).toEqual([null, ...fixture.analysis.map((p) => p.judgment?.toLowerCase() ?? null), null]);
   });
 
-  it('scores only moves between Final evals, from the pick', () => {
+  it('scores only moves between Complete evals, from the first pair', () => {
     const a = analyse(plies(20));
     expect(a.white).toBeCloseTo(73.6004, 4); // = gameAccuracy(evals.slice(20), 'white') in accuracy.test
     expect(a.black).toBeCloseTo(66.2263, 4);
-    expect(a.fromMove).toBe(11);
+    expect(a.scored).toBe(a.total - 21);
     expect(a.marks.slice(0, 21).every((m) => m === null)).toBe(true);
   });
 
-  it('skips the engine best move and returns nulls with no Final pair', () => {
+  it('a Provisional ply mid-game drops the two moves touching it', () => {
+    const p = plies();
+    p[30] = { ...p[30], eval: { ...p[30].eval!, kind: 'provisional' } };
+    expect(analyse(p).scored).toBe(analyse(plies()).scored - 2);
+  });
+
+  it('skips the engine best move and returns nulls with no Complete pair', () => {
     const p = (bestmove: string): Ply[] => [
-      { move: null, eval: { score: { cp: 0 }, depth: 1, kind: 'final', bestmove } },
+      { move: null, at: null, eval: { score: { cp: 0 }, depth: 1, kind: 'complete', bestmove, lines: [] } },
       {
         move: { uci: 'f2f3', san: 'f3', clock: null },
-        eval: { score: { cp: -300 }, depth: 1, kind: 'final', bestmove: null },
+        at: null,
+        eval: { score: { cp: -300 }, depth: 1, kind: 'complete', bestmove: null, lines: [] },
       },
     ];
     expect(analyse(p('f2f3')).marks[1]).toBeNull();
     expect(analyse(p('e2e4')).marks[1]).toBe('blunder');
-    expect(analyse([{ move: null, eval: null }])).toEqual({ white: null, black: null, fromMove: null, marks: [null] });
+    expect(analyse([{ move: null, at: null, eval: null }])).toEqual({
+      white: null,
+      black: null,
+      scored: 0,
+      total: 0,
+      marks: [null],
+    });
   });
 });

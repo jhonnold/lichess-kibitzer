@@ -1,7 +1,7 @@
 import { once } from 'node:events';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import type { EngineConfig } from '../shared/types-v2.js';
+import type { EngineConfig } from '../shared/types.js';
 import { createApp, type AppDeps } from './app.js';
 import { RoundState } from './round-state.js';
 import { Scheduler, type SchedulerOpts } from './scheduler.js';

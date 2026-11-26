@@ -1,10 +1,9 @@
 import type { Score } from './accuracy.js';
+import type { DeadJob } from './queue.js';
+export type { DeadJob, Score };
 
-export type SiteState = 'idle' | 'live' | 'finished';
 export type StreamStatus = 'connected' | 'reconnecting';
 export type Result = '1-0' | '0-1' | '1/2-1/2' | '*';
-/** backfill: `go movetime 100` (never counts for accuracy); final: last eval before `stop` on the next move / game end. */
-export type EvalKind = 'backfill' | 'final';
 
 export interface Player {
   name: string;
@@ -18,71 +17,121 @@ export interface EngineConfig {
   options: Record<string, string>;
 }
 
-/** The Featured game: which Board, and who plays it. */
-export interface GameRef {
-  tourId: string;
-  roundId: string;
-  id: string;
-  white: Player;
-  black: Player;
-}
-
 export interface Move {
   san: string;
   uci: string;
   clock: number | null; // ms left for the mover after this move, from [%clk]
 }
 
-export interface Eval {
-  score: Score; // White POV
-  depth: number;
-  kind: EvalKind;
-  bestmove: string | null; // engine's best move from this position (UCI); for lila's "only judge non-best moves"
-}
+/** complete: ran its full job time (or ended early on a forced mate); provisional: the Job was interrupted. */
+export type EvalKind = 'complete' | 'provisional';
 
-/** One position. plies[0] = start position (move null); plies[i] = after i moves. eval null = not analysed / terminal. */
-export interface Ply {
-  move: Move | null;
-  eval: Eval | null;
-}
-
-export interface Game extends GameRef {
-  result: Result;
-  plies: Ply[]; // length = moves + 1
-}
-
-/** The JSON file at DATA_FILE. */
-export interface Persisted {
-  version: 1;
-  engine: EngineConfig | null; // null = Admin page defaults
-  game: Game | null;
-}
-
+/** One MultiPV line. White POV. `move` = UCI of san[0] (arrows: from = move.slice(0, 2), to = slice(2, 4)). */
 export interface PvLine {
-  score: Score; // White POV
+  score: Score;
   depth: number;
+  move: string;
   san: string[];
 }
 
-/** Current search of the Live position. Not persisted. */
-export interface LiveInfo {
-  ply: number; // index in plies of the position being analysed (lets clients drop stale info)
-  engine: string; // UCI id name
+/** score White POV (= lines[0].score); bestmove UCI; lines by multipv, best first, may be empty. */
+export interface Eval {
+  score: Score;
+  depth: number;
+  kind: EvalKind;
+  bestmove: string | null;
+  lines: PvLine[];
+}
+
+/** plies[0] = start position (move null, at null). at = arrival ms epoch; null = start or already played when first seen. */
+export interface Ply {
+  move: Move | null;
+  at: number | null;
+  eval: Eval | null;
+}
+
+export interface Board {
+  id: string; // Lichess game id
+  board: number; // 1-based, Lichess order (fetchRound boards[] index + 1)
+  white: Player;
+  black: Player;
+  result: Result;
+  tracked: boolean;
+  opening: string | null;
+  clocks: { white: number | null; black: number | null }; // ms, from fetchRound at startRound
+  plies: Ply[]; // recorded for every Board of the Round, tracked or not
+}
+
+/** startsAt ms epoch; boards in Lichess order. eventName copied in so a Round file alone re-shows the Round. */
+export interface Round {
+  tourId: string;
+  roundId: string;
+  name: string;
+  eventName: string;
+  startsAt: number | null;
+  boards: Board[];
+}
+
+/** The registered Event. */
+export interface RegisteredEvent {
+  tourId: string;
+  name: string;
+  link: string;
+}
+
+export interface Settings {
+  event: RegisteredEvent | null; // null = Idle
+  engine: EngineConfig | null; // null = Admin page defaults
+  jobTimeMs: number | null; // null = unset: Queue idles
+  topN: number; // default Tracked boards for the next Round
+}
+
+export const DEFAULT_TOP_N = 8;
+
+/** Running Job's output so far. Transient. */
+export interface SearchInfo {
+  boardId: string;
+  ply: number;
+  engine: string;
   depth: number;
   nps: number | null;
-  lines: PvLine[]; // by multipv, best first
+  lines: PvLine[];
+  startedAt: number; // ms epoch
 }
 
+/** Queue as Viewers need it: current-tier Jobs in run order (position = index + 1), backfill count. Transient. */
+export interface QueueView {
+  current: { boardId: string; ply: number }[];
+  backfill: number;
+}
+
+/** Round in a Snapshot carries only Tracked boards. */
 export interface Snapshot {
-  site: SiteState;
-  game: Game | null;
-  live: LiveInfo | null;
-  stream: StreamStatus | null; // null when not Live
+  event: RegisteredEvent | null;
+  round: Round | null;
+  search: SearchInfo | null;
+  queue: QueueView;
+  stream: StreamStatus | null;
 }
 
-/** SSE payloads. `snapshot` replaces all client state; `ply` upserts game.plies[index]. */
+/** Per-board events carry boardId and are sent only for Tracked boards. */
 export type SseEvent =
-  | { type: 'snapshot'; snapshot: Snapshot }
-  | { type: 'ply'; index: number; ply: Ply }
-  | { type: 'info'; live: LiveInfo | null }
-  | { type: 'stream-status'; status: StreamStatus };
+  | { type: 'snapshot'; snapshot: Snapshot } // event change, startRound
+  | { type: 'board'; board: Board } // upsert one Tracked board (newly tracked, or retract)
+  | { type: 'untrack'; boardId: string }
+  | { type: 'ply'; boardId: string; index: number; ply: Ply } // append (index = plies.length) or eval upsert
+  | { type: 'result'; boardId: string; result: Result }
+  | { type: 'search'; search: SearchInfo | null }
+  | { type: 'queue'; queue: QueueView }
+  | { type: 'stream-status'; status: StreamStatus | null };
+
+/** data/state.json */
+export interface PersistedState {
+  version: 2;
+  settings: Settings;
+  current: { tourId: string; roundId: string } | null; // Current Round's file
+  dead: DeadJob[]; // Dead-letter queue (of the Current Round)
+}
+
+/** data/rounds/<tourId>/<roundId>.json. The Archive = every such file except the Current Round's. */
+export type PersistedRound = Round & { version: 2 };

@@ -13,11 +13,11 @@
   let chart: Chart<'line', (number | null)[], number> | undefined;
   let series = evalSeries([], null); // read by the chart's style callbacks; not reactive
 
-  // White win % over plies; Backfill segments dashed and muted; a dot on the latest point (the Live position).
+  // White win % over plies; Provisional segments dashed and muted; a dot on the latest point.
   $effect(() => {
     const css = (token: string) => getComputedStyle(canvas).getPropertyValue(token).trim();
     const muted = css('--muted');
-    const backfill = (i: number) => series.backfill[i];
+    const provisional = (i: number) => series.provisional[i];
     chart = new Chart(canvas, {
       type: 'line',
       data: { labels: [], datasets: [{ data: [] }] },
@@ -32,8 +32,8 @@
             borderColor: css('--accent'),
             fill: { target: { value: 50 }, above: css('--graphW'), below: 'transparent' },
             segment: {
-              borderColor: (c) => (backfill(c.p0DataIndex) || backfill(c.p1DataIndex) ? muted : undefined),
-              borderDash: (c) => (backfill(c.p0DataIndex) || backfill(c.p1DataIndex) ? [4, 4] : undefined),
+              borderColor: (c) => (provisional(c.p0DataIndex) || provisional(c.p1DataIndex) ? muted : undefined),
+              borderDash: (c) => (provisional(c.p0DataIndex) || provisional(c.p1DataIndex) ? [4, 4] : undefined),
             },
             pointRadius: (c) => (c.dataIndex === series.win.findLastIndex((w) => w !== null) ? 4 : 0),
             pointBackgroundColor: css('--accent'),
