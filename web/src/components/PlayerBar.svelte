@@ -39,7 +39,14 @@
     font-weight: 700;
   }
   .name {
+    min-width: 0;
+    overflow: hidden;
     font-weight: 600;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  .player > :not(.name) {
+    flex: none;
   }
   .muted {
     color: var(--muted);

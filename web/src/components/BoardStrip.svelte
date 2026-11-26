@@ -5,18 +5,25 @@
   import type { Board } from '$shared/types';
   import { archivedResult, boardState, formatResult, shortName } from '$shared/viewer';
 
-  type Props = { boards: Board[]; selected: number; ctx?: ArchiveCtx | null; onFlip?: () => void; lichess?: string };
-  const { boards, selected, ctx = null, onFlip, lichess }: Props = $props();
-  const href = (n: number) => (ctx ? archiveHash(ctx.tourId, ctx.roundId, n) : boardHash(n));
+  type Props = {
+    boards: Board[];
+    selected: number;
+    ctx?: ArchiveCtx | null;
+    onFlip?: () => void;
+    lichess?: string;
+    query?: string;
+  };
+  const { boards, selected, ctx = null, onFlip, lichess, query = '' }: Props = $props();
+  const href = (n: number) => (ctx ? archiveHash(ctx.tourId, ctx.roundId, n) : boardHash(n)) + query;
 </script>
 
 <div class="links">
   {#if ctx}
-    <a href={archiveHash(ctx.tourId, ctx.roundId)}>Overview (o)</a>
+    <a href={archiveHash(ctx.tourId, ctx.roundId) + query}>Overview (o)</a>
     <a href={ARCHIVE_HASH}>All Rounds</a>
-    <a href="#/">Back to live</a>
+    <a href={'#/' + query}>Back to live</a>
   {:else}
-    <a href={ROUND_HASH}>Overview (o)</a>
+    <a href={ROUND_HASH + query}>Overview (o)</a>
     <a href={ARCHIVE_HASH}>Archive</a>
   {/if}
   {#if lichess}<a href={lichess} target="_blank" rel="noopener">Open on Lichess</a>{/if}
