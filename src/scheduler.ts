@@ -337,7 +337,6 @@ export class Scheduler {
     if (!why) return;
     run.stop = 'preempt';
     run.evicted = why;
-    evictions.inc({ reason: why });
     void this.engine_.stop().catch(() => {});
   }
 
@@ -424,6 +423,7 @@ export class Scheduler {
     this.backoff = RESTART_MIN_MS;
     if (run.stop === 'drop') return;
     if (run.stop !== 'restart') {
+      if (run.evicted) evictions.inc({ reason: run.evicted }); // not before: a halt may override the stop
       const e = toEval(r, ply, run.fen, run.stop ? 'provisional' : 'complete');
       if (e) {
         this.recordJob(job, this.now - run.startedAt, e);
