@@ -67,3 +67,42 @@ export function layoutOf(params: Record<string, string>): Layout {
     transparent: params.bg === 'transparent',
   };
 }
+
+/** The four top-level sections: the app bar's tabs (≥700px) and the phone tab bar. */
+export type Tab = 'board' | 'round' | 'archive' | 'admin';
+export interface NavLink {
+  tab: Tab;
+  label: string;
+  href: string;
+  key?: string; // keyboard shortcut shown next to the label
+  current: boolean;
+}
+export const ADMIN_HASH = '#/admin';
+
+/** Which section a route belongs to: an archived Round is in the Archive. */
+export function tabOf(route: Route): Tab {
+  if (route.page === 'viewer') return 'board';
+  if (route.page === 'archive-round') return 'archive';
+  return route.page;
+}
+
+/**
+ * Links to each section. board: the live Viewer hash to go back to (the last Board seen). Board and Round keep the
+ * streaming params (query); Archive and Admin drop them.
+ */
+export function navLinks(route: Route, board: string, query: string): NavLink[] {
+  const at = tabOf(route);
+  const link = (tab: Tab, label: string, href: string, key?: string): NavLink => ({
+    tab,
+    label,
+    href,
+    ...(key ? { key } : {}),
+    current: tab === at,
+  });
+  return [
+    link('board', 'Board', board),
+    link('round', 'Round', ROUND_HASH + query, 'o'),
+    link('archive', 'Archive', ARCHIVE_HASH),
+    link('admin', 'Admin', ADMIN_HASH),
+  ];
+}

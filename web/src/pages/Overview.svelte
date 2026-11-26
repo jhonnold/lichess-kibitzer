@@ -47,7 +47,7 @@
 <style>
   main {
     --b: max(160px, min(calc((100vh - 236px) / 2), calc((100vw - 80px) / 4 - 34px)));
-    height: 100vh;
+    height: 100%;
     padding: 12px 16px;
     overflow-y: auto;
   }

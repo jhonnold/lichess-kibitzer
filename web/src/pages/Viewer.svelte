@@ -289,7 +289,7 @@
 
 <style>
   main {
-    height: 100vh;
+    height: 100%;
   }
   .message {
     display: grid;

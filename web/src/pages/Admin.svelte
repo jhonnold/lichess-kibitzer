@@ -283,9 +283,9 @@
 </main>
 
 <style>
-  /* tokens.css locks body scrolling for the full-screen Viewer, so this page scrolls itself. */
+  /* The app shell is one screen high, so this page scrolls itself. */
   .admin {
-    height: 100vh;
+    height: 100%;
     overflow-y: auto;
     padding: 16px 24px;
   }
