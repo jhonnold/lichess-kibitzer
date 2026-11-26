@@ -87,6 +87,8 @@ export interface Settings {
 }
 
 export const DEFAULT_TOP_N = 8;
+/** Job time of a fresh state file (existing state keeps its value). Chosen in docs/jobtime.md. */
+export const DEFAULT_JOB_TIME_MS = 15_000;
 
 /** Running Job's output so far. Transient. */
 export interface SearchInfo {

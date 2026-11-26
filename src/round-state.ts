@@ -17,7 +17,12 @@ const newBoard = (b: RoundInfo['boards'][number], i: number, tracked: boolean): 
   clocks: { white: b.whiteClockMs ?? null, black: b.blackClockMs ?? null },
   plies: [{ move: null, at: null, eval: null }],
 });
-const DEFAULT_SETTINGS: T.Settings = { event: null, engine: null, jobTimeMs: null, topN: T.DEFAULT_TOP_N };
+const DEFAULT_SETTINGS: T.Settings = {
+  event: null,
+  engine: null,
+  jobTimeMs: T.DEFAULT_JOB_TIME_MS,
+  topN: T.DEFAULT_TOP_N,
+};
 
 /** In-memory site state: settings, the Current Round (every Board) and transient search/queue/stream. Events are
  *  emitted for Tracked boards only; persisted parts are saved on every change. */

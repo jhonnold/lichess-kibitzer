@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { RoundState } from '../src/round-state.js';
 import type { RoundInfo } from '../src/lichess/api.js';
 import type { DataStore } from '../src/store.js';
+import { DEFAULT_JOB_TIME_MS } from '../shared/types.js';
 import type * as T from '../shared/types.js';
 
 const mv = (uci: string): T.Move => ({ uci, san: uci, clock: null });
@@ -50,9 +51,15 @@ const started = (n = 10) => {
 };
 
 describe('RoundState', () => {
+  it('defaults the job time on a fresh state only: a persisted null stays unset', () => {
+    expect(setup().rs.settings.jobTimeMs).toBe(DEFAULT_JOB_TIME_MS);
+    const state: T.PersistedState = { version: 2, settings: { ...settings, jobTimeMs: null }, current: null, dead: [] };
+    expect(setup({ state, round: null }).rs.settings.jobTimeMs).toBeNull();
+  });
+
   it('starts with defaults and an empty snapshot', () => {
     const { rs } = setup();
-    expect(rs.settings).toEqual({ event: null, engine: null, jobTimeMs: null, topN: 8 });
+    expect(rs.settings).toEqual({ event: null, engine: null, jobTimeMs: DEFAULT_JOB_TIME_MS, topN: 8 });
     expect(rs.dead).toEqual([]);
     expect(rs.snapshot()).toEqual({
       event: null,
