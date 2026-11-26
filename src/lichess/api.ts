@@ -1,9 +1,11 @@
 import { LICHESS_ID } from '../../shared/archive.js';
-import { rateLimited } from '../metrics.js';
+import { openingLookups, rateLimited } from '../metrics.js';
 
 export const USER_AGENT = 'lichess-kibitzer';
 const BASE = 'https://lichess.org';
+export const EXPLORER = 'https://explorer.lichess.org';
 export const RATE_LIMIT_MS = 60_000;
+export const EXPLORER_TIMEOUT_MS = 5_000;
 export type Fetch = typeof fetch;
 export type Result = '1-0' | '0-1' | '1/2-1/2' | '*';
 export interface Player {
@@ -87,21 +89,26 @@ export function parseEventLink(link: string): EventRef {
 
 // Lichess etiquette: one request at a time; after a 429 wait a full minute. The long-lived round stream is NOT routed
 // through here (it would block admin calls forever); it handles 429 itself.
-let queue: Promise<unknown> = Promise.resolve();
+// Explorer lookups have their own serial lane (and a timeout) so a hung one cannot delay the event/round calls; the
+// 429 pause is shared.
+const queues = { api: Promise.resolve() as Promise<unknown>, explorer: Promise.resolve() as Promise<unknown> };
 let pausedUntil = 0;
-function getJson<T>(path: string, f: Fetch): Promise<T> {
+function getJson<T>(url: string, f: Fetch, lane: keyof typeof queues = 'api', timeoutMs?: number): Promise<T> {
   const run = async () => {
     if (Date.now() < pausedUntil) throw new LichessError(429, 'Lichess rate limit; retry in a minute');
-    const res = await f(BASE + path, { headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' } });
+    const res = await f(url, {
+      headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' },
+      signal: timeoutMs === undefined ? undefined : AbortSignal.timeout(timeoutMs),
+    });
     if (res.status === 429) {
       rateLimited.inc({ source: 'api' });
       pausedUntil = Date.now() + RATE_LIMIT_MS;
     }
-    if (!res.ok) throw new LichessError(res.status, `Lichess ${path} → HTTP ${res.status}`);
+    if (!res.ok) throw new LichessError(res.status, `Lichess ${new URL(url).pathname} → HTTP ${res.status}`);
     return (await res.json()) as T;
   };
-  const p = queue.then(run, run);
-  queue = p.catch(() => undefined);
+  const p = queues[lane].then(run, run);
+  queues[lane] = p.catch(() => undefined);
   return p;
 }
 
@@ -109,10 +116,10 @@ export async function fetchEvent(link: string, f: Fetch = fetch): Promise<EventI
   const ref = parseEventLink(link);
   let tourId = ref.id;
   if (ref.kind === 'round') {
-    const r = await getJson<RoundJson>(`/api/broadcast/-/-/${ref.id}`, f);
+    const r = await getJson<RoundJson>(`${BASE}/api/broadcast/-/-/${ref.id}`, f);
     tourId = r.tour.id;
   }
-  const t = await getJson<TourJson>(`/api/broadcast/${tourId}`, f);
+  const t = await getJson<TourJson>(`${BASE}/api/broadcast/${tourId}`, f);
   return {
     id: t.tour.id,
     name: t.tour.name,
@@ -134,7 +141,7 @@ const player = (p: RoundJson['games'][number]['players'][number]): Player => ({
 });
 
 export async function fetchRound(roundId: string, f: Fetch = fetch): Promise<RoundInfo> {
-  const r = await getJson<RoundJson>(`/api/broadcast/-/-/${roundId}`, f);
+  const r = await getJson<RoundJson>(`${BASE}/api/broadcast/-/-/${roundId}`, f);
   return {
     id: r.round.id,
     name: r.round.name,
@@ -149,6 +156,22 @@ export async function fetchRound(roundId: string, f: Fetch = fetch): Promise<Rou
       result: g.status === '½-½' ? '1/2-1/2' : (g.status as Result),
     })),
   };
+}
+
+/** Masters explorer name of the position after `uci` ("C20 King's Pawn Game"), or null. Throws on HTTP errors and on a timeout. */
+export async function fetchOpening(
+  uci: readonly string[],
+  f: Fetch = fetch,
+  timeoutMs = EXPLORER_TIMEOUT_MS,
+): Promise<string | null> {
+  openingLookups.inc(); // counts lookups, a locally paused one (which throws without a request) included
+  const r = await getJson<{ opening?: { eco: string; name: string } | null }>(
+    `${EXPLORER}/masters?play=${uci.join(',')}`,
+    f,
+    'explorer',
+    timeoutMs,
+  );
+  return r.opening ? `${r.opening.eco} ${r.opening.name}` : null;
 }
 
 export function _resetForTests() {

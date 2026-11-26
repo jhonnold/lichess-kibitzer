@@ -117,6 +117,10 @@ export function shortName(name: string): string {
   return n.includes(',') ? n.split(',')[0].trim() : (n.split(/\s+/).pop() ?? n);
 }
 
+/** The game's page on Lichess (303 to the slugged URL). */
+export const lichessUrl = (roundId: string, gameId: string): string =>
+  `https://lichess.org/broadcast/-/-/${roundId}/${gameId}`;
+
 /** The Tracked board with Lichess number n, else the lowest-numbered one; null when none. */
 export function selectedBoard(boards: readonly Board[], n: number | null): Board | null {
   return (

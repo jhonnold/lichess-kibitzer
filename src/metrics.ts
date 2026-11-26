@@ -90,3 +90,8 @@ export const viewers = new Gauge({
   help: 'Open GET /api/events streams (the Admin page counts as a Viewer)',
   registers: [register],
 });
+export const openingLookups = new Counter({
+  name: 'kibitzer_opening_lookups_total',
+  help: 'Masters-explorer opening lookups (a lookup paused locally by a rate limit is counted too)',
+  registers: [register],
+});

@@ -32,6 +32,7 @@ const upd = (gameId: string, uci: string[], result: T.Result = '*'): GameUpdate 
   uci,
   san: uci,
   clocks: uci.map(() => null),
+  opening: null,
   result,
   status: result === '*' ? 'ongoing' : 'finished',
 });
@@ -50,6 +51,7 @@ function setup(
     manual?: boolean; // restart timers wait in `fire` instead of running at once
     launch?: (real: () => Promise<Engine>) => Promise<Engine>;
     init?: ConstructorParameters<typeof RoundState>[1];
+    fetchOpening?: (uci: readonly string[]) => Promise<string | null>;
   } = {},
 ) {
   state = new RoundState(
@@ -71,6 +73,7 @@ function setup(
     },
     source: (id) => (sourceIds.push(id), sources.push((src = new ReplaySource([]))), src),
     now: () => t,
+    fetchOpening: opts.fetchOpening,
   });
 }
 const readLog = () => readFileSync(logFile, 'utf8').trim().split('\n');
@@ -247,6 +250,28 @@ describe('Scheduler', () => {
     await sched.setJobTime(15);
     await until(() => complete('g1', 1) && complete('g1', 2));
     expect(positions()).toContain('position startpos moves e2e4 c7c5');
+  });
+
+  it('takes the opening from the PGN tags and asks the explorer only for untagged Tracked Boards', async () => {
+    const asked: string[][] = [];
+    setup({ jobTimeMs: null, topN: 1, fetchOpening: async (uci) => (asked.push([...uci]), "C20 King's Pawn Game") });
+    await sched.startRound(roundInfo('R1', ['g1', 'g2', 'g3']), null);
+    src.push({ ...upd('g1', E4), opening: 'B00 Tagged' });
+    expect(state.board('g1')?.opening).toBe('B00 Tagged');
+    expect(asked).toEqual([]);
+    src.push(upd('g3', E4)); // untracked
+    expect(asked).toEqual([]);
+    src.push(upd('g2', E4)); // untracked too (topN 1)
+    src.push(upd('g1', E4.slice(0, 1))); // tracked, untagged
+    expect(asked).toEqual([E4.slice(0, 1)]);
+    await until(() => state.board('g1')?.opening === "C20 King's Pawn Game");
+  });
+
+  it('does nothing about untagged Boards without a fetchOpening option', async () => {
+    setup({ jobTimeMs: null });
+    await sched.startRound(roundInfo('R1', ['g1']), null);
+    src.push(upd('g1', E4));
+    expect(state.board('g1')?.opening).toBeNull();
   });
 
   it('records every Board but only searches Tracked ones', async () => {

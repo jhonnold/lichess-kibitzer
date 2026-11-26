@@ -203,6 +203,15 @@ export class RoundState extends EventEmitter<Events> {
     return kept;
   }
 
+  /** Unknown Board, null or an unchanged name: no-op (a name is never cleared). Else set, save, 'board' event (Tracked). */
+  setOpening(boardId: string, opening: string | null): void {
+    const b = this.board(boardId) as T.Board | undefined;
+    if (!b || !opening || b.opening === opening) return;
+    b.opening = opening;
+    if (b.tracked) this.emit('event', { type: 'board', board: structuredClone(b) });
+    this.saveRound();
+  }
+
   /** False: unknown Board, stale epoch, index out of range, or e is provisional and the ply has a Complete eval. */
   setEval(boardId: string, index: number, e: T.Eval, epoch: number): boolean {
     const b = this.board(boardId) as T.Board | undefined;

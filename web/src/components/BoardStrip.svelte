@@ -5,8 +5,8 @@
   import type { Board } from '$shared/types';
   import { archivedResult, boardState, formatResult, shortName } from '$shared/viewer';
 
-  type Props = { boards: Board[]; selected: number; ctx?: ArchiveCtx | null; onFlip?: () => void };
-  const { boards, selected, ctx = null, onFlip }: Props = $props();
+  type Props = { boards: Board[]; selected: number; ctx?: ArchiveCtx | null; onFlip?: () => void; lichess?: string };
+  const { boards, selected, ctx = null, onFlip, lichess }: Props = $props();
   const href = (n: number) => (ctx ? archiveHash(ctx.tourId, ctx.roundId, n) : boardHash(n));
 </script>
 
@@ -19,6 +19,7 @@
     <a href={ROUND_HASH}>Overview (o)</a>
     <a href={ARCHIVE_HASH}>Archive</a>
   {/if}
+  {#if lichess}<a href={lichess} target="_blank" rel="noopener">Open on Lichess</a>{/if}
   {#if onFlip}<button class="link" onclick={onFlip}>Flip board (f)</button>{/if}
 </div>
 <nav>

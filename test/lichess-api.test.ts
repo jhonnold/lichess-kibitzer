@@ -2,14 +2,17 @@ import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   _resetForTests,
+  EXPLORER,
   fetchEvent,
+  fetchOpening,
   fetchRound,
   LichessError,
   parseEventLink,
   RATE_LIMIT_MS,
+  USER_AGENT,
   type Fetch,
 } from '../src/lichess/api.js';
-import { rateLimited } from '../src/metrics.js';
+import { openingLookups, rateLimited } from '../src/metrics.js';
 import { val } from './helpers/metric.js';
 
 const FIX = 'test/fixtures/lichess/';
@@ -99,6 +102,45 @@ describe('fetchEvent / fetchRound', () => {
     const { f } = fakeFetch({ '/api/broadcast/-/-/L3MX2oE3': () => new Response(null, { status: 500 }) });
     await expect(fetchRound('L3MX2oE3', f)).rejects.toMatchObject({ status: 500 });
     await expect(fetchRound('L3MX2oE3', f)).rejects.toBeInstanceOf(LichessError);
+  });
+});
+
+describe('fetchOpening', () => {
+  const reply = (body: unknown, status = 200) =>
+    vi.fn<Fetch>(async () => new Response(JSON.stringify(body), { status }));
+
+  it('asks the masters explorer for the position and names it with its ECO', async () => {
+    const f = reply({ opening: { eco: 'C20', name: "King's Pawn Game" } });
+    const lookups = await val(openingLookups);
+    expect(await fetchOpening(['e2e4', 'e7e5'], f)).toBe("C20 King's Pawn Game");
+    expect(f).toHaveBeenCalledWith(
+      `${EXPLORER}/masters?play=e2e4,e7e5`,
+      expect.objectContaining({
+        headers: expect.objectContaining({ 'User-Agent': USER_AGENT }),
+      }),
+    );
+    expect(await val(openingLookups)).toBe(lookups + 1);
+  });
+
+  it('is null for a position the book has no name for', async () => {
+    expect(await fetchOpening(['a2a3'], reply({ opening: null }))).toBeNull();
+  });
+
+  it('throws on an HTTP error, and after a 429 without calling fetch', async () => {
+    await expect(fetchOpening(['e2e4'], reply({}, 500))).rejects.toMatchObject({ status: 500 });
+    const f = reply({}, 429);
+    await expect(fetchOpening(['e2e4'], f)).rejects.toMatchObject({ status: 429 });
+    await expect(fetchOpening(['e2e4'], f)).rejects.toMatchObject({ status: 429 });
+    expect(f).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails a hung request on the timeout without blocking the event/round calls', async () => {
+    const hung: Fetch = (_url, init) =>
+      new Promise<Response>((_, reject) => init?.signal?.addEventListener('abort', () => reject(init.signal?.reason)));
+    const lookup = fetchOpening(['e2e4'], hung, 20);
+    const { f } = fakeFetch({ '/api/broadcast/-/-/L3MX2oE3': json('round.json') });
+    await expect(fetchRound('L3MX2oE3', f)).resolves.toMatchObject({ id: 'L3MX2oE3' });
+    await expect(lookup).rejects.toMatchObject({ name: 'TimeoutError' });
   });
 });
 
