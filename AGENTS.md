@@ -34,7 +34,7 @@ Gate before commit: `npm run lint && npm run check && npm test && npm run build`
 |------|------|
 | Entry point, server setup | `src/main.ts`, `src/app.ts` |
 | HTTP routes (SSE `/api/events`, `/api/admin/*`), boot wiring | `src/routes/`, `src/app.ts` (createApp), `src/server.ts` (startServer) |
-| Top-level test (replay source + fake engine over SSE) | `test/e2e.test.ts` |
+| Top-level test (replay source + fake engine, several Boards, over SSE) | `test/e2e.test.ts` |
 | Frontend entry, router | `web/src/main.ts`, `web/src/App.svelte` |
 | Pages | `web/src/pages/` (Viewer, Admin) |
 | Viewer SSE state (pure reducer, EventSource store) | `shared/live.ts`, `web/src/lib/live.svelte.ts` |
@@ -46,9 +46,8 @@ Gate before commit: `npm run lint && npm run check && npm test && npm run build`
 | UCI engine | `src/engine/` (parser, Engine), `test/fixtures/fake-uci.mjs` |
 | Lichess API | `src/lichess/api.ts` |
 | Lichess stream | `src/lichess/stream.ts` |
-| Site state, persistence, wire types | `src/state.ts`, `src/round-state.ts`, `src/store.ts`, `shared/types.ts`, `shared/types-v2.ts` |
-| Orchestrator (pick, Backfill, Live loop, resume); derived accuracy/marks | `src/kibitzer.ts`, `shared/analysis.ts` |
-| Scheduler (v2 orchestrator: Queue + Jobs over RoundState) | `src/scheduler.ts`, `src/pv.ts` |
+| Site state, persistence, wire types | `src/round-state.ts`, `src/store.ts`, `shared/types.ts`, `shared/types-v2.ts` |
+| Orchestrator (Queue + Jobs over RoundState); derived accuracy/marks | `src/scheduler.ts`, `src/round-state.ts`, `src/pv.ts`, `shared/analysis.ts` |
 | Tests | `test/` |
 | Build config | `vite.config.ts`, `vitest.config.ts`, `tsconfig.backend.json`, `web/svelte.config.js`, `web/tsconfig.json` |
 | Lint / format | `eslint.config.js`, `.prettierrc`, `.editorconfig` |

@@ -45,7 +45,7 @@ All set in `/opt/lichess-kibitzer/.env` (template: [`.env.example`](../.env.exam
 | `PORT` | `8080` | HTTP port. |
 | `ADMIN_PASSWORD` | unset | Unset or empty refuses every login. |
 | `DATA_FILE` | `data/state.json` (relative to the working dir) | Set to `/var/lib/lichess-kibitzer/state.json`: the only writable dir under `ProtectSystem=strict`. |
-| `DEFAULT_ENGINE` | `berserk` (PATH lookup) | Engine path prefilled on the Admin page, with Threads=1, Hash=1024. |
+| `DEFAULT_ENGINE` | `berserk` (PATH lookup) | Engine path prefilled on the Admin page, with Threads=1, Hash=1024, MultiPV=5. |
 
 ## Service
 
@@ -56,8 +56,8 @@ curl -s localhost:8080/healthz          # {"ok":true}
 ```
 
 - `systemctl stop`/`restart` sends SIGTERM: SSE clients are dropped, the engine gets `quit` (SIGKILL after 1 s)
-  and the state file is flushed. A live Board resumes on the next start; positions missed while down are
-  Backfilled and excluded from accuracy.
+  and the state and Round files are flushed. The Current Round resumes on the next start; positions missed while
+  down are queued as Backfill.
 - A restart logs Admins out (the cookie key is per process).
 - `Restart=on-failure` restarts a crash after 5 s.
 
@@ -80,7 +80,8 @@ analysis.ccrl.live {
 
 ## Update
 
-The state file lives in `/var/lib`, so a pull never touches it.
+The state file lives in `/var/lib`, so a pull never touches it. A version 1 state file (from before
+multi-board) is discarded at boot, with a warning in the journal: track the Round again.
 
 ```bash
 cd /opt/lichess-kibitzer
@@ -95,7 +96,7 @@ the restart. If `.env.example` gained a var, add it to `.env`.
 
 ### Updating Berserk
 
-The engine is spawned when a Board is picked or resumed, so a new binary takes effect on the next spawn.
+The engine is spawned when a Round is tracked or resumed, so a new binary takes effect on the next spawn.
 After building Berserk from current `main` (homelab), install it and restart:
 
 ```bash
