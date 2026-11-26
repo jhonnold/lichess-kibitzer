@@ -441,8 +441,8 @@ export class Scheduler {
         if (e.kind === 'complete' || !prev || prev.depth <= e.depth) this.state.setEval(boardId, ply, e, run.epoch);
       }
       if (run.evicted) {
-        const { board } = job;
-        this.evicted.unshift({ boardId, board, ply, reason: run.evicted, depth: e?.depth ?? null, at: this.now });
+        const depth = this.state.board(boardId)?.plies[ply]?.eval?.depth ?? null; // what the ply kept
+        this.evicted.unshift({ boardId, board: job.board, ply, reason: run.evicted, depth, at: this.now });
         this.evicted.length = Math.min(this.evicted.length, EVICTIONS_KEPT);
       }
     }
