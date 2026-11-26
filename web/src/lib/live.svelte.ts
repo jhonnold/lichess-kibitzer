@@ -3,12 +3,18 @@ import type { Snapshot, SseEvent } from '$shared/types';
 
 const RETRY_MS = 5_000;
 
+/** What the Viewer and overview read: LiveStore (SSE) or ArchiveStore (one fetch). */
+export interface SnapSource {
+  readonly snap: Snapshot | null;
+  readonly connected: boolean;
+}
+
 /**
  * The site state, fed by GET /api/events. EventSource retries dropped connections itself (the server's first frame
  * is a snapshot, so state heals), but an HTTP error (e.g. a proxy 502 while the server restarts) closes it for good:
  * that case reopens after RETRY_MS.
  */
-export class LiveStore {
+export class LiveStore implements SnapSource {
   snap = $state.raw<Snapshot | null>(null); // null until the first snapshot
   connected = $state(false);
 

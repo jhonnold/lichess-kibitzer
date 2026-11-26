@@ -10,7 +10,8 @@
   import BoardStrip from '../components/BoardStrip.svelte';
   import PlayerBar from '../components/PlayerBar.svelte';
   import { arrows } from '$shared/arrows';
-  import type { LiveStore } from '$lib/live.svelte';
+  import type { SnapSource } from '$lib/live.svelte';
+  import type { ArchiveCtx } from '$shared/archive';
   import { clockOf } from '$lib/position';
   import {
     back,
@@ -27,6 +28,7 @@
     barScore,
     boardState,
     countdown,
+    archivedResult,
     formatResult,
     panelInfo,
     selectedBoard,
@@ -34,7 +36,8 @@
     viewerMessage,
   } from '$shared/viewer';
 
-  const { store, board }: { store: LiveStore; board: number | null } = $props();
+  // ctx: set for an archived Round, which switches the live-only UI off.
+  const { store, board, ctx = null }: { store: SnapSource; board: number | null; ctx?: ArchiveCtx | null } = $props();
 
   let now = $state(Date.now());
   onMount(() => {
@@ -148,7 +151,7 @@
           player={game.black}
           clock={clock('black')}
           accuracy={analysis.black}
-          toMove={live && view.live && view.position.turn === 'black'}
+          toMove={!ctx && live && view.live && view.position.turn === 'black'}
         />
         <Board
           position={view.position}
@@ -159,26 +162,30 @@
           player={game.white}
           clock={clock('white')}
           accuracy={analysis.white}
-          toMove={live && view.live && view.position.turn === 'white'}
+          toMove={!ctx && live && view.live && view.position.turn === 'white'}
         />
       </div>
     </div>
     <aside>
-      <BoardStrip {boards} selected={game.board} />
+      <BoardStrip {boards} selected={game.board} {ctx} />
       {#if notTracked}<div class="warn">Board {board} is not tracked · showing board {game.board}</div>{/if}
-      {#if upcoming}<div class="banner">
-          Upcoming · {snap.round?.name} · {startsIn(snap.round?.startsAt ?? null)}
-        </div>{/if}
-      {#if !upcoming && !live}<div class="banner">Game over · {formatResult(game.result)}</div>{/if}
-      {#if !store.connected}<div class="warn">Reconnecting to server…</div>{/if}
-      {#if snap.stream === 'reconnecting'}<div class="warn">Lichess stream reconnecting…</div>{/if}
+      {#if ctx}<div class="banner">
+          Archive · {snap.event?.name} · {snap.round?.name} · {archivedResult(game)}
+        </div>{:else}
+        {#if upcoming}<div class="banner">
+            Upcoming · {snap.round?.name} · {startsIn(snap.round?.startsAt ?? null)}
+          </div>{/if}
+        {#if !upcoming && !live}<div class="banner">Game over · {formatResult(game.result)}</div>{/if}
+        {#if !store.connected}<div class="warn">Reconnecting to server…</div>{/if}
+        {#if snap.stream === 'reconnecting'}<div class="warn">Lichess stream reconnecting…</div>{/if}
+      {/if}
       {#if !view.live}
         <div class="cursor" class:moved={view.behind > 0}>
-          <span>{cursorNote(view, game.plies)}</span>
-          <button onclick={() => (cursor = toLive(view.cursor))}>Back to live</button>
+          <span>{cursorNote(view, game.plies, !!ctx)}</span>
+          <button onclick={() => (cursor = toLive(view.cursor))}>{ctx ? 'End' : 'Back to live'}</button>
         </div>
       {/if}
-      <EnginePanel info={panel} fen={view.position.fen} {status} />
+      <EnginePanel info={panel} fen={view.position.fen} status={ctx ? null : status} />
       <EvalGraph
         plies={game.plies}
         live={liveScore}

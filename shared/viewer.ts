@@ -106,6 +106,11 @@ export function boardState(b: Board): BoardState {
 
 export const formatResult = (r: Result): string => (r === '1/2-1/2' ? '½-½' : r);
 
+/** How a Board ended up in the Archive: its result, 'unfinished' (moves but no result) or 'not played'. */
+export function archivedResult(b: Board): string {
+  return b.result !== '*' ? formatResult(b.result) : b.plies.length > 1 ? 'unfinished' : 'not played';
+}
+
 /** 'Hoefelsauer, Thomas' → 'Hoefelsauer'; 'Magnus Carlsen' → 'Carlsen'. */
 export function shortName(name: string): string {
   const n = name.trim();

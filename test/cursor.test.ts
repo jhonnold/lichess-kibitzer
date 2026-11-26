@@ -147,6 +147,13 @@ describe('Cursor', () => {
     expect([0, 1, 2, 23, 24].map(moveNumber)).toEqual(['Start', '1.', '1…', '12.', '12…']);
   });
 
+  it('drops "live is N ahead" for an archived game', () => {
+    const g = mk('a', LINE);
+    const v = cursorView({ boardId: 'a', ply: 4, branch: [] }, g);
+    expect(cursorNote(v, g.plies, true)).toBe('Move 2… Nc6');
+    expect(cursorNote(v, g.plies)).toBe('Move 2… Nc6 · live is 3 plies ahead');
+  });
+
   it('describes the Cursor beside "Back to live"', () => {
     const g = mk('a', LINE);
     const v = (c: Cursor, game = g) => cursorNote(cursorView(c, game), game.plies);

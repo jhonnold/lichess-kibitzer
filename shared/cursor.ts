@@ -119,14 +119,14 @@ export const moveNumber = (ply: number): string =>
 /**
  * Text beside the "Back to live" control; null when live.
  * In a branch: 'Your moves · no engine'. Else `Move ${moveNumber(ply)} ${san}` ('Move 12… Nf6'), or
- * 'Start position' at ply 0. Suffix when behind > 0: ` · live is ${behind} ${behind === 1 ? 'ply' : 'plies'} ahead`.
+ * 'Start position' at ply 0. Suffix when behind > 0 (not for an archived game, which never grows): ` · live is ${behind} ${behind === 1 ? 'ply' : 'plies'} ahead`.
  */
-export function cursorNote(v: CursorView, plies: readonly Ply[]): string | null {
+export function cursorNote(v: CursorView, plies: readonly Ply[], archived = false): string | null {
   if (v.live) return null;
   const head = v.inBranch
     ? 'Your moves · no engine'
     : v.ply === 0
       ? 'Start position'
       : `Move ${moveNumber(v.ply)} ${plies[v.ply].move!.san}`;
-  return v.behind > 0 ? `${head} · live is ${v.behind} ${v.behind === 1 ? 'ply' : 'plies'} ahead` : head;
+  return v.behind > 0 && !archived ? `${head} · live is ${v.behind} ${v.behind === 1 ? 'ply' : 'plies'} ahead` : head;
 }

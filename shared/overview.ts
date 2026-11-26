@@ -20,13 +20,13 @@ export interface TileView {
   mark: Mark | null; // of the latest move
 }
 
-export function tileView(b: Board): TileView {
+export function tileView(b: Board, href: (n: number) => string = boardHash): TileView {
   const state = boardState(b);
   const position = positionAt(b.plies, b.plies.length - 1);
   return {
     id: b.id,
     board: b.board,
-    href: boardHash(b.board),
+    href: href(b.board),
     white: b.white,
     black: b.black,
     state,

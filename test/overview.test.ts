@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { archiveHash } from '../shared/route.js';
 import { tileView } from '../shared/overview.js';
 import { positionAt } from '../shared/viewer.js';
 import type { Board, Ply, Result } from '../shared/types.js';
@@ -31,6 +32,12 @@ describe('tileView', () => {
   it('clocks fall back to the Board clocks before a side has moved', () => {
     expect(tileView(board([start, mv('e2e4', 4000)])).clocks).toEqual({ white: 4000, black: 6000 });
     expect(tileView(board([start])).clocks).toEqual({ white: 5000, black: 6000 });
+  });
+
+  it('takes the link from the caller (archive tiles stay in the Archive)', () => {
+    expect(tileView(live, (n) => archiveHash('abcdefgh', 'ABCDEFG1', n)).href).toBe(
+      '#/archive/abcdefgh/ABCDEFG1/board/3',
+    );
   });
 
   it('Finished: result, nobody to move', () => {

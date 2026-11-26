@@ -1,4 +1,4 @@
-import type { Round } from './types.js';
+import type { Round, Snapshot } from './types.js';
 
 /** Lichess game, round and tournament ids. Checked before an id from a URL reaches a file path. */
 export const LICHESS_ID = /^[A-Za-z0-9]{8}$/;
@@ -55,4 +55,21 @@ export function archiveIndex(
     a.latest === b.latest ? 0 : a.latest === null ? 1 : b.latest === null ? -1 : b.latest - a.latest,
   );
   return events.map(({ latest: _, ...e }) => e);
+}
+
+/** Which archived Round the Viewer and overview are showing; their live-only UI is off when set. */
+export interface ArchiveCtx {
+  tourId: string;
+  roundId: string;
+}
+
+/** A Snapshot for the Viewer/overview from an archived Round (Tracked boards only, as the API serves it). */
+export function archiveSnapshot(r: Round): Snapshot {
+  return {
+    event: { tourId: r.tourId, name: r.eventName || r.tourId, link: '' },
+    round: r,
+    search: null,
+    queue: { current: [], backfill: 0 },
+    stream: null,
+  };
 }

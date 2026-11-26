@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { archiveIndex, isLichessId, roundMeta, type RoundMeta } from '../shared/archive.js';
-import type { Round } from '../shared/types.js';
+import { archiveIndex, archiveSnapshot, isLichessId, roundMeta, type RoundMeta } from '../shared/archive.js';
+import type { Board, Round } from '../shared/types.js';
+import { archivedResult, viewerMessage } from '../shared/viewer.js';
 
 describe('isLichessId', () => {
   it('accepts exactly 8 alphanumerics', () => {
@@ -85,5 +86,41 @@ describe('archiveIndex', () => {
 
   it('omits an Event whose only Round is current', () => {
     expect(archiveIndex([m('T', 'R', 'Round 1', 1)], { tourId: 'T', roundId: 'R' })).toEqual([]);
+  });
+});
+
+describe('archiveSnapshot', () => {
+  const round = (boards: Board[]): Round => ({
+    tourId: 'T',
+    roundId: 'R',
+    name: 'Round 1',
+    eventName: 'Event',
+    startsAt: 1,
+    boards,
+  });
+  const b = (result: Board['result'], moves: number): Board =>
+    ({ result, plies: Array.from({ length: moves + 1 }, () => ({ move: null, at: null, eval: null })) }) as Board;
+
+  it('wraps the Round with no live state', () => {
+    const r = round([b('1-0', 3)]);
+    expect(archiveSnapshot(r)).toEqual({
+      event: { tourId: 'T', name: 'Event', link: '' },
+      round: r,
+      search: null,
+      queue: { current: [], backfill: 0 },
+      stream: null,
+    });
+    expect(archiveSnapshot({ ...r, eventName: '' }).event?.name).toBe('T');
+  });
+
+  it('feeds viewerMessage: null with Boards, "no pairings yet" without', () => {
+    expect(viewerMessage(archiveSnapshot(round([b('*', 2)])))).toBeNull();
+    expect(viewerMessage(archiveSnapshot(round([])))).toBe('Event · Round 1 · no pairings yet');
+  });
+
+  it('archivedResult: result, unfinished, or not played', () => {
+    expect(archivedResult(b('1/2-1/2', 30))).toBe('½-½');
+    expect(archivedResult(b('*', 12))).toBe('unfinished');
+    expect(archivedResult(b('*', 0))).toBe('not played');
   });
 });
