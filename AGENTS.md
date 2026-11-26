@@ -48,6 +48,7 @@ Gate before commit: `npm run lint && npm run check && npm test && npm run build`
 | Lichess stream | `src/lichess/stream.ts` |
 | Site state, persistence, wire types | `src/state.ts`, `src/round-state.ts`, `src/store.ts`, `shared/types.ts`, `shared/types-v2.ts` |
 | Orchestrator (pick, Backfill, Live loop, resume); derived accuracy/marks | `src/kibitzer.ts`, `shared/analysis.ts` |
+| Scheduler (v2 orchestrator: Queue + Jobs over RoundState) | `src/scheduler.ts`, `src/pv.ts` |
 | Tests | `test/` |
 | Build config | `vite.config.ts`, `vitest.config.ts`, `tsconfig.backend.json`, `web/svelte.config.js`, `web/tsconfig.json` |
 | Lint / format | `eslint.config.js`, `.prettierrc`, `.editorconfig` |
