@@ -7,7 +7,7 @@ import type { UciOption } from '../engine/uci-parser.js';
 import type { Follower, FollowStatus, LichessClient } from '../follower.js';
 import { fetchEvent, LichessError } from '../lichess/api.js';
 import type { RoundState } from '../round-state.js';
-import type { Scheduler } from '../scheduler.js';
+import type { EngineState, Scheduler } from '../scheduler.js';
 
 export const COOKIE = 'kibitzer_admin';
 const MAX_AGE_MS = 7 * 24 * 3600_000;
@@ -15,7 +15,18 @@ const MAX_JOB_MS = 3600_000; // keeps `go movetime` a plain integer
 
 export interface AdminDeps {
   state: RoundState;
-  scheduler: Pick<Scheduler, 'engine' | 'running' | 'setJobTime' | 'setTracked' | 'setEngine'>;
+  scheduler: Pick<
+    Scheduler,
+    | 'engine'
+    | 'running'
+    | 'setJobTime'
+    | 'setTracked'
+    | 'setEngine'
+    | 'requeueDead'
+    | 'discardDead'
+    | 'engineState'
+    | 'restarts'
+  >;
   follower: Pick<Follower, 'register' | 'clear' | 'status'>;
   defaultEngine: EngineConfig; // shown (and used) while no config is saved
   adminPassword?: string; // unset or empty: every login is refused
@@ -34,6 +45,8 @@ export interface AdminStatus {
   stream: StreamStatus | null;
   engine: EngineConfig; // saved, else the default
   engineRunning: boolean;
+  engineState: EngineState;
+  restarts: number;
   jobTimeMs: number | null;
   topN: number;
   running: Job | null;
@@ -147,6 +160,20 @@ export function adminRouter(deps: AdminDeps): Router {
       return void res.status(400).json({ error: 'not a Board of the Current Round' });
     scheduler.setTracked(ids as string[]).then(() => res.sendStatus(204), fail(res));
   });
+  for (const [path, method] of [
+    ['requeue', 'requeueDead'],
+    ['discard', 'discardDead'],
+  ] as const) {
+    r.post(`/dead/${path}`, (req, res) => {
+      const { boardId, ply }: { boardId?: unknown; ply?: unknown } = req.body ?? {};
+      if (typeof boardId !== 'string' || !Number.isInteger(ply) || (ply as number) < 0)
+        return void res.status(400).json({ error: 'expected { boardId: string, ply: integer >= 0 }' });
+      scheduler[method](boardId, ply as number).then(
+        (ok) => (ok ? res.sendStatus(204) : res.status(404).json({ error: 'not in the Dead-letter queue' })),
+        fail(res),
+      );
+    });
+  }
   r.get('/status', (_req, res) => {
     const round = state.round;
     const body: AdminStatus = {
@@ -167,6 +194,8 @@ export function adminRouter(deps: AdminDeps): Router {
       stream: state.snapshot().stream,
       engine: state.settings.engine ?? defaultEngine,
       engineRunning: scheduler.engine !== null,
+      engineState: scheduler.engineState,
+      restarts: scheduler.restarts,
       jobTimeMs: state.settings.jobTimeMs,
       topN: state.settings.topN,
       running: scheduler.running,
