@@ -7,6 +7,7 @@ import type { FollowStatus } from '../../src/follower.js';
 import { LichessError, type EventInfo, type RoundInfo } from '../../src/lichess/api.js';
 import { RoundState } from '../../src/round-state.js';
 import type { EngineState } from '../../src/scheduler.js';
+import { DEFAULT_JOB_TIME_MS } from '../../shared/types.js';
 
 const FAKE = fileURLToPath(new URL('../fixtures/fake-uci.mjs', import.meta.url));
 const event: EventInfo = {
@@ -243,7 +244,7 @@ describe('admin routes', () => {
       engineRunning: false,
       engineState: 'up',
       restarts: 2,
-      jobTimeMs: null,
+      jobTimeMs: DEFAULT_JOB_TIME_MS,
       topN: 8,
       running: null,
       queue: { current: [], backfill: 0 },

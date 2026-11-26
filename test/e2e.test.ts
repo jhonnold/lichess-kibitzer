@@ -113,13 +113,14 @@ describe('live analysis over SSE', () => {
       expect([srv.scheduler.engine, existsSync(logFile)]).toEqual([null, false]); // Idle: no engine process ever spawned
 
       await admin('PUT', '/topn', { n: 2 });
+      await admin('PUT', '/jobtime', { ms: null }); // job time unset: the Queue idles
       await track();
       await vi.waitFor(() => expect(c.events.at(-1)?.type).toBe('queue'), WAIT);
       const snap = await freshSnapshot();
       expect(snap.event).toEqual({ tourId: 't', name: 'Event', link: 'x' });
       expect(snap.round?.boards.map((b) => b.id)).toEqual(['gH77VTmz', 'at7GqSzo']); // Tracked, in Lichess order
       src.status('connected');
-      replay(); // job time unset: the Queue idles
+      replay();
       expect(readLog().filter((l) => l.startsWith('go'))).toEqual([]);
 
       await admin('PUT', '/jobtime', { ms: 5 });
@@ -167,8 +168,8 @@ describe('live analysis over SSE', () => {
   it(
     'a restart resumes the Current Round and finishes its evals',
     async () => {
-      await track();
       await admin('PUT', '/jobtime', { ms: 5 });
+      await track();
       replay();
       await vi.waitFor(
         () => expect(tracked().some((b) => b.plies.some((p) => p.eval?.kind === 'complete'))).toBe(true),
