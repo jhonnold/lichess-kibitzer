@@ -7,6 +7,7 @@ import type { FollowStatus } from '../../src/follower.js';
 import { LichessError, type RoundInfo } from '../../src/lichess/api.js';
 import { RoundState } from '../../src/round-state.js';
 import type { EngineState } from '../../src/scheduler.js';
+import type { JobTiming } from '../../shared/timing.js';
 import { DEFAULT_JOB_TIME_MS } from '../../shared/types.js';
 
 const FAKE = fileURLToPath(new URL('../fixtures/fake-uci.mjs', import.meta.url));
@@ -41,6 +42,7 @@ function setup(adminPassword = 'pw') {
     discardDead: vi.fn(async (_boardId: string, ply: number) => ply === 1),
     engineState: 'up' as EngineState,
     restarts: 2,
+    timing: { jobs: 0, provisional: 0, ms: null, depth: null } as JobTiming,
   };
   const status: FollowStatus = { next: null, swapAt: null, polledAt: null, error: null };
   const follower = {
@@ -213,6 +215,13 @@ describe('admin routes', () => {
     }
   });
 
+  it('reports the Scheduler timing in the status', async () => {
+    const { agent, scheduler } = setup();
+    await login(agent);
+    scheduler.timing = { jobs: 3, provisional: 1, ms: { p50: 800, p95: 900 }, depth: { p50: 20, p95: 22 } };
+    expect((await agent.get('/api/admin/status')).body.timing).toEqual(scheduler.timing);
+  });
+
   it('reports status (with follow), and clears the Event through the Follower', async () => {
     const { agent, state, follower, status } = setup();
     await login(agent);
@@ -224,6 +233,7 @@ describe('admin routes', () => {
       engineRunning: false,
       engineState: 'up',
       restarts: 2,
+      timing: { jobs: 0, provisional: 0, ms: null, depth: null },
       jobTimeMs: DEFAULT_JOB_TIME_MS,
       topN: 8,
       running: null,

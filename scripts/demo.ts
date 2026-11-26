@@ -3,9 +3,12 @@
  * from test/fixtures/lichess/round-stream.pgn. Never contacts lichess.org.
  *   npm run build && npm run demo -- [--port 18457] [--boards 10] [--top 8] [--job-time 800] [--interval 1500]
  *                                    [--data DIR] [--password demo] [--rounds 1] [--swap-in 20] [--poll 2000]
+ *                                    [--crash-board N]
  * One move per --interval ms, round-robin over Boards with moves left (0 = frozen at the initial state).
  * --rounds 0: an Event with no Rounds yet; 2: adds Round 2 (all Boards Upcoming, colours swapped), which the follower
  * swaps in --swap-in seconds after boot (its start is 10 min later); --poll is the follower's poll interval in ms.
+ * --crash-board N: the fake engine crashes on Board N's position at boot (2..boards, not the Upcoming --top Board), so
+ * that Job lands in the Dead-letter queue after 3 crashes. Boards sharing its base game and position dead-letter too.
  * stdin: a line `n` releases one move on Board n; an empty line, the next round-robin move.
  */
 import { mkdtempSync } from 'node:fs';
@@ -33,6 +36,7 @@ const { values: v } = parseArgs({
     rounds: { type: 'string', default: '1' },
     'swap-in': { type: 'string', default: '20' },
     poll: { type: 'string', default: '2000' },
+    'crash-board': { type: 'string' },
   },
 });
 const [port, count, top, jobTime, interval, rounds, swapIn, pollMs] = [
@@ -45,6 +49,11 @@ const [port, count, top, jobTime, interval, rounds, swapIn, pollMs] = [
   v['swap-in']!,
   v.poll!,
 ].map(Number);
+const crashBoard = v['crash-board'] === undefined ? null : Number(v['crash-board']);
+if (crashBoard !== null && !(crashBoard >= 2 && crashBoard <= count && crashBoard !== top)) {
+  console.error(`--crash-board must be a Board in 2..${count} other than the Upcoming Board ${top}`);
+  process.exit(1);
+}
 const data = v.data ?? mkdtempSync(join(tmpdir(), 'kibitzer-demo-'));
 const FAKE = join(import.meta.dirname, '../test/fixtures/fake-uci.mjs');
 
@@ -144,13 +153,23 @@ function release(i?: number): void {
   for (const h of handlers) h.game(update(i));
 }
 
+const crash =
+  crashBoard === null
+    ? []
+    : [
+        '--crash-on',
+        base(crashBoard)
+          .uci.slice(0, shown[crashBoard - 1])
+          .join(' '),
+      ];
+
 const running = await startServer({
   port,
   store: dataStore(join(data, 'state.json')),
   defaultEngine: { path: 'fake', options: { MultiPV: '5' } },
   adminPassword: v.password,
   scheduler: {
-    launch: () => Engine.start(process.execPath, { args: [FAKE, '--legal-pv'] }),
+    launch: () => Engine.start(process.execPath, { args: [FAKE, '--legal-pv', ...crash] }),
     source,
   },
   app: { probe: () => probeEngine(process.execPath, { args: [FAKE] }) },

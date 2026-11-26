@@ -1,5 +1,6 @@
 import { Chess } from 'chess.js';
 import { Queue, type Job } from '../shared/queue.js';
+import { jobTiming, type JobSample, type JobTiming } from '../shared/timing.js';
 import type * as T from '../shared/types.js';
 import { Engine, type SearchResult } from './engine/engine.js';
 import type { UciInfo } from './engine/uci-parser.js';
@@ -13,6 +14,7 @@ export const RESTART_MIN_MS = 1000;
 export const RESTART_MAX_MS = 60_000;
 
 /** null: no engine wanted (no Round, or after stop()). */
+export const TIMING_WINDOW = 200;
 export type EngineState = 'up' | 'restarting' | null;
 
 export interface SchedulerOpts {
@@ -78,6 +80,7 @@ export class Scheduler {
   private wanted = false; // a Round exists and stop() was not called: keep an engine running
   private backoff = RESTART_MIN_MS;
   private restarts_ = 0;
+  private samples: JobSample[] = []; // the last TIMING_WINDOW recorded Jobs; resets on boot, not on a Round swap
   private cancelRestart: (() => void) | null = null;
   private launchFailed = false;
 
@@ -99,6 +102,11 @@ export class Scheduler {
   /** Relaunches scheduled since process start. */
   get restarts(): number {
     return this.restarts_;
+  }
+
+  /** Job time and depth over the last TIMING_WINDOW Jobs. */
+  get timing(): JobTiming {
+    return jobTiming(this.samples);
   }
 
   /** Copy of the Job being searched. */
@@ -401,6 +409,8 @@ export class Scheduler {
     const labels = { tier: job.tier, kind: e.kind };
     jobDuration.observe(labels, ms / 1000);
     jobDepth.observe(labels, e.depth);
+    this.samples.push({ ms, depth: e.depth, kind: e.kind });
+    if (this.samples.length > TIMING_WINDOW) this.samples.shift();
   }
 
   private onInfo(engine: Engine, info: UciInfo): void {

@@ -22,6 +22,7 @@ function setup(...pw: [string | undefined] | []) {
     discardDead: async () => true,
     engineState: 'up' as EngineState,
     restarts: 2,
+    timing: { jobs: 0, provisional: 0, ms: null, depth: null },
   };
   const follower = {
     status: { next: null, swapAt: null, polledAt: null, error: null },
