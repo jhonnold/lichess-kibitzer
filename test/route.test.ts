@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { boardHash, parseHash } from '../shared/route.js';
+import { boardHash, parseHash, ROUND_HASH } from '../shared/route.js';
 
 const viewer = (board: number | null) => ({ route: { page: 'viewer', board }, params: {} });
 
@@ -23,6 +23,12 @@ describe('parseHash', () => {
       route: { page: 'viewer', board: 2 },
       params: { chrome: '0', x: '1' },
     });
+  });
+
+  it('#/round is the overview, with or without a query; #/roundx is the default Board', () => {
+    expect(parseHash(ROUND_HASH)).toEqual({ route: { page: 'round' }, params: {} });
+    expect(parseHash('#/round?chrome=0')).toEqual({ route: { page: 'round' }, params: { chrome: '0' } });
+    expect(parseHash('#/roundx')).toEqual(viewer(null));
   });
 
   it('boardHash', () => expect(boardHash(3)).toBe('#/board/3'));

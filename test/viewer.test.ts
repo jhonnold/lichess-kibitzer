@@ -5,6 +5,7 @@ import type { Board, Eval, Ply, QueueView, Result, SearchInfo, Snapshot } from '
 import {
   barScore,
   boardState,
+  clockOf,
   countdown,
   evalSeries,
   formatScore,
@@ -354,5 +355,18 @@ describe('formatScore', () => {
       '#3',
       '#-2',
     ]);
+  });
+});
+
+describe('clockOf', () => {
+  const ply = (clock: number): Ply => ({ move: { san: 'x', uci: 'a1a2', clock }, at: null, eval: null });
+  const plies = [{ move: null, at: null, eval: null }, ply(100), ply(90), ply(80)] as Ply[];
+  it('is the latest clock of that side', () => {
+    expect(clockOf(plies, 'white')).toBe(80);
+    expect(clockOf(plies, 'black')).toBe(90);
+  });
+  it('is null when that side has not moved', () => {
+    expect(clockOf(plies.slice(0, 2), 'black')).toBeNull();
+    expect(clockOf(plies.slice(0, 1), 'white')).toBeNull();
   });
 });

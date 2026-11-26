@@ -17,7 +17,7 @@ const mover = (i: number): Color => (i % 2 === 1 ? 'white' : 'black');
  * A move is judged only when the evals before and after it are both Complete, and (lila) only when it
  * differs from the engine's best move in the position before it.
  */
-export function analyse(plies: Ply[]): Analysis {
+export function analyse(plies: readonly Ply[]): Analysis {
   const done: (Score | null)[] = plies.map((p) => (p.eval?.kind === 'complete' ? p.eval.score : null));
   const marks = plies.map((p, i) => {
     const [before, after] = [done[i - 1], done[i]];
@@ -29,4 +29,12 @@ export function analyse(plies: Ply[]): Analysis {
   const total = plies.length - 1;
   if (first < 0) return { white: null, black: null, scored, total, marks };
   return { ...gameAccuracy(done.slice(first), mover(first + 1)), scored, total, marks };
+}
+
+export const MARK_GLYPH: Record<Mark, string> = { inaccuracy: '?!', mistake: '?', blunder: '??' };
+
+/** Mark of the latest move (into plies.at(-1)); null for ply 0 or when not judged. A mark needs Complete evals on
+ *  both sides of the move, so it appears once the latest position's Job completes. */
+export function latestMark(plies: readonly Ply[]): Mark | null {
+  return analyse(plies).marks.at(-1) ?? null;
 }
