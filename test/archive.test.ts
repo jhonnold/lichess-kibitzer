@@ -114,7 +114,7 @@ describe('archiveSnapshot', () => {
       event: { tourId: 'T', name: 'Event', link: '' },
       round: r,
       search: null,
-      queue: { current: [], backfill: 0 },
+      queue: { current: [], backfill: 0, deferred: [] },
       stream: null,
     });
     expect(archiveSnapshot({ ...r, eventName: '' }).event?.name).toBe('T');

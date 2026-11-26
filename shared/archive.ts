@@ -85,7 +85,7 @@ export function archiveSnapshot(r: Round): Snapshot {
     event: { tourId: r.tourId, name: r.eventName || r.tourId, link: '' },
     round: r,
     search: null,
-    queue: { current: [], backfill: 0 },
+    queue: { current: [], backfill: 0, deferred: [] },
     stream: null,
   };
 }

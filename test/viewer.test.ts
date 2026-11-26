@@ -242,10 +242,13 @@ describe('statusLine', () => {
     b.plies[ply] = { ...b.plies[ply], eval: e };
     return b;
   };
-  const srch = (boardId: string, ply: number, depth: number) => ({ boardId, ply, depth }) as SearchInfo;
-  const q = (current: [string, number][] = [], backfill = 0): QueueView => ({
-    current: current.map(([boardId, ply]) => ({ boardId, ply })),
+  const srch = (boardId: string, ply: number, depth: number, tier: SearchInfo['tier'] = 'current') =>
+    ({ boardId, ply, depth, tier }) as SearchInfo;
+  const pairs = (js: [string, number][]) => js.map(([boardId, ply]) => ({ boardId, ply }));
+  const q = (current: [string, number][] = [], backfill = 0, deferred: [string, number][] = []): QueueView => ({
+    current: pairs(current),
     backfill,
+    deferred: pairs(deferred),
   });
 
   it('a Complete eval is Done, even while a search names the same ply', () => {
@@ -260,6 +263,17 @@ describe('statusLine', () => {
       text: 'Searching · depth 21',
     });
     expect(statusLine(mk(1, 3), 2, srch('g1', 2, 0), q()).text).toBe('Searching');
+  });
+  it('a backfill search says Backfill', () => {
+    expect(statusLine(mk(1, 3), 1, srch('g1', 1, 18, 'backfill'), q()).text).toBe('Backfill · depth 18');
+    expect(statusLine(mk(1, 3), 1, srch('g1', 1, 0, 'backfill'), q()).text).toBe('Backfill');
+  });
+  it('an evicted latest ply waits for a full search', () => {
+    expect(statusLine(withEval(mk(1, 3), 2, ev('provisional', 20)), 2, null, q([], 1, [['g1', 2]]))).toEqual({
+      state: 'queued',
+      text: 'Provisional · depth 20 · full search queued',
+    });
+    expect(statusLine(mk(1, 3), 2, null, q([], 1, [['g1', 2]])).text).toBe('Queued · full search');
   });
   it("another Board's search is ignored", () => {
     expect(statusLine(mk(1, 3), 2, srch('g2', 2, 9), q()).state).toBe('none');
@@ -339,7 +353,7 @@ describe('viewerMessage', () => {
     event: e,
     round: r,
     search: null,
-    queue: { current: [], backfill: 0 },
+    queue: { current: [], backfill: 0, deferred: [] },
     stream: null,
   });
   it('explains why there is nothing to show', () => {

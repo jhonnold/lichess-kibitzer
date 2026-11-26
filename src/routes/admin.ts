@@ -1,7 +1,7 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { Router, type NextFunction, type Request, type Response } from 'express';
 import type { EngineConfig, Player, QueueView, RegisteredEvent, Result, StreamStatus } from '../../shared/types.js';
-import type { DeadJob, Job } from '../../shared/queue.js';
+import type { DeadJob, EvictedJob, Job } from '../../shared/queue.js';
 import type { JobTiming } from '../../shared/timing.js';
 import { probeEngine } from '../engine/engine.js';
 import type { UciOption } from '../engine/uci-parser.js';
@@ -29,6 +29,7 @@ export interface AdminDeps {
     | 'engineState'
     | 'restarts'
     | 'timing'
+    | 'evictions'
   >;
   follower: Pick<Follower, 'register' | 'clear' | 'status'>;
   defaultEngine: EngineConfig; // shown (and used) while no config is saved
@@ -55,6 +56,7 @@ export interface AdminStatus {
   running: Job | null;
   queue: QueueView;
   dead: readonly DeadJob[];
+  evictions: EvictedJob[]; // newest first
   follow: FollowStatus;
 }
 
@@ -215,6 +217,7 @@ export function adminRouter(deps: AdminDeps): Router {
       running: scheduler.running,
       queue: state.queue,
       dead: state.dead,
+      evictions: scheduler.evictions,
       follow: follower.status,
     };
     res.json(body);

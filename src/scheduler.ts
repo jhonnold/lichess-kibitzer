@@ -1,5 +1,5 @@
 import { Chess } from 'chess.js';
-import { MIN_LIVE_SLICE_MS, Queue, type Eviction, type Job } from '../shared/queue.js';
+import { MIN_LIVE_SLICE_MS, Queue, type EvictedJob, type Eviction, type Job } from '../shared/queue.js';
 import { jobTiming, type JobSample, type JobTiming } from '../shared/timing.js';
 import type * as T from '../shared/types.js';
 import { Engine, type SearchResult } from './engine/engine.js';
@@ -16,6 +16,7 @@ export const RESTART_MAX_MS = 60_000;
 
 /** null: no engine wanted (no Round, or after stop()). */
 export const TIMING_WINDOW = 200;
+export const EVICTIONS_KEPT = 10;
 export type EngineState = 'up' | 'restarting' | null;
 
 export interface SchedulerOpts {
@@ -93,6 +94,7 @@ export class Scheduler {
   private backoff = RESTART_MIN_MS;
   private restarts_ = 0;
   private samples: JobSample[] = []; // the last TIMING_WINDOW recorded Jobs; resets on boot, not on a Round swap
+  private evicted: EvictedJob[] = []; // the last EVICTIONS_KEPT evictions, newest first; resets on boot
   private readonly openings: OpeningFallback | null = null;
   private cancelRestart: (() => void) | null = null;
   private launchFailed = false;
@@ -122,6 +124,11 @@ export class Scheduler {
   /** Job time and depth over the last TIMING_WINDOW Jobs. */
   get timing(): JobTiming {
     return jobTiming(this.samples);
+  }
+
+  /** The last EVICTIONS_KEPT evictions, newest first (copies). */
+  get evictions(): EvictedJob[] {
+    return this.evicted.map((e) => ({ ...e }));
   }
 
   /** Copy of the Job being searched. */
@@ -344,6 +351,7 @@ export class Scheduler {
     this.state.setQueue({
       current: this.queue.current().map(({ boardId, ply }) => ({ boardId, ply })),
       backfill: this.queue.backfillCount(),
+      deferred: this.queue.deferred().map(({ boardId, ply }) => ({ boardId, ply })),
     });
   }
 
@@ -405,6 +413,7 @@ export class Scheduler {
       nps: null,
       lines: [],
       startedAt: run.startedAt,
+      tier: job.tier,
     });
     let r: SearchResult;
     try {
@@ -430,6 +439,11 @@ export class Scheduler {
         // A short eviction (stale) must not replace a deeper Provisional eval of the same ply.
         const prev = this.state.board(boardId)?.plies[ply]?.eval;
         if (e.kind === 'complete' || !prev || prev.depth <= e.depth) this.state.setEval(boardId, ply, e, run.epoch);
+      }
+      if (run.evicted) {
+        const depth = this.state.board(boardId)?.plies[ply]?.eval?.depth ?? null; // what the ply kept
+        this.evicted.unshift({ boardId, board: job.board, ply, reason: run.evicted, depth, at: this.now });
+        this.evicted.length = Math.min(this.evicted.length, EVICTIONS_KEPT);
       }
     }
     // Evicted for another live position: a full search later, from the top of backfill.
@@ -463,6 +477,7 @@ export class Scheduler {
       nps: run.nps,
       lines,
       startedAt: run.startedAt,
+      tier: run.job.tier,
     });
   }
 

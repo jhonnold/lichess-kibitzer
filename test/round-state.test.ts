@@ -66,7 +66,7 @@ describe('RoundState', () => {
       event: null,
       round: null,
       search: null,
-      queue: { current: [], backfill: 0 },
+      queue: { current: [], backfill: 0, deferred: [] },
       stream: null,
     });
   });
@@ -78,7 +78,7 @@ describe('RoundState', () => {
     });
     rs.setDead([{ boardId: 'x', board: 1, ply: 1, at: 1 }]);
     rs.setSearch({ boardId: 'g1', ply: 0, engine: 'E', depth: 1, nps: null, lines: [], startedAt: 1 });
-    rs.setQueue({ current: [{ boardId: 'g1', ply: 0 }], backfill: 2 });
+    rs.setQueue({ current: [{ boardId: 'g1', ply: 0 }], backfill: 2, deferred: [] });
     rs.setStream('connected');
     events.length = 0;
     rs.startRound(info(), 1234);
@@ -92,7 +92,7 @@ describe('RoundState', () => {
     expect(events.map((e) => e.type)).toEqual(['snapshot']);
     const snap = rs.snapshot();
     expect(snap.round?.boards).toHaveLength(8);
-    expect([snap.search, snap.stream, snap.queue]).toEqual([null, null, { current: [], backfill: 0 }]);
+    expect([snap.search, snap.stream, snap.queue]).toEqual([null, null, { current: [], backfill: 0, deferred: [] }]);
     await rs.saved();
     expect(rounds.at(-1)?.boards).toHaveLength(10);
     expect(states.at(-1)).toMatchObject({ current: { tourId: 'T1', roundId: 'R1' }, dead: [] });
@@ -246,7 +246,7 @@ describe('RoundState', () => {
     const { rs, events } = started();
     const search: T.SearchInfo = { boardId: 'g1', ply: 0, engine: 'E', depth: 1, nps: null, lines: [], startedAt: 1 };
     rs.setSearch(search);
-    rs.setQueue({ current: [], backfill: 3 });
+    rs.setQueue({ current: [], backfill: 3, deferred: [] });
     rs.setStream('connected');
     rs.setStream('connected');
     expect(events.map((e) => e.type)).toEqual(['search', 'queue', 'stream-status']);

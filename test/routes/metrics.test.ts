@@ -89,7 +89,7 @@ describe('GET /api/admin/metrics', () => {
 
   it('reports the Queue, Dead-letter queue and engine at scrape time', async () => {
     const { app, state, scheduler } = setup();
-    state.setQueue({ current: [{ boardId: 'a', ply: 3 }], backfill: 4 });
+    state.setQueue({ current: [{ boardId: 'a', ply: 3 }], backfill: 4, deferred: [] });
     state.setDead([{ boardId: 'a', board: 1, ply: 2, at: 1 }]);
     const body = (await scrape(app, basic('admin:pw'))).text;
     expect(body).toContain('kibitzer_queue_depth{tier="current"} 1');

@@ -43,6 +43,7 @@ function setup(adminPassword = 'pw') {
     engineState: 'up' as EngineState,
     restarts: 2,
     timing: { jobs: 0, provisional: 0, ms: null, depth: null } as JobTiming,
+    evictions: [],
   };
   const status: FollowStatus = { next: null, swapAt: null, polledAt: null, error: null };
   const follower = {
@@ -238,8 +239,9 @@ describe('admin routes', () => {
       jobTimeMs: DEFAULT_JOB_TIME_MS,
       topN: 8,
       running: null,
-      queue: { current: [], backfill: 0 },
+      queue: { current: [], backfill: 0, deferred: [] },
       dead: [],
+      evictions: [],
       follow: status,
     };
     expect((await agent.get('/api/admin/status')).body).toEqual(idle);

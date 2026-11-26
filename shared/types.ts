@@ -1,6 +1,6 @@
 import type { Score } from './accuracy.js';
-import type { DeadJob } from './queue.js';
-export type { DeadJob, Score };
+import type { DeadJob, Tier } from './queue.js';
+export type { DeadJob, Score, Tier };
 
 export type StreamStatus = 'connected' | 'reconnecting';
 export type Result = '1-0' | '0-1' | '1/2-1/2' | '*';
@@ -99,12 +99,15 @@ export interface SearchInfo {
   nps: number | null;
   lines: PvLine[];
   startedAt: number; // ms epoch
+  tier: Tier; // of the running Job
 }
 
-/** Queue as Viewers need it: current-tier Jobs in run order (position = index + 1), backfill count. Transient. */
+/** Queue as Viewers need it: current-tier Jobs in run order (position = index + 1), backfill count, and the latest
+ *  plies waiting in backfill for a full search after an eviction. Transient. */
 export interface QueueView {
   current: { boardId: string; ply: number }[];
   backfill: number;
+  deferred: { boardId: string; ply: number }[];
 }
 
 /** Round in a Snapshot carries only Tracked boards. */
