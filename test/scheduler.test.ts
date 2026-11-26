@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as T from '../shared/types-v2.js';
 import { Engine } from '../src/engine/engine.js';
 import type { RoundInfo } from '../src/lichess/api.js';
@@ -245,5 +245,84 @@ describe('Scheduler', () => {
     expect(state.round!.roundId).toBe('R2');
     const ids = [...queueView().current.map((j) => j.boardId), sched.running?.boardId];
     expect(ids.every((id) => id === 'h1' || id === 'h2')).toBe(true);
+  });
+
+  it('untracking a Board removes its Jobs', async () => {
+    setup({ topN: 2, jobTimeMs: null });
+    await sched.startRound(roundInfo('R1', ['g1', 'g2']), null);
+    src.push(upd('g1', E4.slice(0, 1)));
+    src.push(upd('g2', D4));
+    await sched.setTracked(['g1']);
+    expect(queueView()).toEqual({ current: [{ boardId: 'g1', ply: 1 }], backfill: 1 });
+    await sched.setJobTime(15);
+    await idle();
+    expect(complete('g1', 1)).toBe(true);
+    expect(positions().some((p) => p.includes('d2d4'))).toBe(false);
+  });
+
+  it('tracking a Board searches its earlier plies too', async () => {
+    setup({ topN: 1 });
+    await sched.startRound(roundInfo('R1', ['g1', 'g2']), null);
+    src.push(upd('g2', D4));
+    await idle();
+    await sched.setTracked(['g1', 'g2']);
+    await idle();
+    expect([0, 1, 2, 3].every((i) => complete('g2', i))).toBe(true);
+  });
+
+  it('resume rebuilds the Queue from plies without a Complete eval', async () => {
+    const ev = (kind: T.EvalKind): T.Eval => ({ score: { cp: 1 }, depth: 1, kind, bestmove: null, lines: [] });
+    const ply = (uci: string | null, e: T.Eval | null): T.Ply => ({
+      move: uci && { uci, san: uci, clock: null },
+      at: null,
+      eval: e,
+    });
+    const board: T.Board = {
+      id: 'g1',
+      board: 1,
+      white: { name: 'W' },
+      black: { name: 'B' },
+      result: '*',
+      tracked: true,
+      opening: null,
+      clocks: { white: null, black: null },
+      plies: [ply(null, ev('complete')), ply('e2e4', ev('provisional')), ply('e7e5', null)],
+    };
+    const round: T.Round = { tourId: 'T1', roundId: 'R1', name: 'R1', eventName: 'E', startsAt: null, boards: [board] };
+    const settings: T.Settings = { event: null, engine: null, jobTimeMs: null, topN: 1 };
+    setup({ jobTimeMs: null, init: { state: { version: 2, settings, current: null, dead: [] }, round } });
+    await sched.resume();
+    expect(sourceIds).toEqual(['R1']);
+    expect(queueView()).toEqual({ current: [{ boardId: 'g1', ply: 2 }], backfill: 1 });
+    await sched.setJobTime(15);
+    await idle();
+    expect(complete('g1', 1) && complete('g1', 2)).toBe(true);
+    expect(readLog()).not.toContain('position startpos');
+  });
+
+  it('setEngine restarts the engine and requeues the running Job', async () => {
+    setup({ topN: 1, jobTimeMs: 5000 });
+    await sched.startRound(roundInfo('R1', ['g1']), null);
+    await until(() => searching('g1', 0));
+    await sched.setJobTime(null); // keep the requeued Job from starting on the new engine
+    await sched.setEngine({ path: 'fake', options: { MultiPV: '2' } });
+    expect(count('uci')).toBe(2);
+    expect(readLog()).toContain('setoption name MultiPV value 2');
+    expect(sched.running).toBeNull();
+    expect(queueView().current).toEqual([{ boardId: 'g1', ply: 0 }]);
+    await sched.setJobTime(15);
+    await until(() => complete('g1', 0));
+    expect(evalOf('g1', 0)!.lines).toHaveLength(2);
+  });
+
+  it('requeues the Job when the engine exits', async () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    setup({ topN: 1, engineArgs: ['--crash-on', 'e2e4'] });
+    await sched.startRound(roundInfo('R1', ['g1']), null);
+    src.push(upd('g1', E4.slice(0, 1)));
+    await until(() => sched.engine === null && queueView().current.length === 1);
+    expect(queueView().current).toEqual([{ boardId: 'g1', ply: 1 }]);
+    expect(errors).toHaveBeenCalled();
+    errors.mockRestore();
   });
 });
