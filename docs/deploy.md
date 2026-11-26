@@ -95,6 +95,10 @@ the Admin cookie; with no `ADMIN_PASSWORD` it always answers 401.
 - `kibitzer_evictions_total{reason}`: running Jobs stopped early (`stale`, `live`, `backfill`)
 - `kibitzer_opening_lookups_total`: Masters-explorer opening lookups (a locally paused one included)
 - `kibitzer_viewers`: open live streams (the Admin page counts as one)
+- `kibitzer_http_requests_total{route,method,status}` and `kibitzer_http_request_duration_seconds` (histogram, same
+  labels): `route` is the Express pattern (`/api/archive/:tourId/:roundId`), `<static>` for the SPA, `/api/admin/*`
+  for the Admin cookie check's 401, `<unmatched>` for other 404s and 400s. `GET /api/events` is counted when the
+  stream closes and has no duration sample. Scrapes appear as `route="/api/admin/metrics"`.
 - `kibitzer_build_info{rev,engine}`: always 1; `rev` is the git sha `npm run build` ran on (`unknown` outside a
   checkout, or set `GIT_REV`), `engine` the file name of the configured engine path. Changes on a deploy or an
   engine swap.

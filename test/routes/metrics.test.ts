@@ -1,8 +1,13 @@
+import { once } from 'node:events';
+import type { AddressInfo } from 'node:net';
 import request from 'supertest';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createApp } from '../../src/app.js';
+import { httpDuration, httpRequests } from '../../src/metrics.js';
 import { RoundState } from '../../src/round-state.js';
 import type { EngineState } from '../../src/scheduler.js';
+import { val } from '../helpers/metric.js';
+import { sse } from '../helpers/sse.js';
 
 function setup(...pw: [string | undefined] | []) {
   const adminPassword = pw.length ? pw[0] : 'pw';
@@ -113,5 +118,45 @@ describe('GET /api/admin/metrics', () => {
     expect((await scrape(app, basic('admin:pw'))).text).toMatch(
       /^kibitzer_build_info\{rev="[^"]+",engine="stockfish"\} 1$/m,
     );
+  });
+});
+
+describe('HTTP metrics', () => {
+  const reqs = (route: string, method: string, status: string) => val(httpRequests, { route, method, status });
+  const timed = (route: string, method: string, status: string) =>
+    val(httpDuration, { route, method, status }, 'kibitzer_http_request_duration_seconds_count');
+
+  it('labels requests by route pattern, never by raw path', async () => {
+    const { app } = setup();
+    const cases: [string, string, string, string][] = [
+      ['/healthz', '/healthz', 'GET', '200'],
+      ['/api/archive/abcdefgh/ijklmnop', '/api/archive/:tourId/:roundId', 'GET', '404'],
+      ['/api/admin/metrics', '/api/admin/metrics', 'GET', '401'],
+      ['/api/admin/status', '/api/admin/*', 'GET', '401'], // the cookie check answers before any route
+      ['/no/such/path', '<unmatched>', 'GET', '404'],
+    ];
+    for (const [path, ...labels] of cases) {
+      const [n, t] = [await reqs(...labels), await timed(...labels)];
+      await request(app).get(path);
+      expect([path, await reqs(...labels), await timed(...labels)]).toEqual([path, n + 1, t + 1]);
+    }
+  });
+
+  it('counts an SSE stream when it closes, without a duration sample', async () => {
+    const server = setup().app.listen(0);
+    await once(server, 'listening');
+    try {
+      const labels = ['/api/events', 'GET', '200'] as const;
+      const [n, t] = [await reqs(...labels), await timed(...labels)];
+      const c = await sse(`http://127.0.0.1:${(server.address() as AddressInfo).port}/api/events`);
+      await vi.waitFor(() => expect(c.events.length).toBeGreaterThan(0));
+      expect(await reqs(...labels)).toBe(n);
+      await c.close();
+      await vi.waitFor(async () => expect(await reqs(...labels)).toBe(n + 1));
+      expect(await timed(...labels)).toBe(t);
+    } finally {
+      server.closeAllConnections();
+      server.close();
+    }
   });
 });

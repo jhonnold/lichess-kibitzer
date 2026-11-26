@@ -121,6 +121,19 @@ export const rateLimited = new Counter({
   labelNames: ['source'],
   registers: [register],
 });
+/** `route` is the matched Express pattern (bounded cardinality: never the raw path). See routeLabel in app.ts. */
+export const httpRequests = new Counter({
+  name: 'kibitzer_http_requests_total',
+  help: 'HTTP requests by route pattern, method and status (GET /api/events counted when its stream closes)',
+  labelNames: ['route', 'method', 'status'],
+  registers: [register],
+});
+export const httpDuration = new Histogram({
+  name: 'kibitzer_http_request_duration_seconds',
+  help: 'HTTP request duration by route pattern, method and status; not observed for GET /api/events (SSE)',
+  labelNames: ['route', 'method', 'status'],
+  registers: [register],
+});
 export const viewers = new Gauge({
   name: 'kibitzer_viewers',
   help: 'Open GET /api/events streams (the Admin page counts as a Viewer)',
