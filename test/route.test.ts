@@ -8,9 +8,11 @@ import {
   navLinks,
   overviewToggle,
   parseHash,
+  resolveRoute,
   ROUND_HASH,
   roundHash,
   routeTour,
+  switchHref,
   tabOf,
 } from '../shared/route.js';
 
@@ -178,6 +180,11 @@ describe('stream tour and back links', () => {
     expect(backHash({ tour: T, board: 3 }, null)).toBe('#/');
     expect(backHash({ tour: T, board: null }, T)).toBe(`#/e/${T}`);
     expect(backHash(null, null)).toBe('#/');
+    // several Events: the Primary's `#/` is the list, so a Board link instead
+    expect(backHash(null, null, 2)).toBe('#/board/2');
+    expect(backHash({ tour: null, board: null }, null, 1)).toBe('#/board/1');
+    expect(backHash({ tour: null, board: 3 }, null, 1)).toBe('#/board/3');
+    expect(backHash(null, T, 2)).toBe(`#/e/${T}`);
   });
 
   it('overviewToggle: viewer -> its Event overview, round -> back, others nothing', () => {
@@ -236,5 +243,44 @@ describe('navLinks', () => {
     expect(links[1]).toEqual({ tab: 'round', label: 'Round', href: `#/e/${T}/round?flip=1`, key: 'o', current: true });
     expect(tabOf(at(`#/e/${T}/board/2`))).toBe('board');
     expect(tabOf(at(`#/e/${T}/round`))).toBe('round');
+  });
+});
+
+describe('resolveRoute', () => {
+  const res = (h: string, n: number) => resolveRoute(parseHash(h), n);
+  it('bare #/ is the Events list only with more than one Event', () => {
+    expect([0, 1].map((n) => res('#/', n).page)).toEqual(['viewer', 'viewer']);
+    expect(res('#/', 2)).toEqual({ page: 'events' });
+    expect(res('#/?flip=1', 2)).toEqual({ page: 'events' });
+  });
+  it('a latched decision beats the live Event count', () => {
+    expect(resolveRoute(parseHash('#/'), 2, false)).toEqual(viewer(null).route);
+    expect(resolveRoute(parseHash('#/'), 1, true)).toEqual({ page: 'events' });
+    expect(resolveRoute(parseHash('#/board/1'), 1, true)).toEqual(parseHash('#/board/1').route);
+  });
+  it('#/?chrome=0 stays on the Primary Viewer', () => expect(res('#/?chrome=0', 2)).toEqual(viewer(null).route));
+  it('other routes are unchanged', () => {
+    for (const h of ['#/board/1', `#/e/${T}`, `#/e/${T}/round`, '#/round', '#/admin', '#/archive'])
+      expect(res(h, 2)).toEqual(parseHash(h).route);
+  });
+  it('the events page is its own section and has no stream Event', () => {
+    expect(tabOf({ page: 'events' })).toBe('events');
+    expect(routeTour({ page: 'events' })).toBeUndefined();
+    expect(overviewToggle({ page: 'events' }, '#/board/1', '')).toBeNull();
+  });
+});
+
+describe('navLinks multi, switchHref', () => {
+  it('multi adds an Events link first, keeping the streaming params', () => {
+    const links = navLinks({ page: 'events' }, '#/board/2?flip=1', '?flip=1', null, true);
+    expect(links).toHaveLength(5);
+    expect(links[0]).toEqual({ tab: 'events', label: 'Events', href: '#/?flip=1', current: true });
+    expect(navLinks({ page: 'events' }, '#/', '')).toHaveLength(4);
+  });
+  it('switchHref: the round page stays on the round page, others go to the Event home', () => {
+    const at = (h: string) => parseHash(h).route;
+    expect(switchHref(at(`#/e/${T}/round`), 'bcdefghi', '?q=1')).toBe('#/e/bcdefghi/round?q=1');
+    expect(switchHref(at(`#/e/${T}/board/3/7`), 'bcdefghi', '?q=1')).toBe('#/e/bcdefghi?q=1');
+    expect(switchHref(at('#/admin'), 'bcdefghi', '')).toBe('#/e/bcdefghi');
   });
 });

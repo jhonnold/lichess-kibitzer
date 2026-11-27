@@ -273,6 +273,8 @@ describe('SiteState', () => {
     expect(site.summaries()[0].live).toBe(false);
     a.syncMoves('g1', [{ uci: 'e2e4', san: 'e4', clock: null }], 1);
     expect(site.summaries()[0].live).toBe(true);
+    a.setResult('g1', '1-0'); // every Board with moves is over
+    expect(site.summaries()[0].live).toBe(false);
     site.setPrimary('T2');
     expect(site.summaries().map((s) => s.primary)).toEqual([false, true]);
   });
@@ -298,10 +300,10 @@ describe('SiteState', () => {
     expect(count()).toBe(6);
     a.syncMoves('g1', [...m, { uci: 'e7e5', san: 'e5', clock: null }], 2); // still live: same summaries
     a.setStream('connected'); // not a summary event
-    a.setResult('g1', '1-0');
-    expect(count()).toBe(6);
-    site.removeEvent('T1');
+    a.setResult('g1', '1-0'); // the last live Board ended: no longer live
     expect(count()).toBe(7);
+    site.removeEvent('T1');
+    expect(count()).toBe(8);
   });
 
   it("setTracked publishes one 'events' frame with the final summary", () => {

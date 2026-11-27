@@ -7,6 +7,7 @@ import { isLichessId } from './archive.js';
 export type Route =
   | { page: 'viewer'; tourId: string | null; board: number | null; ply: number | null }
   | { page: 'round'; tourId: string | null }
+  | { page: 'events' } // the Events list: never parsed, only from resolveRoute
   | { page: 'admin' }
   | { page: 'archive' }
   | { page: 'archive-round'; tourId: string; roundId: string; board: number | null; ply: number | null };
@@ -58,6 +59,17 @@ export function parseHash(hash: string): ParsedHash {
   };
 }
 
+/**
+ * The route to render: bare `#/` is the Events list when more than one Event is registered, unless the hash says
+ * ?chrome=0 (OBS sources sit on `#/?chrome=0` and stay on the Primary). `list`: the decision latched for this
+ * navigation (null = not decided yet: fall back to `events`), so an Event added later does not swap a Viewer for the list.
+ */
+export function resolveRoute(p: ParsedHash, events: number, list: boolean | null = null): Route {
+  const r = p.route;
+  const bare = r.page === 'viewer' && r.tourId === null && r.board === null && r.ply === null;
+  return bare && (list ?? events > 1) && p.params.chrome !== '0' ? { page: 'events' } : r;
+}
+
 const plyPart = (ply?: number) => (ply === undefined ? '' : `/${ply}`);
 const evPart = (t: string | null) => (t === null ? '' : `/e/${t}`);
 /** '#/e/T/board/n[/p]'; tourId null = the old form (the Primary). */
@@ -75,9 +87,17 @@ export interface LastBoard {
   tour: string | null;
   board: number | null;
 }
-/** `back` target (Board tab, `o` from the overview): the last Board if seen under this tour, else the Event's home. */
-export const backHash = (last: LastBoard | null, tour: string | null): string =>
-  last && last.tour === tour && last.board !== null ? boardHash(last.board, undefined, tour) : homeHash(tour);
+/**
+ * `back` target (Board tab, `o` from the overview): the last Board if seen under this tour, else the Event's home. The
+ * Primary's home is bare `#/`, which is the Events list when several Events are followed: `first` (a Board of the
+ * Primary, given only then) makes it a Board link instead.
+ */
+export const backHash = (last: LastBoard | null, tour: string | null, first: number | null = null): string =>
+  last && last.tour === tour && last.board !== null
+    ? boardHash(last.board, undefined, tour)
+    : tour === null && first !== null
+      ? boardHash(first)
+      : homeHash(tour);
 /** `o` on a live page: viewer -> the overview; round -> back (it already has the query); else null. */
 export function overviewToggle(route: Route, back: string, query: string): string | null {
   if (route.page === 'viewer') return roundHash(route.tourId) + query;
@@ -109,8 +129,8 @@ export function layoutOf(params: Record<string, string>): Layout {
   };
 }
 
-/** The four top-level sections: the app bar's tabs (≥700px) and the phone tab bar. */
-export type Tab = 'board' | 'round' | 'archive' | 'admin';
+/** The top-level sections: the app bar's tabs (≥700px) and the phone tab bar. */
+export type Tab = 'events' | 'board' | 'round' | 'archive' | 'admin';
 export interface NavLink {
   tab: Tab;
   label: string;
@@ -127,11 +147,21 @@ export function tabOf(route: Route): Tab {
   return route.page;
 }
 
+/** Switcher target for Event `tourId`: the round page stays on the round page, anything else goes to its home. */
+export const switchHref = (route: Route, tourId: string, query: string): string =>
+  (route.page === 'round' ? roundHash(tourId) : homeHash(tourId)) + query;
+
 /**
- * Links to each section. board: the live Viewer hash to go back to (the last Board seen). Board and Round keep the
- * streaming params (query); Archive and Admin drop them.
+ * Links to each section. board: the live Viewer hash to go back to (the last Board seen). Events (only when `multi`:
+ * more than one Event), Board and Round keep the streaming params (query); Archive and Admin drop them.
  */
-export function navLinks(route: Route, board: string, query: string, tourId: string | null = null): NavLink[] {
+export function navLinks(
+  route: Route,
+  board: string,
+  query: string,
+  tourId: string | null = null,
+  multi = false,
+): NavLink[] {
   const at = tabOf(route);
   const link = (tab: Tab, label: string, href: string, key?: string): NavLink => ({
     tab,
@@ -141,6 +171,7 @@ export function navLinks(route: Route, board: string, query: string, tourId: str
     current: tab === at,
   });
   return [
+    ...(multi ? [link('events', 'Events', homeHash(null) + query)] : []),
     link('board', 'Board', board),
     link('round', 'Round', roundHash(tourId) + query, 'o'),
     link('archive', 'Archive', ARCHIVE_HASH),
