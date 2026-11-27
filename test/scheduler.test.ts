@@ -24,6 +24,14 @@ const E4 = ['e2e4', 'e7e5', 'g1f3'];
 const D4 = ['d2d4', 'd7d5', 'c2c4'];
 const FOOLS = ['f2f3', 'e7e5', 'g2g4', 'd8h4'];
 
+const persisted = (dead: T.DeadJob[]): T.PersistedState => ({
+  version: 3,
+  settings: { engine: null, jobTimeMs: null },
+  primary: 'T1',
+  events: [
+    { event: { tourId: 'T1', name: 'E', link: 'https://lichess.org/broadcast/x/T1' }, topN: 1, current: null, dead },
+  ],
+});
 const roundInfo = (id: string, boards: string[]): RoundInfo => ({
   id,
   name: id,
@@ -519,8 +527,7 @@ describe('Scheduler', () => {
       plies: [ply(null, ev('complete')), ply('e2e4', ev('provisional')), ply('e7e5', null)],
     };
     const round: T.Round = { tourId: 'T1', roundId: 'R1', name: 'R1', eventName: 'E', startsAt: null, boards: [board] };
-    const settings: T.Settings = { event: null, engine: null, jobTimeMs: null, topN: 1 };
-    setup({ jobTimeMs: null, init: { state: { version: 2, settings, current: null, dead: [] }, round } });
+    setup({ jobTimeMs: null, init: { state: persisted([]), round } });
     await sched.resume();
     expect(sourceIds).toEqual(['R1']);
     expect(queueView()).toEqual({ current: [{ boardId: 'g1', ply: 2 }], backfill: 1, deferred: [] });
@@ -645,9 +652,8 @@ describe('Scheduler', () => {
         startsAt: null,
         boards: [board],
       };
-      const settings: T.Settings = { event: null, engine: null, jobTimeMs: null, topN: 1 };
-      const dead = [{ boardId: 'g1', board: 1, ply: 1, at: 5 }];
-      setup({ jobTimeMs: null, init: { state: { version: 2, settings, current: null, dead }, round } });
+      const dead = [{ tourId: 'T1', boardId: 'g1', board: 1, ply: 1, at: 5 }];
+      setup({ jobTimeMs: null, init: { state: persisted(dead), round } });
       await sched.resume();
       expect(queueView()).toEqual({ current: [], backfill: 1, deferred: [] });
       expect(state.dead).toEqual(dead);

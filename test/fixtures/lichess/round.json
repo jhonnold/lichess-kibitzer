@@ -1,10 +1,129 @@
 {
-  "round": {"id": "L3MX2oE3", "name": "Round 1", "slug": "round-1", "ongoing": true, "startsAt": 1795611600000, "url": "https://lichess.org/broadcast/1-bundesliga-austria-20262027/round-1/L3MX2oE3", "delay": 900},
-  "tour": {"id": "IjDgZVUR", "name": "1. Bundesliga Austria 2026/2027", "slug": "1-bundesliga-austria-20262027", "url": "https://lichess.org/broadcast/1-bundesliga-austria-20262027/IjDgZVUR"},
+  "round": {
+    "id": "L3MX2oE3",
+    "name": "Round 1",
+    "slug": "round-1",
+    "ongoing": true,
+    "startsAt": 1795611600000,
+    "url": "https://lichess.org/broadcast/1-bundesliga-austria-20262027/round-1/L3MX2oE3",
+    "delay": 900
+  },
+  "tour": {
+    "id": "IjDgZVUR",
+    "name": "1. Bundesliga Austria 2026/2027",
+    "slug": "1-bundesliga-austria-20262027",
+    "url": "https://lichess.org/broadcast/1-bundesliga-austria-20262027/IjDgZVUR"
+  },
   "games": [
-    {"id": "qbPxmdQ2", "name": "Schmider, Niklas - Vaibhav, Suri", "fen": "1r2r1k1/p2qnpb1/b2p3p/2pB2p1/4N3/8/PPPB1PPP/1RQ1R1K1 w - - 4 20", "players": [{"name": "Schmider, Niklas", "title": "IM", "rating": 2398, "fideId": 12993778, "team": "Schachklub Schwaz", "fed": "GER", "clock": 86000}, {"name": "Vaibhav, Suri", "title": "GM", "rating": 2569, "fideId": 5045185, "team": "Pinggau-Friedberg", "fed": "IND", "clock": 148000}], "lastMove": "f5e7", "status": "0-1"},
-    {"id": "at7GqSzo", "name": "Hoefelsauer, Thomas - Huber, Benedikt", "fen": "5rk1/3R1ppp/4pq2/1Q2N3/4n3/2r3P1/2R2PKP/8 w - - 5 27", "players": [{"name": "Hoefelsauer, Thomas", "title": "FM", "rating": 2284, "fideId": 24668842, "team": "Malerei Edlinger Rapid Feffernitz", "fed": "GER", "clock": 40800}, {"name": "Huber, Benedikt", "title": "FM", "rating": 2308, "fideId": 12923583, "team": "1. SK Ottakring", "fed": "GER", "clock": 28500}], "lastMove": "a3c3", "thinkTime": 43, "status": "*"},
-    {"id": "Np4zluu9", "name": "Michalik, Peter - Markus, Robert", "fen": "3r2k1/4qpp1/3n3p/3Pp3/8/2N1Q1PP/1r3P2/3R1RK1 b - - 1 31", "players": [{"name": "Michalik, Peter", "title": "GM", "rating": 2534, "fideId": 14907526, "team": "Mayrhofen Zell/Zillertal", "fed": "SVK", "clock": 66400}, {"name": "Markus, Robert", "title": "GM", "rating": 2531, "fideId": 921637, "team": "LL-resources Fürstenfeld/TSV Hartberg", "fed": "SRB", "clock": 74700}], "lastMove": "a2c3", "status": "½-½"},
-    {"id": "gH77VTmz", "name": "Leitgeb, Julian - Maiwald, Jens-Uwe", "fen": "6k1/1n4p1/pBp1p2p/1p2Pp1P/1P3P2/2P5/P5P1/3K4 b - - 0 33", "players": [{"name": "Leitgeb, Julian", "title": "FM", "rating": 2265, "fideId": 1663771, "team": "LL-resources Fürstenfeld/TSV Hartberg", "fed": "AUT", "clock": 53500}, {"name": "Maiwald, Jens-Uwe", "title": "GM", "rating": 2397, "fideId": 4612396, "team": "Mayrhofen Zell/Zillertal", "fed": "GER", "clock": 53200}], "lastMove": "b2b4", "thinkTime": 27, "status": "*"}
+    {
+      "id": "qbPxmdQ2",
+      "name": "Schmider, Niklas - Vaibhav, Suri",
+      "fen": "1r2r1k1/p2qnpb1/b2p3p/2pB2p1/4N3/8/PPPB1PPP/1RQ1R1K1 w - - 4 20",
+      "players": [
+        {
+          "name": "Schmider, Niklas",
+          "title": "IM",
+          "rating": 2398,
+          "fideId": 12993778,
+          "team": "Schachklub Schwaz",
+          "fed": "GER",
+          "clock": 86000
+        },
+        {
+          "name": "Vaibhav, Suri",
+          "title": "GM",
+          "rating": 2569,
+          "fideId": 5045185,
+          "team": "Pinggau-Friedberg",
+          "fed": "IND",
+          "clock": 148000
+        }
+      ],
+      "lastMove": "f5e7",
+      "status": "0-1"
+    },
+    {
+      "id": "at7GqSzo",
+      "name": "Hoefelsauer, Thomas - Huber, Benedikt",
+      "fen": "5rk1/3R1ppp/4pq2/1Q2N3/4n3/2r3P1/2R2PKP/8 w - - 5 27",
+      "players": [
+        {
+          "name": "Hoefelsauer, Thomas",
+          "title": "FM",
+          "rating": 2284,
+          "fideId": 24668842,
+          "team": "Malerei Edlinger Rapid Feffernitz",
+          "fed": "GER",
+          "clock": 40800
+        },
+        {
+          "name": "Huber, Benedikt",
+          "title": "FM",
+          "rating": 2308,
+          "fideId": 12923583,
+          "team": "1. SK Ottakring",
+          "fed": "GER",
+          "clock": 28500
+        }
+      ],
+      "lastMove": "a3c3",
+      "thinkTime": 43,
+      "status": "*"
+    },
+    {
+      "id": "Np4zluu9",
+      "name": "Michalik, Peter - Markus, Robert",
+      "fen": "3r2k1/4qpp1/3n3p/3Pp3/8/2N1Q1PP/1r3P2/3R1RK1 b - - 1 31",
+      "players": [
+        {
+          "name": "Michalik, Peter",
+          "title": "GM",
+          "rating": 2534,
+          "fideId": 14907526,
+          "team": "Mayrhofen Zell/Zillertal",
+          "fed": "SVK",
+          "clock": 66400
+        },
+        {
+          "name": "Markus, Robert",
+          "title": "GM",
+          "rating": 2531,
+          "fideId": 921637,
+          "team": "LL-resources Fürstenfeld/TSV Hartberg",
+          "fed": "SRB",
+          "clock": 74700
+        }
+      ],
+      "lastMove": "a2c3",
+      "status": "½-½"
+    },
+    {
+      "id": "gH77VTmz",
+      "name": "Leitgeb, Julian - Maiwald, Jens-Uwe",
+      "fen": "6k1/1n4p1/pBp1p2p/1p2Pp1P/1P3P2/2P5/P5P1/3K4 b - - 0 33",
+      "players": [
+        {
+          "name": "Leitgeb, Julian",
+          "title": "FM",
+          "rating": 2265,
+          "fideId": 1663771,
+          "team": "LL-resources Fürstenfeld/TSV Hartberg",
+          "fed": "AUT",
+          "clock": 53500
+        },
+        {
+          "name": "Maiwald, Jens-Uwe",
+          "title": "GM",
+          "rating": 2397,
+          "fideId": 4612396,
+          "team": "Mayrhofen Zell/Zillertal",
+          "fed": "GER",
+          "clock": 53200
+        }
+      ],
+      "lastMove": "b2b4",
+      "thinkTime": 27,
+      "status": "*"
+    }
   ]
 }

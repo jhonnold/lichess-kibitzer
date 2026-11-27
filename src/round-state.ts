@@ -24,6 +24,10 @@ const DEFAULT_SETTINGS: T.Settings = {
   topN: T.DEFAULT_TOP_N,
 };
 
+/** The Event this single-Event state runs: the Primary's entry, else the first. */
+const currentEntry = (s: T.PersistedState): T.PersistedEvent | undefined =>
+  s.events.find((e) => e.event.tourId === s.primary) ?? s.events[0];
+
 /** In-memory site state: settings, the Current Round (every Board) and transient search/queue/stream. Events are
  *  emitted for Tracked boards only; persisted parts are saved on every change. */
 export class RoundState extends EventEmitter<Events> {
@@ -46,16 +50,20 @@ export class RoundState extends EventEmitter<Events> {
   ) {
     super();
     this.setMaxListeners(0); // one listener per SSE client; default cap 10 would warn
-    this.#settings = init.state?.settings ?? DEFAULT_SETTINGS;
-    this.#dead = init.state?.dead ?? [];
+    const entry = init.state && currentEntry(init.state);
+    this.#settings = init.state
+      ? { ...init.state.settings, event: entry?.event ?? null, topN: entry?.topN ?? DEFAULT_SETTINGS.topN }
+      : DEFAULT_SETTINGS;
+    this.#dead = entry?.dead ?? [];
     this.#round = init.round;
     for (const b of init.round?.boards ?? []) this.#epochs.set(b.id, ++this.#seq);
   }
 
-  /** load() then loadRound(current) (null if current is null). */
+  /** load() then loadRound(current) of the Primary Event (null if there is none). */
   static async load(store: DataStore): Promise<RoundState> {
     const state = await store.load();
-    const round = state?.current ? await store.loadRound(state.current.tourId, state.current.roundId) : null;
+    const current = state && currentEntry(state)?.current;
+    const round = current ? await store.loadRound(current.tourId, current.roundId) : null;
     return new RoundState(store, { state, round });
   }
 
@@ -294,8 +302,11 @@ export class RoundState extends EventEmitter<Events> {
 
   private saveState(): void {
     const current = this.#round && { tourId: this.#round.tourId, roundId: this.#round.roundId };
+    const { event, topN, ...site } = this.#settings;
+    // An Idle site writes no entry, so its topN is not persisted: the in-memory value is kept until restart.
+    const events = event ? [{ event, topN, current, dead: this.#dead }] : [];
     this.#stateSaving = this.store
-      .save({ version: 2, settings: this.#settings, current, dead: this.#dead })
+      .save({ version: 3, settings: site, primary: event?.tourId ?? null, events })
       .catch((err: unknown) => console.error('round-state: save failed', err));
   }
 

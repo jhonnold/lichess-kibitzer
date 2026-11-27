@@ -153,12 +153,26 @@ export type SseEvent =
   | { type: 'queue'; queue: QueueView }
   | { type: 'stream-status'; status: StreamStatus | null };
 
-/** data/state.json */
-export interface PersistedState {
-  version: 2;
-  settings: Settings;
+/** Site-wide settings of the state file (not per Event). */
+export interface SiteSettings {
+  engine: EngineConfig | null; // null = Admin page defaults
+  jobTimeMs: number | null; // null = unset: Queue idles
+}
+
+/** One registered Event as persisted: its own topN, Current Round's file and Dead-letter queue. */
+export interface PersistedEvent {
+  event: RegisteredEvent;
+  topN: number; // default Tracked boards for its next Round
   current: { tourId: string; roundId: string } | null; // Current Round's file
   dead: DeadJob[]; // Dead-letter queue (of the Current Round)
+}
+
+/** data/state.json. events in registration order; primary = the tourId of the Primary Event (null when none). */
+export interface PersistedState {
+  version: 3;
+  settings: SiteSettings;
+  primary: string | null;
+  events: PersistedEvent[];
 }
 
 /** data/rounds/<tourId>/<roundId>.json. The Archive = every such file except the Current Round's. */

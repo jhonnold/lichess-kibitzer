@@ -2,7 +2,7 @@ import { mkdir, readdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { isLichessId, roundMeta, type RoundMeta } from '../shared/archive.js';
 import { migrateEngine } from '../shared/engine-config.js';
-import type { PersistedRound, PersistedState, Round } from '../shared/types.js';
+import type { DeadJob, PersistedEvent, PersistedRound, PersistedState, Round, SiteSettings } from '../shared/types.js';
 import { storeLastSave, storeWrites } from './metrics.js';
 
 export const DEFAULT_DATA_FILE = 'data/state.json';
@@ -56,8 +56,44 @@ async function readJson(path: string): Promise<unknown | null> {
   }
 }
 
+/** A version 3 state file, or null when malformed. */
+function parseV3(data: Record<string, unknown>): PersistedState | null {
+  if (!isObj(data.settings) || !Array.isArray(data.events)) return null;
+  if (data.primary !== null && typeof data.primary !== 'string') return null;
+  if (
+    !data.events.every((e) => isObj(e) && isObj(e.event) && typeof e.event.tourId === 'string' && Array.isArray(e.dead))
+  ) {
+    return null;
+  }
+  return data as unknown as PersistedState;
+}
+
+/** A version 2 state file as version 3, or null when malformed. An Event becomes the one entry and the Primary; Idle
+ *  becomes no entries, and its topN is dropped (the in-memory default applies to the next Event). */
+function parseV2(data: Record<string, unknown>): PersistedState | null {
+  if (!isObj(data.settings) || !Array.isArray(data.dead)) return null;
+  const { event, topN, ...site } = data.settings as unknown as SiteSettings &
+    Pick<PersistedEvent, 'topN'> & {
+      event: PersistedEvent['event'] | null;
+    };
+  const events: PersistedEvent[] = event
+    ? [
+        {
+          event,
+          topN,
+          current: (data.current as PersistedEvent['current']) ?? null,
+          dead: (data.dead as (Omit<DeadJob, 'tourId'> & { tourId?: string })[]).map((d) => ({
+            ...d,
+            tourId: d.tourId ?? event.tourId,
+          })),
+        },
+      ]
+    : [];
+  return { version: 3, settings: site, primary: event?.tourId ?? null, events };
+}
+
 export interface DataStore {
-  load(): Promise<PersistedState | null>; // null: missing, or version 1 (discarded, logged once)
+  load(): Promise<PersistedState | null>; // always version 3 (version 2 migrated); null: missing, or version 1 (discarded, logged once)
   save(s: PersistedState): Promise<void>;
   loadRound(tourId: string, roundId: string): Promise<Round | null>; // null: missing
   saveRound(r: Round): Promise<void>; // coalesced per file
@@ -102,10 +138,9 @@ export function dataStore(file = process.env.DATA_FILE || DEFAULT_DATA_FILE): Da
         console.warn(`${file}: version 1 state discarded`);
         return null;
       }
-      if (!isObj(data) || data.version !== 2 || !isObj(data.settings) || !Array.isArray(data.dead)) {
-        throw new Error(`${file}: not a lichess-kibitzer state file`);
-      }
-      const state = data as unknown as PersistedState;
+      const state =
+        isObj(data) && data.version === 3 ? parseV3(data) : isObj(data) && data.version === 2 ? parseV2(data) : null;
+      if (!state) throw new Error(`${file}: not a lichess-kibitzer state file`);
       const engine = state.settings.engine && migrateEngine(state.settings.engine); // pre-copies configs
       return { ...state, settings: { ...state.settings, engine } };
     },
