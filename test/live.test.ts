@@ -15,6 +15,7 @@ const board = (id: string, n: number, plies = [ply()]): Board => ({
   plies,
 });
 const snap = (): Snapshot => ({
+  events: [],
   event: null,
   round: {
     tourId: 't',
@@ -81,6 +82,13 @@ describe('applyEvent', () => {
     expect(next?.round?.boards.map((b) => b.result)).toEqual(['1-0', '*']);
     const s = snap();
     expect(applyEvent(s, { type: 'result', boardId: 'x', result: '1-0' })).toBe(s);
+  });
+
+  it('events replaces the summaries and keeps the rest; before a snapshot it is a no-op', () => {
+    const events = [{ tourId: 'x', name: 'X', primary: true, round: null, live: false, tracked: 0 }];
+    const s = snap();
+    expect(applyEvent(s, { type: 'events', events })).toEqual({ ...s, events });
+    expect(applyEvent(null, { type: 'events', events })).toBeNull();
   });
 
   it('search, queue and stream-status are set as sent', () => {

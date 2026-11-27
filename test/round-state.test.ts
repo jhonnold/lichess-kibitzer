@@ -50,7 +50,7 @@ function setup(init?: { state: T.PersistedState | null; round: T.Round | null })
   });
   const rs = site.event('T1') ?? site.addEvent(event, 8);
   const events: T.SseEvent[] = [];
-  site.on('event', (_t, e) => events.push(e));
+  site.on('event', (_t, e) => e.type !== 'events' && events.push(e)); // the summaries are tested in site-state
   return { site, rs, store, states, rounds, events };
 }
 const started = (n = 10) => {
@@ -66,6 +66,7 @@ describe('RoundState', () => {
     expect(rs.topN).toBe(8);
     expect(rs.dead).toEqual([]);
     expect(rs.snapshot()).toEqual({
+      events: [expect.objectContaining({ tourId: 'T1', primary: true, round: null, live: false, tracked: 0 })],
       event,
       round: null,
       search: null,

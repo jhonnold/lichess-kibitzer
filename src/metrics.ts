@@ -12,7 +12,7 @@ collectDefaultMetrics({ register, prefix: 'kibitzer_' });
 
 /** What the scrape-time metrics read. Set by createApp; before that they report nothing. */
 export interface MetricSources {
-  state: Pick<SiteState, 'settings' | 'queue' | 'events' | 'primary'>;
+  state: Pick<SiteState, 'settings' | 'queue' | 'events'>;
   scheduler: Pick<Scheduler, 'copyState' | 'copyRestarts'>;
   site: Pick<Site, 'status'>;
   defaultEngine: EngineConfig;
@@ -154,7 +154,7 @@ export const streamReconnects = new Counter({
 });
 export const streamConnected = new Gauge({
   name: 'kibitzer_lichess_stream_connected',
-  help: '1 while the Lichess Round stream is open and receiving',
+  help: 'Open Lichess Round streams that are receiving (one per Event)',
   registers: [register],
 });
 /** Every Lichess API call (src/lichess/api.ts getJson); `paused` = refused locally during the 60 s pause after a 429. */
@@ -193,23 +193,27 @@ export const httpDuration = new Histogram({
 });
 export const followerPolls = new Counter({
   name: 'kibitzer_follower_polls_total',
-  help: 'Event polls by outcome (error: the Event fetch or the Round swap failed)',
-  labelNames: ['outcome'],
+  help: 'Event polls by Event (tourId) and outcome (error: the Event fetch or the Round swap failed)',
+  labelNames: ['event', 'outcome'],
   registers: [register],
 });
 export const followerLastSuccess = new Gauge({
   name: 'kibitzer_follower_last_success_timestamp_seconds',
-  help: 'When the Event was last fetched (even if the Round swap after it failed); 0 before the first fetch',
+  help: 'When each Event (tourId) was last fetched (even if the Round swap after it failed); no sample before the first fetch',
+  labelNames: ['event'],
   registers: [register],
   collect() {
     this.reset();
-    const at = src && src.state.primary !== null ? src.site.status(src.state.primary)?.polledAt : null;
-    if (at != null) this.set(at / 1000);
+    if (!src) return;
+    for (const rs of src.state.events) {
+      const at = src.site.status(rs.event.tourId)?.polledAt;
+      if (at != null) this.set({ event: rs.event.tourId }, at / 1000);
+    }
   },
 });
 export const following = new Gauge({
   name: 'kibitzer_following',
-  help: 'Events registered (0 or 1 for now)',
+  help: 'Events registered',
   registers: [register],
   collect() {
     this.reset();

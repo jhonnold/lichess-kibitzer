@@ -126,8 +126,19 @@ export interface QueueView {
   deferred: { boardId: string; ply: number }[];
 }
 
+/** One registered Event as the Viewers list it. */
+export interface EventSummary {
+  tourId: string;
+  name: string;
+  primary: boolean;
+  round: { roundId: string; name: string; startsAt: number | null } | null; // Current Round
+  live: boolean; // a Tracked Board of the Current Round has a move; false = upcoming, or no Round
+  tracked: number; // Tracked boards of the Current Round
+}
+
 /** Round in a Snapshot carries only Tracked boards. */
 export interface Snapshot {
+  events: EventSummary[]; // every registered Event, in registration order
   event: RegisteredEvent | null;
   round: Round | null;
   search: SearchInfo | null;
@@ -144,7 +155,8 @@ export type SseEvent =
   | { type: 'result'; boardId: string; result: Result }
   | { type: 'search'; search: SearchInfo | null }
   | { type: 'queue'; queue: QueueView }
-  | { type: 'stream-status'; status: StreamStatus | null };
+  | { type: 'stream-status'; status: StreamStatus | null }
+  | { type: 'events'; events: EventSummary[] }; // site-wide: a summary changed
 
 /** Site-wide settings of the state file (not per Event). */
 export interface SiteSettings {

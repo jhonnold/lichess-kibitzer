@@ -15,6 +15,8 @@ export function applyEvent(s: Snapshot | null, e: SseEvent): Snapshot | null {
       return { ...s, queue: e.queue };
     case 'stream-status':
       return { ...s, stream: e.status };
+    case 'events':
+      return { ...s, events: e.events };
   }
   const round = s.round;
   if (!round) return s;

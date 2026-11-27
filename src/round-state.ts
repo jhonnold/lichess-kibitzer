@@ -5,11 +5,13 @@ import type { DataStore } from './store.js';
 /** What a RoundState needs from its SiteState: the only emitter, the state file, the shared epoch counter and the
  *  site-wide search/queue. After the Event is removed, emit and save do nothing. */
 export interface RoundHost {
-  emit(e: T.SseEvent): void; // tagged with this Event
+  emit(e: T.SseEvent, publish?: boolean): void; // tagged with this Event; publish=false: the caller calls changed() once
+  changed(): void; // the Event's summary may have changed
   save(): void; // state.json of every Event
   nextEpoch(): number;
   search(): T.SearchInfo | null; // the running Job's search if that Job is this Event's, else null
   queue(): T.QueueView; // the global Queue
+  summaries(): T.EventSummary[]; // every registered Event
 }
 
 const newBoard = (b: RoundInfo['boards'][number], i: number, tracked: boolean): T.Board => ({
@@ -79,6 +81,7 @@ export class RoundState {
   snapshot(): T.Snapshot {
     const round = this.#round && { ...this.#round, boards: this.#round.boards.filter((b) => b.tracked) };
     return structuredClone({
+      events: this.host.summaries(),
       event: this.event,
       round,
       search: this.host.search(),
@@ -160,9 +163,15 @@ export class RoundState {
       if (b.tracked === want.has(b.id)) continue;
       b.tracked = !b.tracked;
       changed = true;
-      this.host.emit(b.tracked ? { type: 'board', board: structuredClone(b) } : { type: 'untrack', boardId: b.id });
+      this.host.emit(
+        b.tracked ? { type: 'board', board: structuredClone(b) } : { type: 'untrack', boardId: b.id },
+        false,
+      );
     }
-    if (changed) this.saveRound();
+    if (changed) {
+      this.host.changed(); // one summaries frame for the whole toggle
+      this.saveRound();
+    }
   }
 
   /**

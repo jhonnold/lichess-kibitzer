@@ -76,7 +76,10 @@ const idle = async () => {
 };
 const complete = (id: string) => state().board(id)!.plies[0].eval?.kind === 'complete';
 const roundId = () => state().round?.roundId;
-const polls = async () => [await val(followerPolls, { outcome: 'ok' }), await val(followerPolls, { outcome: 'error' })];
+const polls = async (event = 'T1') => [
+  await val(followerPolls, { event, outcome: 'ok' }),
+  await val(followerPolls, { event, outcome: 'error' }),
+];
 
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), 'follower-'));
@@ -198,12 +201,14 @@ describe('Site and Follower', () => {
   it('keeps the Current Round on a failed poll and recovers on the next', async () => {
     await hub.add(LINK, 2);
     const [ok, err] = await polls(); // register is not a poll
+    const other = await polls('T2');
     const keep = state().round;
     fetchEvent.mockRejectedValueOnce(new LichessError(429, 'rate limited'));
     await follower().tick();
     expect(status().error).toBe('rate limited');
     expect(state().round).toBe(keep);
     expect(await polls()).toEqual([ok, err + 1]);
+    expect(await polls('T2')).toEqual(other); // labelled by Event
     await follower().tick();
     expect(status().error).toBeNull();
     expect(await polls()).toEqual([ok + 1, err + 1]);

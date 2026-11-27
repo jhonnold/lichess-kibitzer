@@ -125,6 +125,7 @@ describe('archiveSnapshot', () => {
   it('wraps the Round with no live state', () => {
     const r = round([b('1-0', 3)]);
     expect(archiveSnapshot(r)).toEqual({
+      events: [],
       event: { tourId: 'T', name: 'Event', link: '' },
       round: r,
       search: null,
