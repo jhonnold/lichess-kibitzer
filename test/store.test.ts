@@ -20,12 +20,21 @@ const engine = { path: '/usr/local/bin/berserk', options: { Hash: '1024', Thread
 const data = { version: 1, engine, game: null }; // a v1 file
 
 describe('dataStore', () => {
+  const event = { tourId: 'T', name: 'Event', link: 'https://lichess.org/broadcast/x/T' };
+  const dead = { tourId: 'T', boardId: 'G', board: 1, ply: 3, at: 7 };
   const state: PersistedState = {
-    version: 2,
-    settings: { event: null, engine: null, jobTimeMs: 5000, topN: 8 },
-    current: { tourId: 'T', roundId: 'R' },
-    dead: [{ tourId: 'T1', boardId: 'G', board: 1, ply: 3, at: 7 }],
+    version: 3,
+    settings: { engine: null, jobTimeMs: 5000 },
+    primary: 'T',
+    events: [{ event, topN: 6, current: { tourId: 'T', roundId: 'R' }, dead: [dead] }],
   };
+  const v2 = (settings: object, extra: object = {}) => ({
+    version: 2,
+    settings: { event, engine: null, jobTimeMs: 5000, topN: 6, ...settings },
+    current: { tourId: 'T', roundId: 'R' },
+    dead: [{ boardId: 'G', board: 1, ply: 3, at: 7 }],
+    ...extra,
+  });
   const round = (roundId: string): Round => ({
     tourId: 'T',
     roundId,
@@ -63,25 +72,54 @@ describe('dataStore', () => {
     expect(await writes('state')).toEqual([ok + 1, err + 1]);
   });
 
-  it('discards a version 1 file and rejects an unknown version', async () => {
+  it('discards a version 1 file and rejects an unknown version or a malformed v3', async () => {
     const path = join(dir, 'state.json');
     const s = dataStore(path);
     writeFileSync(path, JSON.stringify(data));
     expect(await s.load()).toBeNull();
-    writeFileSync(path, JSON.stringify({ ...state, version: 3 }));
-    await expect(s.load()).rejects.toThrow(/not a lichess-kibitzer state file/);
+    for (const bad of [
+      { ...state, version: 4 },
+      { ...state, events: {} },
+      { ...state, primary: 3 },
+      { ...state, settings: null },
+      { ...state, events: [{ ...state.events[0], dead: null }] },
+      { ...state, events: [{ topN: 1, current: null, dead: [] }] },
+    ]) {
+      writeFileSync(path, JSON.stringify(bad));
+      await expect(s.load()).rejects.toThrow(/not a lichess-kibitzer state file/);
+    }
   });
 
-  it('migrates a pre-copies engine config on load', async () => {
+  it('migrates a version 2 file with an Event: one entry, its Primary, dead gets the tourId', async () => {
     const path = join(dir, 'state.json');
-    const settings = { ...state.settings, engine: { path: '/e', options: { Threads: '2', Hash: '64', MultiPV: '5' } } };
-    writeFileSync(path, JSON.stringify({ ...state, settings }));
-    expect((await dataStore(path).load())?.settings.engine).toEqual({
+    writeFileSync(path, JSON.stringify(v2({})));
+    expect(await dataStore(path).load()).toEqual(state);
+  });
+
+  it('migrates an Idle version 2 file to no Events, dropping its topN', async () => {
+    const path = join(dir, 'state.json');
+    writeFileSync(path, JSON.stringify(v2({ event: null }, { current: null, dead: [] })));
+    expect(await dataStore(path).load()).toEqual({
+      version: 3,
+      settings: { engine: null, jobTimeMs: 5000 },
+      primary: null,
+      events: [],
+    });
+  });
+
+  it('migrates a pre-copies engine config on load, from version 2 and version 3', async () => {
+    const path = join(dir, 'state.json');
+    const old = { path: '/e', options: { Threads: '2', Hash: '64', MultiPV: '5' } };
+    const migrated = {
       path: '/e',
       options: {},
       main: { threads: 2, hash: 64 },
       multi: { threads: 2, hash: 64, multiPv: 5 },
-    });
+    };
+    writeFileSync(path, JSON.stringify(v2({ engine: old })));
+    expect((await dataStore(path).load())?.settings.engine).toEqual(migrated);
+    writeFileSync(path, JSON.stringify({ ...state, settings: { ...state.settings, engine: old } }));
+    expect((await dataStore(path).load())?.settings.engine).toEqual(migrated);
   });
 
   it('round-trips a Round under rounds/<tourId>/<roundId>.json without its version', async () => {
