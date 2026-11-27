@@ -175,8 +175,9 @@ export class Follower {
 
   /**
    * Imports each Round before the Current Round (none: up to the last finished Round) that has no Round file, is no
-   * Event's Current Round and is not ongoing (a later poll imports it once finished), one at a time: fetchRound + fetchRoundPgn → importRound → saveRound. A future or current
-   * Round is never written, so its tracked set still comes from topN. Never rejects: the first error goes to
+   * Event's Current Round and is not ongoing (a later poll imports it once finished), one at a time: fetchRound +
+   * fetchRoundPgn → importRound → saveRound. A future or current Round is never written, so its tracked set still comes
+   * from topN. Never rejects: the first error goes to
    * status.error and ends this pass; the next poll retries.
    */
   private async importRounds(ev: EventInfo): Promise<void> {
