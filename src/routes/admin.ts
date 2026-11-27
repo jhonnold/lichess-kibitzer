@@ -14,7 +14,8 @@ import type { JobTiming } from '../../shared/timing.js';
 import { COPY_OPTIONS, MAX_MULTI_PV } from '../../shared/engine-config.js';
 import { probeEngine } from '../engine/engine.js';
 import type { UciOption } from '../engine/uci-parser.js';
-import type { Follower, FollowStatus } from '../follower.js';
+import { IDLE, type FollowStatus } from '../follower.js';
+import type { Site } from '../site.js';
 import { LichessError } from '../lichess/api.js';
 import { register } from '../metrics.js';
 import { DEFAULT_TOP_N } from '../../shared/types.js';
@@ -42,7 +43,7 @@ export interface AdminDeps {
     | 'timing'
     | 'evictions'
   >;
-  follower: Pick<Follower, 'register' | 'clear' | 'status'>;
+  site: Pick<Site, 'add' | 'remove' | 'status'>;
   defaultEngine: EngineConfig; // shown (and used) while no config is saved
   adminPassword?: string; // unset or empty: every login is refused
   probe?: (path: string) => Promise<{ name: string; options: UciOption[] }>; // default probeEngine
@@ -94,7 +95,7 @@ function basicOk(header: string | undefined, password: string | undefined): bool
 
 /** /api/admin/*: login sets an HMAC-signed `<expiry>.<sig>` cookie; every other route needs it. */
 export function adminRouter(deps: AdminDeps): Router {
-  const { state, scheduler, follower, defaultEngine, adminPassword, probe = probeEngine } = deps;
+  const { state, scheduler, site, defaultEngine, adminPassword, probe = probeEngine } = deps;
   const secret = randomBytes(32); // per process: a restart logs Admins out
   const sign = (exp: string) => createHmac('sha256', secret).update(exp).digest('base64url');
   const r = Router();
@@ -169,15 +170,16 @@ export function adminRouter(deps: AdminDeps): Router {
       })
       .then(() => res.sendStatus(204), fail(res));
   });
-  /** Register an Event: from then on the Follower picks the Current Round. */
+  /** Add an Event (several are followed at once): from then on its Follower picks its Current Round. */
   r.post('/event', (req, res) => {
     const { link, topN }: { link?: unknown; topN?: unknown } = req.body ?? {};
     if (typeof link !== 'string' || !link || (topN !== undefined && !intIn(topN, 1, 64)))
       return void res.status(400).json({ error: 'expected { link: string, topN?: integer 1-64 }' });
-    follower.register(link, topN as number | undefined).then(() => res.sendStatus(204), fail(res));
+    site.add(link, topN as number | undefined).then(() => res.sendStatus(204), fail(res));
   });
   r.post('/clear', (_req, res) => {
-    follower.clear().then(() => res.sendStatus(204), fail(res));
+    const primary = state.primary;
+    (primary === null ? Promise.resolve() : site.remove(primary)).then(() => res.sendStatus(204), fail(res));
   });
   /** The Primary's next Round default; the Scheduler has no topN. */
   r.put('/topn', (req, res) => {
@@ -252,7 +254,7 @@ export function adminRouter(deps: AdminDeps): Router {
       queue: state.queue,
       dead: rs?.dead ?? [],
       evictions: scheduler.evictions,
-      follow: follower.status,
+      follow: (state.primary !== null && site.status(state.primary)) || IDLE,
     };
     res.json(body);
   });

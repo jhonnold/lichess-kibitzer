@@ -33,7 +33,7 @@ export function createApp(deps: AppDeps): express.Express {
   bindMetrics({
     state: deps.state,
     scheduler: deps.scheduler,
-    follower: deps.follower,
+    site: deps.site,
     defaultEngine: deps.defaultEngine,
   });
   const app = express();

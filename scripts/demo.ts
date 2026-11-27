@@ -182,9 +182,9 @@ const running = await startServer({
   lichess,
   follow: { pollMs }, // polls the fake lichess above, never lichess.org
 });
-const { scheduler, follower } = running;
+const { scheduler, site } = running;
 await scheduler.setJobTime(jobTime);
-await follower.register('demo', top);
+await site.add('demo', top);
 
 if (interval > 0) setInterval(release, interval);
 createInterface({ input: process.stdin }).on('line', (l) => release(l.trim() ? Number(l) : undefined));

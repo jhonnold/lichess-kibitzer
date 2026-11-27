@@ -22,10 +22,10 @@ const app = createApp({
     setTracked: vi.fn(),
     setEngine: vi.fn(),
   },
-  follower: {
-    status: { next: null, swapAt: null, polledAt: null, error: null },
-    register: vi.fn(),
-    clear: vi.fn(),
+  site: {
+    status: () => null,
+    add: vi.fn(),
+    remove: vi.fn(),
   },
   defaultEngine: engineConfig('berserk'),
 });
