@@ -323,9 +323,10 @@ describe('Scheduler', () => {
   it('searches each position on both copies at once and stops them together', async () => {
     setup({ topN: 1, jobTimeMs: 5000 });
     await sched.startRound(roundInfo('R1', ['g1']), null);
-    await until(
-      () => state.snapshot().search?.multi?.lines.length === 3 && state.snapshot().search!.lines.length === 1,
-    );
+    await until(() => {
+      const s = state.snapshot().search;
+      return s?.lines.length === 1 && s.depth === 3 && s.multi?.lines.length === 3 && s.multi.depth === 3;
+    });
     expect(state.snapshot().search).toMatchObject({ depth: 3, multi: { depth: 3, nps: 100000 } });
     await sched.engine!.stop(); // the main copy ends the Job: the multi copy is stopped with it
     await until(() => complete('g1', 0));
@@ -351,17 +352,20 @@ describe('Scheduler', () => {
   it('fixes the Job outcome when the main copy ends, not while it waits for the multi copy', async () => {
     let release!: () => void;
     const gate = new Promise<void>((r) => (release = r));
+    let settled = false; // the Scheduler stops the multi copy once the main copy's search has ended
     setup({
       topN: 1,
       launchMulti: async (real) => {
         const e = await real();
         const search = e.search.bind(e);
         e.search = (...args) => search(...args).then(async (r) => (await gate, r)); // held until released
+        const stop = e.stop.bind(e);
+        e.stop = () => ((settled = true), stop());
         return e;
       },
     });
     await sched.startRound(roundInfo('R1', ['g1']), null);
-    await poll(() => readLog().includes('> bestmove e2e4')); // the main copy finished the start position
+    await poll(() => settled); // the Scheduler has the main copy's result for the start position
     src.push(upd('g1', ['e2e4'])); // its Board moved on: would have evicted the Job as stale
     release();
     await until(() => complete('g1', 0));
