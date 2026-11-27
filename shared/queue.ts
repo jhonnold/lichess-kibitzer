@@ -2,6 +2,7 @@ export type Tier = 'current' | 'backfill';
 
 /** One search of one position of a Tracked board. since: current tier = waiting since; backfill = entered backfill. */
 export interface Job {
+  tourId: string; // the owning Event (Lichess tour id); Board ids are globally unique, so Queue keys stay boardId:ply
   boardId: string;
   board: number;
   ply: number;
@@ -11,6 +12,7 @@ export interface Job {
 
 /** A Job that crashed the engine MAX_CRASHES times. at = when it went dead. */
 export interface DeadJob {
+  tourId: string;
   boardId: string;
   board: number;
   ply: number;
@@ -51,16 +53,17 @@ function compare(a: Job, b: Job): number {
  */
 export class Queue {
   private readonly jobs = new Map<string, Job>();
-  private readonly latest = new Map<string, { board: number; ply: number }>();
+  private readonly latest = new Map<string, { tourId: string; board: number; ply: number }>();
   private readonly crashes = new Map<string, number>();
   private readonly deadJobs = new Map<string, DeadJob>();
   private readonly discarded = new Set<string>(); // discarded from the Dead-letter queue: not queued again this Round
 
-  /** Board's latest ply. Supersedes its waiting current Job (→ backfill). done = record only, enqueue nothing. */
-  setLatest(boardId: string, board: number, ply: number, now: number, done = false): void {
+  /** Board's latest ply (the Board belongs to Event tourId). Supersedes its waiting current Job (→ backfill).
+   *  done = record only, enqueue nothing. */
+  setLatest(tourId: string, boardId: string, board: number, ply: number, now: number, done = false): void {
     const prev = this.latest.get(boardId);
     if (prev?.ply === ply) return;
-    this.latest.set(boardId, { board, ply });
+    this.latest.set(boardId, { tourId, board, ply });
     const old = prev ? this.jobs.get(key(boardId, prev.ply)) : undefined;
     const since = old?.tier === 'current' ? old.since : now;
     for (const job of this.ownJobs(boardId)) {
@@ -75,15 +78,15 @@ export class Queue {
         this.discarded.delete(key(boardId, p));
       }
     }
-    if (!done) this.add({ boardId, board, ply, tier: 'current', since }, now);
+    if (!done) this.add({ tourId, boardId, board, ply, tier: 'current', since }, now);
   }
 
   /** Earlier plies with no Complete eval. Ignored for unknown Boards, plies >= latest, queued or dead keys. */
-  addBackfill(boardId: string, plies: number[], now: number): void {
+  addBackfill(tourId: string, boardId: string, plies: number[], now: number): void {
     const latest = this.latest.get(boardId);
     if (!latest) return;
     for (const ply of plies) {
-      if (ply < latest.ply) this.add({ boardId, board: latest.board, ply, tier: 'backfill', since: now }, now);
+      if (ply < latest.ply) this.add({ tourId, boardId, board: latest.board, ply, tier: 'backfill', since: now }, now);
     }
   }
 
@@ -125,7 +128,13 @@ export class Queue {
       this.jobs.set(k, placed);
       return 'requeued';
     }
-    this.deadJobs.set(k, { boardId: placed.boardId, board: placed.board, ply: placed.ply, at: now });
+    this.deadJobs.set(k, {
+      tourId: placed.tourId,
+      boardId: placed.boardId,
+      board: placed.board,
+      ply: placed.ply,
+      at: now,
+    });
     return 'dead';
   }
 
@@ -137,6 +146,16 @@ export class Queue {
     for (const k of [...this.deadJobs.keys()]) if (own(k)) this.deadJobs.delete(k);
     for (const k of [...this.discarded]) if (own(k)) this.discarded.delete(k);
     this.latest.delete(boardId);
+  }
+
+  /** Drop every Job, crash count, Dead-letter queue entry and discard mark of an Event's Boards, and forget their
+   *  latest plies. Other Events are untouched. */
+  removeEvent(tourId: string): void {
+    const boardIds = new Set<string>();
+    for (const [boardId, l] of this.latest) if (l.tourId === tourId) boardIds.add(boardId);
+    for (const d of this.deadJobs.values()) if (d.tourId === tourId) boardIds.add(d.boardId);
+    for (const j of this.jobs.values()) if (j.tourId === tourId) boardIds.add(j.boardId);
+    for (const boardId of boardIds) this.removeBoard(boardId);
   }
 
   /** Empty everything, Dead-letter queue included (Round swap). */
@@ -155,7 +174,7 @@ export class Queue {
     if (!dead) return false;
     this.deadJobs.delete(k);
     this.crashes.delete(k);
-    return this.add({ boardId, board: dead.board, ply, tier: 'current', since: now }, now);
+    return this.add({ tourId: dead.tourId, boardId, board: dead.board, ply, tier: 'current', since: now }, now);
   }
 
   /** Admin discard from the Dead-letter queue: never queued again until the Board is untracked, the ply is
@@ -169,13 +188,13 @@ export class Queue {
   }
 
   /** Boot: put persisted Dead-letter queue entries back (crash count MAX_CRASHES). Call before any setLatest or
-   *  addBackfill, so place() refuses those keys. */
-  restoreDead(dead: readonly DeadJob[]): void {
+   *  addBackfill, so place() refuses those keys. Entries saved before Jobs carried a tourId get `tourId`. */
+  restoreDead(dead: readonly (Omit<DeadJob, 'tourId'> & { tourId?: string })[], tourId: string): void {
     for (const d of dead) {
       const k = key(d.boardId, d.ply);
       this.jobs.delete(k);
       this.crashes.set(k, MAX_CRASHES);
-      this.deadJobs.set(k, { ...d });
+      this.deadJobs.set(k, { ...d, tourId: d.tourId ?? tourId });
     }
   }
 

@@ -228,7 +228,7 @@ export class Scheduler {
       const round = this.state.round;
       if (!round) return;
       this.startSource(round.roundId);
-      this.queue.restoreDead(this.state.dead); // before enqueueTracked: dead positions are not queued again
+      this.queue.restoreDead(this.state.dead, round.tourId); // before enqueueTracked: dead positions are not queued again
       this.enqueueTracked();
       this.wake();
       this.wanted = true;
@@ -344,7 +344,8 @@ export class Scheduler {
     if (b.tracked && !u.opening) this.openings?.seen(b.id, u.uci);
     if (b.tracked) {
       // A correction that does not shorten the game: forget the replaced plies first, else setLatest sees no change.
-      if (kept + 1 < before && kept + 1 < b.plies.length) this.queue.setLatest(b.id, b.board, kept, this.now, true);
+      if (kept + 1 < before && kept + 1 < b.plies.length)
+        this.queue.setLatest(this.state.round!.tourId, b.id, b.board, kept, this.now, true);
       this.enqueue(b);
       this.persistDead(); // a correction that shortened the game dropped its dead plies
     }
@@ -365,13 +366,13 @@ export class Scheduler {
   private enqueue(b: Readonly<T.Board>): void {
     const latest = b.plies.length - 1;
     const done = noLegalMoves(b) || b.plies[latest].eval?.kind === 'complete';
-    this.queue.setLatest(b.id, b.board, latest, this.now, done);
+    this.queue.setLatest(this.state.round!.tourId, b.id, b.board, latest, this.now, done);
     const running = this.run?.job; // already out of the Queue
     const missing: number[] = [];
     for (let i = 0; i < latest; i++) {
       if (b.plies[i].eval?.kind !== 'complete' && !(running?.boardId === b.id && running.ply === i)) missing.push(i);
     }
-    this.queue.addBackfill(b.id, missing, this.now);
+    this.queue.addBackfill(this.state.round!.tourId, b.id, missing, this.now);
   }
 
   /** After every Queue change: publish it, then evict the running Job if the Queue says so, or start the loop. */
