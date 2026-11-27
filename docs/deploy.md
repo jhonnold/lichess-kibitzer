@@ -10,7 +10,7 @@ requirements_, kept outside this repo). This doc says what the app needs from th
 - **A UCI engine binary** readable and executable by the `kibitzer` user, outside `/home` (the unit sets
   `ProtectHome=true`). Default: Berserk at `/usr/local/bin/berserk`.
 - **Memory** for the engine defaults: Hash=1024 MB per copy plus Node's own footprint (sizing is homelab's). Two
-  copies of the engine run while a Round is followed (main MultiPV 1, Lines MultiPV N), none when Idle; CPU is both
+  copies of the engine run while any Event's Round is followed (main MultiPV 1, Lines MultiPV N; shared by all Events), none when Idle (no Event registered); CPU is both
   copies' Threads.
 - **Outbound HTTPS** to `lichess.org` (broadcast API and PGN stream) and `explorer.lichess.org` (opening names, only
   for Boards whose PGN has no `Opening` tag).
@@ -61,7 +61,7 @@ curl -s localhost:8080/healthz          # {"ok":true}
 ```
 
 - `systemctl stop`/`restart` sends SIGTERM: SSE clients are dropped, the engine gets `quit` (SIGKILL after 1 s)
-  and the state and Round files are flushed. The Current Round resumes on the next start; positions missed while
+  and the state and Round files are flushed. Every Event's Current Round resumes on the next start; positions missed while
   down are queued as Backfill.
 - A restart logs Admins out (the cookie key is per process).
 - `Restart=on-failure` restarts a crash after 5 s.
@@ -139,7 +139,8 @@ Check: `curl -u admin:$ADMIN_PASSWORD https://kibitzer.example.org/api/admin/met
 ## Update
 
 The state file lives in `/var/lib`, so a pull never touches it. A version 1 state file (from before
-multi-board) is discarded at boot, with a warning in the journal: track the Round again.
+multi-board) is discarded at boot, with a warning in the journal: track the Round again. A version 2 file
+(one Event) is migrated to version 3 (several Events) at boot; its Event becomes the Primary.
 
 ```bash
 cd /opt/lichess-kibitzer
