@@ -3,6 +3,7 @@ import { Router, type NextFunction, type Request, type Response } from 'express'
 import type {
   EngineConfig,
   EngineRole,
+  PassesMs,
   Player,
   QueueView,
   RegisteredEvent,
@@ -12,6 +13,7 @@ import type {
 import type { DeadJob, EvictedJob, Job } from '../../shared/queue.js';
 import type { JobTiming } from '../../shared/timing.js';
 import { COPY_OPTIONS, MAX_MULTI_PV } from '../../shared/engine-config.js';
+import { passesError } from '../../shared/passes.js';
 import { probeEngine } from '../engine/engine.js';
 import type { UciOption } from '../engine/uci-parser.js';
 import { IDLE, type FollowStatus } from '../follower.js';
@@ -31,7 +33,7 @@ export interface AdminDeps {
     Scheduler,
     | 'engine'
     | 'running'
-    | 'setJobTime'
+    | 'setPasses'
     | 'setTracked'
     | 'setEngine'
     | 'requeueDead'
@@ -41,6 +43,7 @@ export interface AdminDeps {
     | 'copyRestarts'
     | 'timing'
     | 'evictions'
+    | 'passCounts'
   >;
   site: Pick<Site, 'add' | 'remove' | 'status' | 'setPrimary'>;
   defaultEngine: EngineConfig; // shown (and used) while no config is saved
@@ -69,10 +72,11 @@ export interface AdminStatus {
   engine: EngineConfig; // saved, else the default
   engineRunning: boolean; // the main copy
   copies: Record<EngineRole, { state: EngineState; restarts: number }>;
-  timing: JobTiming;
-  jobTimeMs: number | null;
+  timing: JobTiming[]; // per Pass (index = Pass)
+  passesMs: PassesMs | null;
   running: Job | null; // carries its tourId
   queue: QueueView;
+  passCounts: number[]; // waiting Jobs per Pass (index = Pass)
   evictions: EvictedJob[]; // newest first
   tracked: number; // Tracked boards of every Event's Current Round
   primary: string | null;
@@ -202,11 +206,11 @@ export function adminRouter(deps: AdminDeps): Router {
     if (typeof tourId !== 'string') return void res.status(400).json({ error: 'expected { tourId: string }' });
     res.sendStatus(site.setPrimary(tourId) ? 204 : 404);
   });
-  r.put('/jobtime', (req, res) => {
+  r.put('/passes', (req, res) => {
     const ms: unknown = req.body?.ms;
-    if (ms !== null && (!Number.isInteger(ms) || (ms as number) <= 0 || (ms as number) > MAX_JOB_MS))
-      return void res.status(400).json({ error: `expected { ms: integer 1-${MAX_JOB_MS} | null }` });
-    scheduler.setJobTime(ms as number | null).then(() => res.sendStatus(204), fail(res));
+    const error = ms === null ? null : passesError(ms, MAX_JOB_MS);
+    if (error) return void res.status(400).json({ error: `expected { ms: [n, n | null, n | null] | null }: ${error}` });
+    scheduler.setPasses(ms as PassesMs | null).then(() => res.sendStatus(204), fail(res));
   });
   r.put('/event/:tourId/tracked', (req, res) => {
     const { tourId } = req.params;
@@ -270,9 +274,10 @@ export function adminRouter(deps: AdminDeps): Router {
         multi: { state: scheduler.copyState('multi'), restarts: scheduler.copyRestarts('multi') },
       },
       timing: scheduler.timing,
-      jobTimeMs: state.settings.jobTimeMs,
+      passesMs: state.settings.passesMs,
       running: scheduler.running,
       queue: state.queue,
+      passCounts: scheduler.passCounts,
       evictions: scheduler.evictions,
       tracked: events.reduce((n, e) => n + (e.round?.boards.filter((b) => b.tracked).length ?? 0), 0),
       primary,

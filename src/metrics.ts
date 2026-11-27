@@ -13,7 +13,7 @@ collectDefaultMetrics({ register, prefix: 'kibitzer_' });
 /** What the scrape-time metrics read. Set by createApp; before that they report nothing. */
 export interface MetricSources {
   state: Pick<SiteState, 'settings' | 'queue' | 'events'>;
-  scheduler: Pick<Scheduler, 'copyState' | 'copyRestarts'>;
+  scheduler: Pick<Scheduler, 'copyState' | 'copyRestarts' | 'passCounts'>;
   site: Pick<Site, 'status'>;
   defaultEngine: EngineConfig;
 }
@@ -61,6 +61,19 @@ export const queueDepth = new Gauge({
     this.set({ tier: 'backfill' }, src.state.queue.backfill);
   },
 });
+/** Jobs waiting per Pass (deepening Jobs included), read at scrape time. */
+export const queuePassDepth = new Gauge({
+  name: 'kibitzer_queue_pass_depth',
+  help: 'Jobs waiting in the Queue, by pass (0, 1, 2)',
+  labelNames: ['pass'],
+  registers: [register],
+  collect() {
+    this.reset();
+    if (!src) return;
+    const n = src.scheduler.passCounts;
+    for (let pass = 0; pass < 3; pass++) this.set({ pass: String(pass) }, n[pass] ?? 0);
+  },
+});
 export const deadLetterSize = new Gauge({
   name: 'kibitzer_dead_letter_queue_size',
   help: 'Jobs in the Dead-letter queue',
@@ -96,17 +109,18 @@ export const engineState = new Gauge({
     }
   },
 });
-/** One outcome per Job run: recorded (an Eval, evicted Provisional ones included), empty (no scored line), dropped,
- *  interrupted (engine restart), crashed (requeued) or dead_lettered (its last crash). */
+/** One outcome per Job run: recorded (an Eval, evicted Provisional ones included), empty (no scored line), discarded
+ *  (an interrupted deepening Job no deeper than the eval it would replace), dropped, interrupted (engine restart),
+ *  crashed (requeued) or dead_lettered (its last crash). `pass`: the Job's Pass (0, 1, 2). */
 export const jobs = new Counter({
   name: 'kibitzer_jobs_total',
-  help: 'Jobs run, by tier and outcome (recorded, empty, dropped, interrupted, crashed, dead_lettered)',
-  labelNames: ['tier', 'outcome'],
+  help: 'Jobs run, by tier, pass and outcome (recorded, empty, discarded, dropped, interrupted, crashed, dead_lettered)',
+  labelNames: ['tier', 'pass', 'outcome'],
   registers: [register],
 });
 export const evictions = new Counter({
   name: 'kibitzer_evictions_total',
-  help: 'Running Jobs stopped early, by reason (stale, live, backfill)',
+  help: 'Running Jobs stopped early, by reason (stale, live, backfill, upgrade)',
   labelNames: ['reason'],
   registers: [register],
 });
@@ -122,26 +136,26 @@ export const engineRestarts = new Counter({
   },
 });
 
-/** `tier` is the Job's tier, `kind` the recorded Eval's kind (`complete` | `provisional`). */
+/** `tier` and `pass` are the Job's, `kind` whether it ran its full time (`complete`) or was stopped (`provisional`). */
 export const jobDuration = new Histogram({
   name: 'kibitzer_job_duration_seconds',
   help: 'Wall time of Jobs that recorded an Eval',
-  labelNames: ['tier', 'kind'],
-  // Low buckets: pre-empted Backfill Jobs (Provisional) are short. 14-16: Complete Jobs at the default 15 s job time.
-  buckets: [0.1, 0.25, 0.5, 1, 2, 5, 10, 14, 15, 16, 20, 30, 60],
+  labelNames: ['tier', 'pass', 'kind'],
+  // Around the default Passes (1, 10, 100 s); low buckets: pre-empted Jobs are short.
+  buckets: [0.1, 0.25, 0.5, 0.9, 1.1, 2, 5, 9, 11, 20, 30, 60, 90, 110, 300],
   registers: [register],
 });
 export const jobDepth = new Histogram({
   name: 'kibitzer_job_depth',
   help: 'Search depth reached by Jobs that recorded an Eval, by engine copy (role: main, multi)',
-  labelNames: ['tier', 'kind', 'role'],
+  labelNames: ['tier', 'pass', 'kind', 'role'],
   buckets: [5, 10, 15, 20, 25, 30, 35, 40, 50],
   registers: [register],
 });
 export const jobNps = new Histogram({
   name: 'kibitzer_job_nps',
   help: 'Engine nodes per second at the end of Jobs that recorded an Eval, by engine copy (role: main, multi)',
-  labelNames: ['tier', 'kind', 'role'],
+  labelNames: ['tier', 'pass', 'kind', 'role'],
   // Berserk benches ~1.95M nps on one thread (docs/jobtime.md).
   buckets: [1e5, 2.5e5, 5e5, 1e6, 1.5e6, 2e6, 2.5e6, 3e6, 4e6, 6e6],
   registers: [register],

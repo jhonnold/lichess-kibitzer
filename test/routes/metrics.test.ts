@@ -21,7 +21,7 @@ function setup(...pw: [string | undefined] | []) {
   const scheduler = {
     engine: null,
     running: null,
-    setJobTime: async () => {},
+    setPasses: async () => {},
     setTracked: async () => {},
     setEngine: async () => {},
     requeueDead: async () => true,
@@ -31,7 +31,8 @@ function setup(...pw: [string | undefined] | []) {
       return this.states[role];
     },
     copyRestarts: (role: EngineRole) => (role === 'main' ? 2 : 5),
-    timing: { jobs: 0, provisional: 0, ms: null, depth: null },
+    timing: [{ jobs: 0, provisional: 0, ms: null, depth: null }],
+    passCounts: [2, 1],
   };
   const followStatus = { next: null, swapAt: null, polledAt: null as number | null, error: null };
   const polled: Record<string, number | null> = {}; // tourId -> polledAt; unset: followStatus

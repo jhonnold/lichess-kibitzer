@@ -1,3 +1,6 @@
+import { passesError } from './passes.js';
+import type { PassesMs } from './types.js';
+
 /** Seconds typed in the Admin form → ms; null when not a positive number. */
 export function jobTimeMs(seconds: string): number | null {
   const ms = Math.round(Number(seconds) * 1000);
@@ -6,6 +9,18 @@ export function jobTimeMs(seconds: string): number | null {
 
 export const formatJobTime = (ms: number | null): string =>
   ms === null ? 'unset — the Queue is idle' : `${ms / 1000} s`;
+
+/** The three Pass fields (seconds; blank Pass 2 or 3 = off) → ms, or why not. */
+export function passesMs(seconds: readonly [string, string, string]): PassesMs | string {
+  const ms = seconds.map((s, k) => (k > 0 && s.trim() === '' ? null : jobTimeMs(s)));
+  if (ms[0] === null) return 'Pass 1: enter seconds > 0';
+  if (ms.some((m, k) => m === null && seconds[k].trim() !== '')) return 'Enter seconds > 0, or leave Pass 2 / 3 blank';
+  return passesError(ms, Infinity) ?? (ms as PassesMs);
+}
+
+/** '1 s · 10 s · 100 s', with 'off' for a skipped Pass. */
+export const formatPasses = (p: PassesMs | null): string =>
+  p === null ? formatJobTime(null) : p.map((ms) => (ms === null ? 'off' : formatJobTime(ms))).join(' · ');
 
 /** The part of an Admin Event block these helpers read. */
 export type EvBlock = {

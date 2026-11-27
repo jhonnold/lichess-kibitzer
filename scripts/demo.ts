@@ -1,9 +1,10 @@
 /**
  * Demo server for manual checks and screenshots: the real server with the fake engine and a synthesized Round built
  * from test/fixtures/lichess/round-stream.pgn. Never contacts lichess.org.
- *   npm run build && npm run demo -- [--port 18457] [--boards 10] [--top 8] [--job-time 800] [--interval 1500]
+ *   npm run build && npm run demo -- [--port 18457] [--boards 10] [--top 8] [--passes 300,1500,6000] [--interval 1500]
  *                                    [--data DIR] [--password demo] [--rounds 1] [--swap-in 20] [--poll 2000]
  *                                    [--crash-board N] [--events 1]
+ * --passes: the three Passes' search times in ms (Pass 0, free time, no Event live); `-` turns Pass 2 or 3 off.
  * One move per --interval ms, round-robin over Boards with moves left (0 = frozen at the initial state).
  * --rounds 0: an Event with no Rounds yet; 2: adds Round 2 (all Boards Upcoming, colours swapped), which the follower
  * swaps in --swap-in seconds after boot (its start is 10 min later); --poll is the follower's poll interval in ms.
@@ -21,6 +22,8 @@ import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { parseArgs } from 'node:util';
 import { engineConfig } from '../shared/engine-config.js';
+import { passesError } from '../shared/passes.js';
+import type { PassesMs } from '../shared/types.js';
 import { SWAP_LEAD_MS } from '../shared/rollover.js';
 import { Engine, probeEngine } from '../src/engine/engine.js';
 import type { Board, EventInfo, RoundInfo } from '../src/lichess/api.js';
@@ -34,7 +37,7 @@ const { values: v } = parseArgs({
     port: { type: 'string', default: '18457' },
     boards: { type: 'string', default: '10' },
     top: { type: 'string', default: '8' },
-    'job-time': { type: 'string', default: '800' },
+    passes: { type: 'string', default: '300,1500,6000' },
     interval: { type: 'string', default: '1500' },
     data: { type: 'string' },
     password: { type: 'string', default: 'demo' },
@@ -45,17 +48,21 @@ const { values: v } = parseArgs({
     events: { type: 'string', default: '1' },
   },
 });
-const [port, count, top, jobTime, interval, rounds, swapIn, pollMs, events] = [
+const [port, count, top, interval, rounds, swapIn, pollMs, events] = [
   v.port!,
   v.boards!,
   v.top!,
-  v['job-time']!,
   v.interval!,
   v.rounds!,
   v['swap-in']!,
   v.poll!,
   v.events!,
 ].map(Number);
+const passes = v.passes!.split(',').map((x) => (x === '-' ? null : Number(x))) as PassesMs;
+if (passesError(passes, 3600_000)) {
+  console.error(`--passes: ${passesError(passes, 3600_000)}`);
+  process.exit(1);
+}
 if (!(events >= 1 && events <= 9)) {
   console.error('--events must be 1..9');
   process.exit(1);
@@ -208,7 +215,7 @@ const running = await startServer({
   follow: { pollMs }, // polls the fake lichess above, never lichess.org
 });
 const { scheduler, site } = running;
-await scheduler.setJobTime(jobTime);
+await scheduler.setPasses(passes);
 for (let k = 1; k <= events; k++) await site.add(k === 1 ? 'demo' : `demo${k}`, top);
 
 if (interval > 0) setInterval(release, interval);

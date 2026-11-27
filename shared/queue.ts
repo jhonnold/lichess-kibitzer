@@ -1,12 +1,14 @@
 export type Tier = 'current' | 'backfill';
 
-/** One search of one position of a Tracked board. since: current tier = waiting since; backfill = entered backfill. */
+/** One search of one position of a Tracked board. since: current tier = waiting since; backfill = entered backfill.
+ *  pass: which Pass (search time) it is for (shared/passes.ts); one Job per position at a time. */
 export interface Job {
   tourId: string; // the owning Event (Lichess tour id); Board ids are globally unique, so Queue keys stay boardId:ply
   boardId: string;
   board: number;
   ply: number;
   tier: Tier;
+  pass: number;
   since: number;
 }
 
@@ -25,8 +27,9 @@ export const MAX_CRASHES = 3;
 export const MIN_LIVE_SLICE_MS = 3000;
 
 /** Why a running Job is stopped early. stale: its Board moved on; live: another live position waits and the slice is
- *  up; backfill: a live position waits. */
-export type Eviction = 'stale' | 'live' | 'backfill';
+ *  up; backfill: a live position waits; upgrade: a deepening Job (Pass ≥ 1) gives way to a lower Pass, or its Pass is
+ *  no longer allowed (an Event went live). */
+export type Eviction = 'stale' | 'live' | 'backfill' | 'upgrade';
 
 /** A Job that was evicted, for the Admin status page. depth = the eval it kept (null: none). */
 export interface EvictedJob {
@@ -41,15 +44,17 @@ export interface EvictedJob {
 
 const key = (boardId: string, ply: number) => `${boardId}:${ply}`;
 
-/** Current tier: longest-waiting first, then lower board. Backfill: most recently queued first, then higher ply. */
+/** Lower Pass first. Then current tier: longest-waiting first, then lower board. Backfill: most recently queued first,
+ *  then higher ply. */
 function compare(a: Job, b: Job): number {
+  if (a.pass !== b.pass) return a.pass - b.pass;
   if (a.tier !== b.tier) return a.tier === 'current' ? -1 : 1;
   if (a.tier === 'current') return a.since - b.since || a.board - b.board;
   return b.since - a.since || b.ply - a.ply || a.board - b.board;
 }
 
 /**
- * Two-tier queue of Jobs. Pure: no timers or I/O; the caller passes `now` (ms).
+ * Two-tier queue of Jobs, ordered by Pass first. Pure: no timers or I/O; the caller passes `now` (ms).
  * The scheduler owns the running Job: next() removes it, and the caller hands it back via requeue or crashed.
  */
 export class Queue {
@@ -60,8 +65,8 @@ export class Queue {
   private readonly discarded = new Set<string>(); // discarded from the Dead-letter queue: not queued again this Round
 
   /** Board's latest ply (the Board belongs to Event tourId). Supersedes its waiting current Job (→ backfill).
-   *  done = record only, enqueue nothing. */
-  setLatest(tourId: string, boardId: string, board: number, ply: number, now: number, done = false): void {
+   *  done = record only, enqueue nothing; else its Job is for `pass`. */
+  setLatest(tourId: string, boardId: string, board: number, ply: number, now: number, done = false, pass = 0): void {
     const prev = this.latest.get(boardId);
     if (prev?.ply === ply) return;
     this.latest.set(boardId, { tourId, board, ply });
@@ -79,35 +84,50 @@ export class Queue {
         this.discarded.delete(key(boardId, p));
       }
     }
-    if (!done) this.add({ tourId, boardId, board, ply, tier: 'current', since }, now);
+    if (!done) this.add({ tourId, boardId, board, ply, tier: 'current', pass, since }, now);
   }
 
-  /** Earlier plies with no Complete eval. Ignored for unknown Boards, plies >= latest, queued or dead keys. */
-  addBackfill(tourId: string, boardId: string, plies: number[], now: number): void {
+  /** Earlier plies that need a search, each for passOf(ply). Ignored for unknown Boards, plies >= latest, queued or dead
+   *  keys. */
+  addBackfill(
+    tourId: string,
+    boardId: string,
+    plies: number[],
+    now: number,
+    passOf: (ply: number) => number = () => 0,
+  ) {
     const latest = this.latest.get(boardId);
     if (!latest) return;
     for (const ply of plies) {
-      if (ply < latest.ply) this.add({ tourId, boardId, board: latest.board, ply, tier: 'backfill', since: now }, now);
+      if (ply < latest.ply) {
+        const job: Job = { tourId, boardId, board: latest.board, ply, tier: 'backfill', pass: passOf(ply), since: now };
+        this.add(job, now);
+      }
     }
   }
 
-  /** Remove and return the next Job: current tier first, else backfill; null when empty. */
-  next(): Job | null {
-    const job = this.ordered()[0];
+  /** Remove and return the next Job of Pass ≤ maxPass: lower Pass first, then current tier, then backfill; null when
+   *  none. */
+  next(maxPass = Infinity): Job | null {
+    const job = this.ordered().find((j) => j.pass <= maxPass);
     if (!job) return null;
     this.jobs.delete(key(job.boardId, job.ply));
     return job;
   }
 
-  /** Whether to stop the running Job now, and why; null = let it run. elapsedMs = how long it has run. */
-  preempt(running: Job, elapsedMs: number, sliceMs: number): Eviction | null {
+  /** Whether to stop the running Job now, and why; null = let it run. elapsedMs = how long it has run; Jobs above maxPass
+   *  may not run. */
+  preempt(running: Job, elapsedMs: number, sliceMs: number, maxPass = Infinity): Eviction | null {
     if (running.tier === 'current' && this.latest.get(running.boardId)?.ply !== running.ply) return 'stale';
-    if (![...this.jobs.values()].some((j) => j.tier === 'current')) return null;
+    const waiting = [...this.jobs.values()].filter((j) => j.pass <= maxPass);
+    if (running.pass > 0)
+      return running.pass > maxPass || waiting.some((j) => j.pass < running.pass) ? 'upgrade' : null;
+    if (!waiting.some((j) => j.pass === 0 && j.tier === 'current')) return null;
     if (running.tier === 'backfill') return 'backfill';
     return elapsedMs >= sliceMs ? 'live' : null;
   }
 
-  /** Put a pre-empted Job back (routing as in place()). false = dropped or already queued or dead. */
+  /** Put a Job back (routing as in place()), for its own Pass. false = dropped or already queued or dead. */
   requeue(job: Job, now: number): boolean {
     return this.add(job, now);
   }
@@ -175,7 +195,10 @@ export class Queue {
     if (!dead) return false;
     this.deadJobs.delete(k);
     this.crashes.delete(k);
-    return this.add({ tourId: dead.tourId, boardId, board: dead.board, ply, tier: 'current', since: now }, now);
+    return this.add(
+      { tourId: dead.tourId, boardId, board: dead.board, ply, tier: 'current', pass: 0, since: now },
+      now,
+    );
   }
 
   /** Admin discard from the Dead-letter queue: never queued again until the Board is untracked, the ply is
@@ -199,18 +222,37 @@ export class Queue {
     }
   }
 
-  /** Current tier, in pick order (copies). */
+  /** Current tier of Pass 0, in pick order (copies). */
   current(): Job[] {
-    return this.ordered().filter((j) => j.tier === 'current');
+    return this.ordered().filter((j) => j.pass === 0 && j.tier === 'current');
   }
 
-  /** Backfill Jobs at their Board's latest ply (evicted live Jobs waiting for a full search), in pick order. */
+  /** Pass 0 backfill Jobs at their Board's latest ply (evicted live Jobs waiting for a full search), in pick order. */
   deferred(): Job[] {
-    return this.ordered().filter((j) => j.tier === 'backfill' && j.ply === this.latest.get(j.boardId)?.ply);
+    return this.ordered().filter(
+      (j) => j.pass === 0 && j.tier === 'backfill' && j.ply === this.latest.get(j.boardId)?.ply,
+    );
   }
 
+  /** Pass 0 backfill Jobs. */
   backfillCount(): number {
-    return [...this.jobs.values()].filter((j) => j.tier === 'backfill').length;
+    return [...this.jobs.values()].filter((j) => j.pass === 0 && j.tier === 'backfill').length;
+  }
+
+  /** Waiting Jobs per Pass: index = Pass, up to the highest Pass queued. */
+  passCounts(): number[] {
+    const n: number[] = [];
+    for (const j of this.jobs.values()) n[j.pass] = (n[j.pass] ?? 0) + 1;
+    return Array.from(n, (x) => x ?? 0);
+  }
+
+  /** The Passes changed: each waiting Job gets passOf(job) (null: none left, dropped). Order within a Pass is kept. */
+  repass(passOf: (job: Readonly<Job>) => number | null): void {
+    for (const [k, j] of this.jobs) {
+      const pass = passOf(j);
+      if (pass === null) this.jobs.delete(k);
+      else if (pass !== j.pass) this.jobs.set(k, { ...j, pass });
+    }
   }
 
   /** Dead-letter queue by `at` ascending (copies). */

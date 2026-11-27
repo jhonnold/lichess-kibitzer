@@ -17,8 +17,11 @@ import { evictions, jobDepth, jobDuration, jobNps, jobs } from '../src/metrics.j
 import { engineConfig } from '../shared/engine-config.js';
 
 /** kibitzer_jobs_total for `outcome`, summed over both tiers. */
-const outcomes = async (outcome: string) =>
-  (await val(jobs, { tier: 'current', outcome })) + (await val(jobs, { tier: 'backfill', outcome }));
+const outcomes = async (outcome: string, pass = '0') =>
+  (await val(jobs, { tier: 'current', pass, outcome })) + (await val(jobs, { tier: 'backfill', pass, outcome }));
+
+/** A single Pass of `ms` (null: unset, the Queue idles). */
+const one = (ms: number | null): T.PassesMs | null => (ms === null ? null : [ms, null, null]);
 
 const FAKE = fileURLToPath(new URL('./fixtures/fake-uci.mjs', import.meta.url));
 const E4 = ['e2e4', 'e7e5', 'g1f3'];
@@ -28,8 +31,8 @@ const FOOLS = ['f2f3', 'e7e5', 'g2g4', 'd8h4'];
 const EVENT_T1: T.RegisteredEvent = { tourId: 'T1', name: 'E', link: 'https://lichess.org/broadcast/x/T1' };
 const EVENT_T2: T.RegisteredEvent = { tourId: 'T2', name: 'E2', link: 'https://lichess.org/broadcast/y/T2' };
 const persisted = (dead: T.DeadJob[]): T.PersistedState => ({
-  version: 3,
-  settings: { engine: null, jobTimeMs: null },
+  version: 4,
+  settings: { engine: null, passesMs: null },
   primary: 'T1',
   events: [{ event: EVENT_T1, topN: 1, current: null, dead }],
 });
@@ -67,7 +70,8 @@ let slices: { ms: number; fn: () => void }[]; // live slice timers, fired by han
 
 function setup(
   opts: {
-    jobTimeMs?: number | null;
+    jobTimeMs?: number | null; // a single Pass
+    passesMs?: T.PassesMs | null; // overrides jobTimeMs
     topN?: number;
     engineArgs?: string[];
     manual?: boolean; // restart timers wait in `fire` instead of running at once
@@ -83,7 +87,7 @@ function setup(
     opts.init,
   );
   state = site.event('T1') ?? site.addEvent(EVENT_T1, opts.topN ?? 3);
-  site.setJobTime(opts.jobTimeMs === undefined ? 15 : opts.jobTimeMs);
+  site.setPasses(opts.passesMs !== undefined ? opts.passesMs : one(opts.jobTimeMs === undefined ? 15 : opts.jobTimeMs));
   engineArgs = opts.engineArgs ?? [];
   const real = () => Engine.start(process.execPath, { args: [FAKE, '--log', logFile, '--ply-score', ...engineArgs] });
   const multiArgs = ['--log', multiLog, '--ply-score', '--offset', '5', ...(opts.multiArgs ?? [])];
@@ -182,7 +186,7 @@ describe('Scheduler', () => {
     await sched.startRound('T1', roundInfo('R1', ['g1', 'g2', 'g3']), null);
     src.push(upd('g1', E4));
     src.push(upd('g2', D4.slice(0, 2)));
-    await sched.setJobTime(15);
+    await sched.setPasses(one(15));
     await idle();
     expect(positions().slice(0, 2)).toEqual([
       `position startpos moves ${E4.join(' ')}`,
@@ -193,8 +197,9 @@ describe('Scheduler', () => {
 
   it('observes job duration, depth and nps for each recorded Eval', async () => {
     const count = async (m: typeof jobDuration | typeof jobDepth | typeof jobNps, role?: string) => {
-      const one = (tier: string) => val(m, { tier, kind: 'complete', ...(role && { role }) }, `${m.name}_count`);
-      return (await one('current')) + (await one('backfill'));
+      const of = (tier: string) =>
+        val(m, { tier, pass: '0', kind: 'complete', ...(role && { role }) }, `${m.name}_count`);
+      return (await of('current')) + (await of('backfill'));
     };
     const [d0, p0, n0, r0, mp0, mn0] = [
       await count(jobDuration),
@@ -224,7 +229,7 @@ describe('Scheduler', () => {
     src.push(upd('g1', E4));
     await idle();
     const done = [0, 1, 2, 3].filter((p) => complete('g1', p)).length;
-    const { jobs, ms, depth } = sched.timing;
+    const { jobs, ms, depth } = sched.timing[0];
     expect(jobs).toBeGreaterThanOrEqual(done);
     expect(ms!.p50).toBeGreaterThanOrEqual(0);
     expect(depth!.p50).toBeGreaterThan(0);
@@ -234,13 +239,13 @@ describe('Scheduler', () => {
     setup();
     await sched.startRound('T1', roundInfo('R1', ['g1', 'g2']), null);
     await idle();
-    await sched.setJobTime(null);
+    await sched.setPasses(one(null));
     t = 100;
     src.push(upd('g2', D4));
     t = 200;
     src.push(upd('g1', E4));
     const before = positions().length;
-    await sched.setJobTime(15);
+    await sched.setPasses(one(15));
     await idle();
     expect(positions()[before]).toBe(`position startpos moves ${D4.join(' ')}`);
     expect(positions()[before + 1]).toBe(`position startpos moves ${E4.join(' ')}`);
@@ -251,9 +256,9 @@ describe('Scheduler', () => {
     await sched.startRound('T1', roundInfo('R1', ['g1']), null);
     src.push(upd('g1', E4.slice(0, 2)));
     await until(() => searching('g1', 2));
-    await sched.setJobTime(5000); // applies to the next Job: the ply 1 backfill
+    await sched.setPasses(one(5000)); // applies to the next Job: the ply 1 backfill
     await until(() => searching('g1', 1));
-    await sched.setJobTime(15);
+    await sched.setPasses(one(15));
     src.push(upd('g1', E4));
     await until(() => evalOf('g1', 1)?.kind === 'provisional');
     await until(() => complete('g1', 1));
@@ -262,7 +267,7 @@ describe('Scheduler', () => {
   });
 
   it('evicts a live Job at once when its Board moves, and searches the old position again in full', async () => {
-    setup({ topN: 1, jobTimeMs: 5000 });
+    setup({ topN: 1, passesMs: [5000, null, null] });
     await sched.startRound('T1', roundInfo('R1', ['g1']), null);
     src.push(upd('g1', E4.slice(0, 1)));
     await until(() => searching('g1', 1));
@@ -271,14 +276,14 @@ describe('Scheduler', () => {
     await until(() => searching('g1', 2));
     expect(evalOf('g1', 1)?.kind).toBe('provisional');
     expect((await val(evictions, { reason: 'stale' })) - stale0).toBe(1);
-    await sched.setJobTime(15);
+    await sched.setPasses(one(15));
     await sched.engine!.stop(); // cut short the ply 2 search, started at 5000 ms
     await until(() => complete('g1', 1) && complete('g1', 2));
   });
 
   it('lets a live Job run its slice, then evicts it for another live position', async () => {
     const live0 = await val(evictions, { reason: 'live' });
-    setup({ topN: 2, jobTimeMs: 5000 });
+    setup({ topN: 2, passesMs: [5000, null, null] });
     await sched.startRound('T1', roundInfo('R1', ['g1', 'g2']), null);
     await until(() => searching('g1', 0));
     expect(slices.at(-1)?.ms).toBe(MIN_LIVE_SLICE_MS);
@@ -295,7 +300,7 @@ describe('Scheduler', () => {
     expect(sched.evictions).toMatchObject([{ boardId: 'g1', board: 1, ply: 0, reason: 'live', depth: 3 }]);
     expect(site.snapshot().search?.tier).toBe('current');
     expect((await val(evictions, { reason: 'live' })) - live0).toBe(1);
-    await sched.setJobTime(15);
+    await sched.setPasses(one(15));
     await sched.engine!.stop(); // cut short g2's search, started at 5000 ms
     await until(() => searching('g1', 0));
     expect(site.snapshot().search?.tier).toBe('backfill');
@@ -347,7 +352,7 @@ describe('Scheduler', () => {
   });
 
   it('searches each position on both copies at once and stops them together', async () => {
-    setup({ topN: 1, jobTimeMs: 5000 });
+    setup({ topN: 1, passesMs: [5000, null, null] });
     await sched.startRound('T1', roundInfo('R1', ['g1']), null);
     await until(() => {
       const s = site.snapshot().search;
@@ -419,13 +424,13 @@ describe('Scheduler', () => {
   });
 
   it('requeues a Job whose position a correction made stale', async () => {
-    setup({ topN: 1, jobTimeMs: 150 });
+    setup({ topN: 1, passesMs: [150, null, null] });
     await sched.startRound('T1', roundInfo('R1', ['g1']), null);
     src.push(upd('g1', E4.slice(0, 1)));
     await until(() => searching('g1', 1));
     src.push(upd('g1', E4.slice(0, 2)));
     src.push(upd('g1', ['e2e4', 'c7c5'])); // ply 1 is kept, but the epoch changes under its Job
-    await sched.setJobTime(15);
+    await sched.setPasses(one(15));
     await until(() => complete('g1', 1) && complete('g1', 2));
     expect(positions()).toContain('position startpos moves e2e4 c7c5');
   });
@@ -471,7 +476,7 @@ describe('Scheduler', () => {
     expect(queueView().current).toEqual([{ boardId: 'g1', ply: 1 }]);
     await new Promise((r) => setTimeout(r, 50)); // negative assertion: nothing may start
     expect(count('go')).toBe(0);
-    await sched.setJobTime(15);
+    await sched.setPasses(one(15));
     await until(() => complete('g1', 1) && complete('g1', 0));
   });
 
@@ -489,7 +494,7 @@ describe('Scheduler', () => {
   });
 
   it('startRound drops the running Job and follows the new Round', async () => {
-    setup({ topN: 2, jobTimeMs: 5000 });
+    setup({ topN: 2, passesMs: [5000, null, null] });
     await sched.startRound('T1', roundInfo('R1', ['g1', 'g2']), null);
     await until(() => searching('g1', 0));
     const old = src;
@@ -526,7 +531,7 @@ describe('Scheduler', () => {
     src.push(upd('g2', D4));
     await sched.setTracked('T1', ['g1']);
     expect(queueView()).toEqual({ current: [{ boardId: 'g1', ply: 1 }], backfill: 1, deferred: [] });
-    await sched.setJobTime(15);
+    await sched.setPasses(one(15));
     await idle();
     expect(complete('g1', 1)).toBe(true);
     expect(positions().some((p) => p.includes('d2d4'))).toBe(false);
@@ -565,7 +570,7 @@ describe('Scheduler', () => {
     await sched.resume();
     expect(sourceIds).toEqual(['R1']);
     expect(queueView()).toEqual({ current: [{ boardId: 'g1', ply: 2 }], backfill: 1, deferred: [] });
-    await sched.setJobTime(15);
+    await sched.setPasses(one(15));
     await idle();
     expect(complete('g1', 1) && complete('g1', 2)).toBe(true);
     expect(readLog()).not.toContain('position startpos');
@@ -573,10 +578,10 @@ describe('Scheduler', () => {
 
   it('setEngine restarts the engine and requeues the running Job', async () => {
     const interrupted = await outcomes('interrupted');
-    setup({ topN: 1, jobTimeMs: 5000 });
+    setup({ topN: 1, passesMs: [5000, null, null] });
     await sched.startRound('T1', roundInfo('R1', ['g1']), null);
     await until(() => searching('g1', 0));
-    await sched.setJobTime(null); // keep the requeued Job from starting on the new engine
+    await sched.setPasses(one(null)); // keep the requeued Job from starting on the new engine
     await sched.setEngine(engineConfig('fake', {}, 2));
     expect(count('uci')).toBe(2);
     expect(readLog(multiLog).filter((l) => l === 'uci')).toHaveLength(2); // both copies restart
@@ -584,7 +589,7 @@ describe('Scheduler', () => {
     expect(sched.running).toBeNull();
     expect(queueView().current).toEqual([{ boardId: 'g1', ply: 0 }]);
     expect((await outcomes('interrupted')) - interrupted).toBe(1);
-    await sched.setJobTime(15);
+    await sched.setPasses(one(15));
     await until(() => complete('g1', 0));
     expect(evalOf('g1', 0)!.multi!.lines).toHaveLength(2);
   });
@@ -691,7 +696,7 @@ describe('Scheduler', () => {
       await sched.resume();
       expect(queueView()).toEqual({ current: [], backfill: 1, deferred: [] });
       expect(state.dead).toEqual(dead);
-      await sched.setJobTime(15);
+      await sched.setPasses(one(15));
       await idle();
       expect(complete('g1', 0)).toBe(true);
       expect(positions().some((p) => p.includes('e2e4'))).toBe(false);
@@ -733,7 +738,7 @@ describe('Scheduler', () => {
     });
 
     it("a Round swap of one Event keeps the other Event's running Job", async () => {
-      setup2({ topN: 1, jobTimeMs: 5000 });
+      setup2({ topN: 1, passesMs: [5000, null, null] });
       await sched.startRound('T2', roundInfo('S1', ['b1', 'b2'], 'T2'), null);
       await until(() => searching('b1', 0, 'T2'));
       await sched.startRound('T1', roundInfo('R1', ['a1', 'a2']), null);
@@ -751,7 +756,7 @@ describe('Scheduler', () => {
 
     describe('removing an Event', () => {
       it('halts only its own Job', async () => {
-        setup2({ topN: 1, jobTimeMs: 5000 });
+        setup2({ topN: 1, passesMs: [5000, null, null] });
         await sched.startRound('T1', roundInfo('R1', ['a1', 'a2']), null);
         await until(() => searching('a1', 0));
         await sched.startRound('T2', roundInfo('S1', ['b1', 'b2'], 'T2'), null);
@@ -762,14 +767,14 @@ describe('Scheduler', () => {
         expect(site.event('T1')).toBeUndefined();
         expect(srcOf.R1.stopped).toBe(true);
         expect(srcOf.S1.stopped).toBe(false);
-        await sched.setJobTime(15);
+        await sched.setPasses(one(15));
         await sched.engine!.stop(); // cut short b1's 5000 ms search
         await until(() => state2.board('b1')!.plies[0].eval?.kind === 'complete');
         expect(state2.board('b1')!.plies[0].eval?.kind).toBe('complete');
       });
 
       it("leaves the other Event's running Job alone", async () => {
-        setup2({ topN: 1, jobTimeMs: 5000 });
+        setup2({ topN: 1, passesMs: [5000, null, null] });
         await sched.startRound('T2', roundInfo('S1', ['b1', 'b2'], 'T2'), null);
         await until(() => searching('b1', 0, 'T2'));
         await sched.startRound('T1', roundInfo('R1', ['a1', 'a2']), null);
@@ -784,7 +789,7 @@ describe('Scheduler', () => {
       });
 
       it('drops the result of its Job and never writes it into another Event', async () => {
-        setup2({ topN: 1, jobTimeMs: 5000 });
+        setup2({ topN: 1, passesMs: [5000, null, null] });
         await sched.startRound('T1', roundInfo('R1', ['a1', 'a2']), null);
         await until(() => searching('a1', 0));
         await sched.startRound('T2', roundInfo('S1', ['b1', 'b2'], 'T2'), null);
@@ -799,7 +804,7 @@ describe('Scheduler', () => {
     });
 
     it("a live position of one Event evicts another Event's backfill Job", async () => {
-      setup2({ topN: 1, jobTimeMs: 5000 });
+      setup2({ topN: 1, passesMs: [5000, null, null] });
       await sched.startRound('T1', roundInfo('R1', ['a1', 'a2']), null);
       srcOf.R1.push(upd('a1', E4.slice(0, 1)));
       await until(() => searching('a1', 1));
@@ -855,8 +860,8 @@ describe('Scheduler', () => {
       };
       const dead = [{ tourId: 'T2', boardId: 'b1', board: 1, ply: 1, at: 5 }];
       const init: T.PersistedState = {
-        version: 3,
-        settings: { engine: null, jobTimeMs: null },
+        version: 4,
+        settings: { engine: null, passesMs: null },
         primary: 'T1',
         events: [
           { event: EVENT_T1, topN: 1, current: { tourId: 'T1', roundId: 'R1' }, dead: [] },
@@ -879,14 +884,14 @@ describe('Scheduler', () => {
       expect(queueView()).toEqual({ current: [{ boardId: 'a1', ply: 1 }], backfill: 0, deferred: [] });
       await sched.setTracked('T1', ['a1']); // persists the Dead-letter queue per Event
       expect([state.dead, state2.dead]).toEqual([[], dead]);
-      await sched.setJobTime(15);
+      await sched.setPasses(one(15));
       await until(() => state.board('a1')!.plies[1].eval?.kind === 'complete');
       expect(positions().some((p) => p.endsWith('moves e2e4'))).toBe(false);
       expect(sched.copyState('main')).toBe('up');
     });
 
     it('drops the result of a Job whose Event was removed behind the Scheduler', async () => {
-      setup2({ topN: 1, jobTimeMs: 5000 });
+      setup2({ topN: 1, passesMs: [5000, null, null] });
       await sched.startRound('T1', roundInfo('R1', ['a1', 'a2']), null);
       await until(() => searching('a1', 0));
       const rs = state;
@@ -905,7 +910,7 @@ describe('Scheduler', () => {
       await poll(() => fire.length === 1);
       await sched.removeEvent('T1');
       fire[0]();
-      await sched.setJobTime(null);
+      await sched.setPasses(one(null));
       expect([count('uci'), sched.copyState('main'), sched.engines.length]).toEqual([1, null, 0]);
     });
 
@@ -949,7 +954,7 @@ describe('Scheduler', () => {
       setup({ topN: 2, jobTimeMs: null, engineArgs: ['--crash-on', 'e2e4'] });
       await sched.startRound('T1', roundInfo('R1', ['g1', 'g2']), null);
       src.push(upd('g1', E4.slice(0, 1)));
-      await sched.setJobTime(15);
+      await sched.setPasses(one(15));
       await until(() => state.dead.length === 1 && complete('g1', 0) && complete('g2', 0)); // searched after the crashes
       expect(delays).toEqual([1000, 2000, 4000]);
       src.push(upd('g2', E4.slice(0, 1)));
@@ -980,7 +985,7 @@ describe('Scheduler', () => {
       expect(delays).toEqual([1000]);
       expect(state.dead).toEqual([]);
       src.push(upd('g1', E4.slice(0, 1)));
-      await sched.setJobTime(15);
+      await sched.setPasses(one(15));
       await until(() => state.dead.length === 1);
       expect(positions().filter((p) => p === 'position startpos moves e2e4')).toHaveLength(MAX_CRASHES);
     });
@@ -994,7 +999,7 @@ describe('Scheduler', () => {
       await sched.setEngine(engineConfig('fake'));
       expect(sched.copyState('main')).toBe('up');
       fire[0]();
-      await sched.setJobTime(null); // waits for the timer's turn on the serial chain
+      await sched.setPasses(one(null)); // waits for the timer's turn on the serial chain
       expect(count('uci')).toBe(2);
     });
 
@@ -1005,8 +1010,113 @@ describe('Scheduler', () => {
       await poll(() => fire.length === 1);
       await sched.stop();
       fire[0]();
-      await sched.setJobTime(null);
+      await sched.setPasses(one(null));
       expect([count('uci'), sched.copyState('main')]).toEqual([1, null]);
     });
+  });
+});
+
+describe('Scheduler Passes', () => {
+  const msOf = (id: string, ply: number) => evalOf(id, ply)?.ms;
+  const ev = (depth: number, ms: number): T.Eval => ({
+    score: { cp: 1 },
+    depth,
+    kind: 'complete',
+    bestmove: null,
+    lines: [],
+    ms,
+  });
+  /** A Round of one live Board g1 (e2e4 played), both plies with a Complete eval at `depth` after `ms`. */
+  const resumed = (depth: number, ms: number) => {
+    const ply = (uci: string | null): T.Ply => ({
+      move: uci && { uci, san: uci, clock: null },
+      at: null,
+      eval: ev(depth, ms),
+    });
+    const board: T.Board = {
+      id: 'g1',
+      board: 1,
+      white: { name: 'W' },
+      black: { name: 'B' },
+      result: '*',
+      tracked: true,
+      opening: null,
+      clocks: { white: null, black: null },
+      plies: [ply(null), ply('e2e4')],
+    };
+    const round: T.Round = { tourId: 'T1', roundId: 'R1', name: 'R1', eventName: 'E', startsAt: null, boards: [board] };
+    return { state: persisted([]), rounds: new Map([['T1', round]]) };
+  };
+
+  it('deepens each position Pass by Pass, the top Pass only once no Board is live', async () => {
+    setup({ topN: 1, passesMs: [5, 10, 20] });
+    await sched.startRound('T1', roundInfo('R1', ['g1']), null);
+    src.push(upd('g1', E4));
+    await poll(() => [1, 2, 3].every((p) => msOf('g1', p) === 10) && sched.running === null);
+    expect(msOf('g1', 0)).toBe(5); // the start position: Pass 0 only
+    expect(sched.passCounts).toEqual([0, 0, 3]); // held back while g1 is live
+    src.push(upd('g1', E4, '1-0'));
+    await poll(() => [1, 2, 3].every((p) => msOf('g1', p) === 20) && sched.running === null);
+    expect(msOf('g1', 0)).toBe(5);
+    expect(sched.passCounts).toEqual([]);
+    expect(sched.timing.map((t) => t.jobs)).toEqual([4, 3, 3]);
+  });
+
+  it('evicts a deepening Job for a new position and drops its result when it is no deeper', async () => {
+    const [discarded, upgrade] = [await outcomes('discarded', '1'), await val(evictions, { reason: 'upgrade' })];
+    setup({ topN: 2, passesMs: [5, 5000, null] });
+    await sched.startRound('T1', roundInfo('R1', ['g1', 'g2']), null);
+    src.push(upd('g1', ['e2e4']));
+    await until(() => searching('g1', 1) && site.snapshot().search?.pass === 1);
+    expect(site.snapshot().search?.ms).toBe(5000);
+    src.push(upd('g2', ['d2d4']));
+    await until(() => complete('g2', 1));
+    expect(evalOf('g1', 1)).toMatchObject({ kind: 'complete', depth: 3, ms: 5 }); // the Pass 0 eval stays
+    expect(sched.evictions[0]).toMatchObject({ boardId: 'g1', ply: 1, reason: 'upgrade', depth: 3 });
+    expect((await val(evictions, { reason: 'upgrade' })) - upgrade).toBe(1);
+    expect((await outcomes('discarded', '1')) - discarded).toBe(1);
+    expect(sched.passCounts[1] + (sched.running?.pass === 1 ? 1 : 0)).toBe(2); // g1 again, and g2
+  });
+
+  it('keeps an interrupted deepening search that got deeper, as Complete, and searches it again', async () => {
+    setup({ topN: 1, passesMs: [5, 5000, null], init: resumed(1, 5) });
+    await sched.resume();
+    await until(() => searching('g1', 1) && site.snapshot().search?.depth === 3);
+    expect(site.snapshot().search?.pass).toBe(1);
+    t += 1234;
+    src.push(upd('g1', ['e2e4', 'e7e5'])); // its Board moved on
+    await until(() => complete('g1', 2));
+    expect(evalOf('g1', 1)).toMatchObject({ kind: 'complete', depth: 3, ms: 1234 });
+    expect(sched.evictions[0]).toMatchObject({ boardId: 'g1', ply: 1, reason: 'stale' });
+    await poll(() => sched.running?.pass === 1);
+    const pass1 = sched.passCounts[1] + 1; // the waiting ones and the running one
+    expect(pass1).toBe(2); // ply 1 again (1234 ms < 5000 ms), and ply 2
+  });
+
+  it('setPasses queues the positions a new Pass applies to, and drops the Jobs of a Pass turned off', async () => {
+    setup({ topN: 1, jobTimeMs: 5 });
+    await sched.startRound('T1', roundInfo('R1', ['g1']), null);
+    src.push(upd('g1', E4));
+    await idle();
+    expect([0, 1, 2, 3].map((p) => msOf('g1', p))).toEqual([5, 5, 5, 5]);
+    await sched.setPasses([5, 10, null]);
+    await poll(() => [1, 2, 3].every((p) => msOf('g1', p) === 10));
+    expect(msOf('g1', 0)).toBe(5);
+    await sched.setPasses([5, 20, 5000]); // Pass 2 waits for the Board to finish
+    await poll(() => sched.passCounts[2] === 3 && sched.running === null);
+    await sched.setPasses([5, 20, null]);
+    expect(sched.passCounts).toEqual([]);
+  });
+
+  it('runs the top Pass of a finished Event while no other Event is live, and stops it when one goes live', async () => {
+    setup2({ topN: 1, passesMs: [5, null, 5000] });
+    await startBoth();
+    srcOf.R1.push(upd('a1', ['e2e4'], '1-0'));
+    await until(() => sched.running?.tourId === 'T1' && sched.running.pass === 2);
+    srcOf.S1.push(upd('b1', ['d2d4'])); // Event T2 goes live
+    await until(() => state2.board('b1')!.plies[1].eval?.kind === 'complete');
+    expect(sched.evictions[0]).toMatchObject({ boardId: 'a1', reason: 'upgrade' });
+    await poll(() => sched.running === null);
+    expect(sched.passCounts[2]).toBe(2); // a1 ply 1 waits, and so does b1's
   });
 });

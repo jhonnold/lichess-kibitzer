@@ -7,12 +7,12 @@
   import StatusPanel from '../components/StatusPanel.svelte';
   import type { LiveStore } from '$lib/live.svelte';
   import type { DeadJob } from '$shared/queue';
-  import { formatJobTime, jobTimeMs, mergeForms } from '$shared/admin-form';
+  import { formatPasses, mergeForms, passesMs } from '$shared/admin-form';
   import { defaultTopN } from '$shared/events';
   import { estimatedLoad } from '$shared/timing';
   import AdminEvent from '../components/AdminEvent.svelte';
 
-  type Section = 'login' | 'events' | 'jobtime' | 'engine' | 'status';
+  type Section = 'login' | 'events' | 'passes' | 'engine' | 'status';
 
   const { store }: { store: LiveStore } = $props(); // site state + Lichess stream status, same feed as the Viewer
   let authed = $state<boolean | null>(null); // null: checking the cookie
@@ -39,7 +39,7 @@
   let rounds: Record<string, string> = {}; // Current Round each Event's forms were filled from
   let gen = 0; // bumped by refresh(): a poll that started before it is stale and dropped
   let addTopN = $state(''); // the add-Event form: empty = the server's default
-  let jobSeconds = $state('');
+  const passSeconds = $state<[string, string, string]>(['', '', '']);
 
   /** One action at a time; failures show inline in their section. A 401 means the cookie is gone: back to login. */
   async function run(section: Section, action: () => Promise<void>): Promise<void> {
@@ -135,10 +135,10 @@
   const saveTopN = (t: string) => control('events', 'PUT', `/event/${t}/topn`, { n: Number(topN[t]) }, t);
   const saveTracked = (t: string) =>
     control('events', 'PUT', `/event/${t}/tracked`, { boardIds: $state.snapshot(checked[t]) }, t);
-  const setJobTime = () => {
-    const ms = jobTimeMs(String(jobSeconds));
-    if (ms === null) errors.jobtime = 'Enter seconds > 0';
-    else control('jobtime', 'PUT', '/jobtime', { ms });
+  const setPasses = () => {
+    const ms = passesMs(passSeconds.map(String) as [string, string, string]);
+    if (typeof ms === 'string') errors.passes = ms;
+    else control('passes', 'PUT', '/passes', { ms });
   };
 
   onMount(() => {
@@ -157,7 +157,7 @@
   // live search depth, when it matches the running Job).
   const running = $derived(!!status?.events.some((e) => e.round)); // an engine runs while some Event has a Round
   const evs = $derived(status?.events ?? []);
-  const load = $derived(status ? estimatedLoad(status.tracked, status.jobTimeMs) : null);
+  const load = $derived(status ? estimatedLoad(status.tracked, status.passesMs?.[0] ?? null) : null);
   const streams = $derived(evs.filter((e) => e.stream === 'connected').length);
 
   // Any Event's swap, add, remove or Primary change: re-read the status without a reload.
@@ -174,7 +174,7 @@
   const SECTIONS = [
     ['status', 'Status'],
     ['events', 'Events'],
-    ['jobtime', 'Job time'],
+    ['passes', 'Search passes'],
     ['engine', 'Engine'],
   ] as const;
   let section = $state<string>('status');
@@ -301,19 +301,25 @@
         </section>
 
         {#if status}
-          <section id="admin-jobtime" class="card">
-            <h2 class="title">Job time</h2>
-            <form class="inline" onsubmit={(e) => (e.preventDefault(), setJobTime())}>
-              <label class="field">
-                <span>Job time · now <b>{formatJobTime(status.jobTimeMs)}</b></span>
-                <input type="number" min="0.1" step="0.1" placeholder="Seconds" bind:value={jobSeconds} />
-              </label>
+          <section id="admin-passes" class="card">
+            <h2 class="title">Search passes</h2>
+            <p class="muted">
+              Now <b>{formatPasses(status.passesMs)}</b>. Pass 1 runs right away, Pass 2 in free time, Pass 3 only while
+              no Event is live. Leave Pass 2 or 3 blank to skip it.
+            </p>
+            <form class="inline" onsubmit={(e) => (e.preventDefault(), setPasses())}>
+              {#each ['Pass 1', 'Pass 2', 'Pass 3'] as label, k (label)}
+                <label class="field">
+                  <span>{label}</span>
+                  <input type="number" min="0.1" step="0.1" placeholder="Seconds" bind:value={passSeconds[k]} />
+                </label>
+              {/each}
               <button disabled={busy}>Set</button>
-              <button type="button" disabled={busy} onclick={() => control('jobtime', 'PUT', '/jobtime', { ms: null })}>
+              <button type="button" disabled={busy} onclick={() => control('passes', 'PUT', '/passes', { ms: null })}>
                 Unset
               </button>
             </form>
-            {#if errors.jobtime}<p class="error">{errors.jobtime}</p>{/if}
+            {#if errors.passes}<p class="error">{errors.passes}</p>{/if}
           </section>
         {/if}
 

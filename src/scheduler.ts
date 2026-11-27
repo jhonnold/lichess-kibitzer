@@ -1,8 +1,10 @@
 import { Chess } from 'chess.js';
 import { copyOptions } from '../shared/engine-config.js';
+import { maxPass, nextPass } from '../shared/passes.js';
 import { MIN_LIVE_SLICE_MS, Queue, type EvictedJob, type Eviction, type Job } from '../shared/queue.js';
-import { jobTiming, type JobSample, type JobTiming } from '../shared/timing.js';
+import { passTimings, type JobSample, type JobTiming } from '../shared/timing.js';
 import type * as T from '../shared/types.js';
+import { boardState } from '../shared/viewer.js';
 import { Engine, type SearchResult } from './engine/engine.js';
 import type { UciInfo } from './engine/uci-parser.js';
 import type { RoundInfo } from './lichess/api.js';
@@ -62,6 +64,7 @@ interface Run {
   job: Job;
   epoch: number;
   fen: string;
+  ms: number; // the Job's search time
   engine: string; // the main copy's name
   main: Half;
   multi: Half | null;
@@ -116,7 +119,8 @@ const noLegalMoves = (b: Readonly<T.Board>): boolean => {
 
 /**
  * Drives the Current Round: every Board's moves are recorded from the source; Tracked boards get Jobs from the Queue,
- * run one at a time as `go movetime` searches on both copies at once. The main copy decides the Job's outcome; the
+ * run one at a time as `go movetime` searches on both copies at once. Each position is searched once per Pass
+ * (shared/passes.ts): Pass 0 first, deeper Passes in the free time, the top one only while no Event is live. The main copy decides the Job's outcome; the
  * multi copy only adds Lines, and the Queue runs without it while it is down. Public methods are serialised; the search loop and the
  * source/engine handlers run outside that and stay synchronous apart from the single `engine.search` await.
  */
@@ -130,7 +134,7 @@ export class Scheduler {
   private halting = false;
   private ops: Promise<unknown> = Promise.resolve();
   private wanted = false; // some Event has a Round and stop() was not called: keep an engine running
-  private samples: JobSample[] = []; // the last TIMING_WINDOW recorded Jobs; resets on boot, not on a Round swap
+  private samples: JobSample[] = []; // the last TIMING_WINDOW recorded Jobs of each Pass; resets on boot, not on a Round swap
   private evicted: EvictedJob[] = []; // the last EVICTIONS_KEPT evictions, newest first; resets on boot
 
   constructor(
@@ -160,14 +164,19 @@ export class Scheduler {
     return this.copies[role].restarts;
   }
 
-  /** Job time and depth over the last TIMING_WINDOW Jobs. */
-  get timing(): JobTiming {
-    return jobTiming(this.samples);
+  /** Job time and depth over the last TIMING_WINDOW Jobs of each Pass (index = Pass). */
+  get timing(): JobTiming[] {
+    return passTimings(this.samples);
   }
 
   /** The last EVICTIONS_KEPT evictions, newest first (copies). */
   get evictions(): EvictedJob[] {
     return this.evicted.map((e) => ({ ...e }));
+  }
+
+  /** Waiting Jobs per Pass (index = Pass). */
+  get passCounts(): number[] {
+    return this.queue.passCounts();
   }
 
   /** Copy of the Job being searched. */
@@ -219,10 +228,16 @@ export class Scheduler {
     });
   }
 
-  /** Applies from the next Job. */
-  setJobTime(ms: number | null): Promise<void> {
+  /** Applies from the next Job: waiting Jobs move to each position's next Pass, positions with a new Pass to reach are
+   *  queued. null = the Queue idles. */
+  setPasses(passesMs: T.PassesMs | null): Promise<void> {
     return this.serial(async () => {
-      this.site.setJobTime(ms);
+      this.site.setPasses(passesMs);
+      this.queue.repass((j) => {
+        const b = this.site.event(j.tourId)?.board(j.boardId);
+        return b ? nextPass(b.plies[j.ply]?.eval, j.ply, passesMs) : null;
+      });
+      for (const rs of this.site.events) this.enqueueTracked(rs);
       this.wake();
     });
   }
@@ -393,18 +408,33 @@ export class Scheduler {
     }
   }
 
-  /** Idempotent: latest ply → current tier, earlier plies without a Complete eval → backfill. */
+  /** Idempotent: latest ply → current tier, earlier plies with a Pass left to reach → backfill, each for its next
+   *  Pass. */
   private enqueue(rs: RoundState, b: Readonly<T.Board>): void {
     const tourId = rs.event.tourId;
     const latest = b.plies.length - 1;
-    const done = noLegalMoves(b) || b.plies[latest].eval?.kind === 'complete';
-    this.queue.setLatest(tourId, b.id, b.board, latest, this.now, done);
+    const passes = this.site.settings.passesMs;
+    const passOf = (i: number) => nextPass(b.plies[i].eval, i, passes);
+    const pass = noLegalMoves(b) ? null : passOf(latest);
     const running = this.run?.job; // already out of the Queue
-    const missing: number[] = [];
-    for (let i = 0; i < latest; i++) {
-      if (b.plies[i].eval?.kind !== 'complete' && !(running?.boardId === b.id && running.ply === i)) missing.push(i);
+    const runs = (i: number) => running?.boardId === b.id && running.ply === i;
+    this.queue.setLatest(tourId, b.id, b.board, latest, this.now, pass === null, pass ?? 0);
+    // Same latest ply (setLatest did nothing): it may have a Pass left that is not queued yet (the Passes changed).
+    if (pass !== null && !runs(latest)) {
+      this.queue.requeue(
+        { tourId, boardId: b.id, board: b.board, ply: latest, tier: 'current', pass, since: this.now },
+        this.now,
+      );
     }
-    this.queue.addBackfill(tourId, b.id, missing, this.now);
+    const missing: number[] = [];
+    for (let i = 0; i < latest; i++) if (passOf(i) !== null && !runs(i)) missing.push(i);
+    this.queue.addBackfill(tourId, b.id, missing, this.now, (i) => passOf(i)!);
+  }
+
+  /** The highest Pass a Job may run at now: the top one only while no Tracked Board of any Event is being played. */
+  private get maxPass(): number {
+    const live = this.site.events.some((rs) => rs.round?.boards.some((b) => b.tracked && boardState(b) === 'live'));
+    return maxPass(live);
   }
 
   /** After every Queue change: publish it, then evict the running Job if the Queue says so, or start the loop. */
@@ -413,7 +443,7 @@ export class Scheduler {
     const run = this.run;
     if (!run) return this.kick();
     if (run.stop || !this.copies.main.engine) return;
-    const why = this.queue.preempt(run.job, this.now - run.startedAt, run.sliceMs);
+    const why = this.queue.preempt(run.job, this.now - run.startedAt, run.sliceMs, this.maxPass);
     if (!why) return;
     run.stop = 'preempt';
     run.evicted = why;
@@ -429,7 +459,7 @@ export class Scheduler {
   }
 
   private kick(): void {
-    if (this.busy || this.halting || !this.copies.main.engine || this.site.settings.jobTimeMs === null) return;
+    if (this.busy || this.halting || !this.copies.main.engine || this.site.settings.passesMs === null) return;
     this.busy = true;
     this.loop = this.work();
   }
@@ -438,11 +468,11 @@ export class Scheduler {
     try {
       for (;;) {
         const engine = this.copies.main.engine;
-        const ms = this.site.settings.jobTimeMs;
-        if (this.halting || !engine || ms === null) return;
-        const job = this.queue.next();
+        const passes = this.site.settings.passesMs;
+        if (this.halting || !engine || passes === null) return;
+        const job = this.queue.next(this.maxPass);
         if (!job) return;
-        await this.runJob(engine, this.copies.multi.engine, job, ms);
+        await this.runJob(engine, this.copies.multi.engine, job, passes[job.pass] ?? passes[0]);
         this.site.setSearch(null, null);
       }
     } catch (err) {
@@ -456,7 +486,8 @@ export class Scheduler {
   private async runJob(engine: Engine, multi: Engine | null, job: Job, ms: number): Promise<void> {
     const { boardId, ply } = job;
     const rs = this.site.event(job.tourId);
-    if (!rs) return void jobs.inc({ tier: job.tier, outcome: 'dropped' });
+    const labels = { tier: job.tier, pass: String(job.pass) };
+    if (!rs) return void jobs.inc({ ...labels, outcome: 'dropped' });
     const moves = rs
       .board(boardId)!
       .plies.slice(1, ply + 1)
@@ -468,11 +499,12 @@ export class Scheduler {
       job,
       epoch: rs.epoch(boardId),
       fen: chess.fen(),
+      ms,
       engine: engine.name,
       main: { lines: [], nps: null },
       multi: multi && { lines: [], nps: null },
       startedAt: this.now,
-      sliceMs: job.tier === 'current' && slice < ms ? slice : Infinity,
+      sliceMs: job.pass === 0 && job.tier === 'current' && slice < ms ? slice : Infinity,
       stop: null,
       evicted: null,
     };
@@ -499,13 +531,13 @@ export class Scheduler {
       this.run = null;
       if (stop === 'restart') {
         this.queue.requeue(job, this.now);
-        jobs.inc({ tier: job.tier, outcome: 'interrupted' });
-      } else if (stop === 'drop') jobs.inc({ tier: job.tier, outcome: 'dropped' });
+        jobs.inc({ ...labels, outcome: 'interrupted' });
+      } else if (stop === 'drop') jobs.inc({ ...labels, outcome: 'dropped' });
       else {
         const crash = this.queue.crashed(job, this.now);
         if (crash === 'dead') this.persistDead();
         jobs.inc({
-          tier: job.tier,
+          ...labels,
           outcome: { requeued: 'crashed', dead: 'dead_lettered', dropped: 'dropped' }[crash],
         });
       }
@@ -519,17 +551,31 @@ export class Scheduler {
     this.copies.main.backoff = RESTART_MIN_MS;
     if (mr) this.copies.multi.backoff = RESTART_MIN_MS;
     const stop = this.site.event(job.tourId) === rs ? ended : 'drop'; // the Event may be gone: drop the result
-    if (stop === 'drop') return void jobs.inc({ tier: job.tier, outcome: 'dropped' });
-    if (stop === 'restart') jobs.inc({ tier: job.tier, outcome: 'interrupted' });
+    if (stop === 'drop') return void jobs.inc({ ...labels, outcome: 'dropped' });
+    if (stop === 'restart') jobs.inc({ ...labels, outcome: 'interrupted' });
     else {
       if (evicted) evictions.inc({ reason: evicted }); // not before: a halt may override the stop
-      const e = toEval(r, ply, run.fen, stop ? 'provisional' : 'complete', mr);
-      jobs.inc({ tier: job.tier, outcome: e ? 'recorded' : 'empty' });
-      if (e) {
-        this.recordJob(job, this.now - run.startedAt, e, run);
-        // A short eviction (stale) must not replace a deeper Provisional eval of the same ply.
-        const prev = rs.board(boardId)?.plies[ply]?.eval;
-        if (e.kind === 'complete' || !prev || prev.depth <= e.depth) rs.setEval(boardId, ply, e, run.epoch);
+      const elapsed = this.now - run.startedAt;
+      const kind: T.EvalKind = stop ? 'provisional' : 'complete';
+      const e = toEval(r, ply, run.fen, kind, mr);
+      const prev = rs.board(boardId)?.plies[ply]?.eval;
+      // An interrupted deepening Job (Pass ≥ 1) is kept, as Complete, only if it got deeper than the eval it replaces.
+      const kept = !!e && !!stop && job.pass > 0 && (!prev || e.depth > prev.depth);
+      const record: (T.Eval & { ms: number }) | null =
+        e && (!stop || job.pass === 0 || kept)
+          ? { ...e, kind: kept ? 'complete' : kind, ms: stop ? elapsed : run.ms }
+          : null;
+      jobs.inc({ ...labels, outcome: record ? 'recorded' : e ? 'discarded' : 'empty' });
+      if (record) {
+        this.recordJob(job, elapsed, kind, record, run);
+        // A short eviction (stale) must not replace a deeper Provisional eval of the same ply; a Complete eval never
+        // replaces one that searched longer, unless it is a kept deepening search.
+        const replaces =
+          !prev ||
+          (record.kind === 'complete'
+            ? kept || prev.kind !== 'complete' || (prev.ms ?? 0) <= record.ms
+            : prev.depth <= record.depth);
+        if (replaces) rs.setEval(boardId, ply, record, run.epoch);
       }
       if (evicted) {
         const depth = rs.board(boardId)?.plies[ply]?.eval?.depth ?? null; // what the ply kept
@@ -549,11 +595,17 @@ export class Scheduler {
     if (stop === 'preempt' && evicted === 'live') this.queue.evict(job, this.now);
     // Stopped, or a correction bumped the epoch (eval refused): search it again if the ply still exists.
     else if (stop || run.epoch !== rs.epoch(boardId)) this.queue.requeue(job, this.now);
+    // Done at this Pass: queue the next one, if any.
+    else {
+      const pass = nextPass(rs.board(boardId)?.plies[ply]?.eval, ply, this.site.settings.passesMs);
+      if (pass !== null) this.queue.requeue({ ...job, pass }, this.now);
+    }
   }
 
-  /** Duration and the Admin timing samples are the Job's (main copy's depth); depth and nps also per copy. */
-  private recordJob(job: Job, ms: number, e: T.Eval, run: Run): void {
-    const labels = { tier: job.tier, kind: e.kind };
+  /** Duration and the Admin timing samples are the Job's (main copy's depth); depth and nps also per copy. kind: whether
+   *  the Job ran its full time (a kept interrupted deepening search counts as provisional here). */
+  private recordJob(job: Job, ms: number, kind: T.EvalKind, e: T.Eval, run: Run): void {
+    const labels = { tier: job.tier, pass: String(job.pass), kind };
     jobDuration.observe(labels, ms / 1000);
     jobDepth.observe({ ...labels, role: 'main' }, e.depth);
     if (e.multi) jobDepth.observe({ ...labels, role: 'multi' }, e.multi.depth);
@@ -561,8 +613,13 @@ export class Scheduler {
       const nps = run[role]?.nps ?? null;
       if (nps !== null) jobNps.observe({ ...labels, role }, nps);
     }
-    this.samples.push({ ms, depth: e.depth, kind: e.kind });
-    if (this.samples.length > TIMING_WINDOW) this.samples.shift();
+    this.samples.push({ ms, depth: e.depth, kind, pass: job.pass });
+    if (this.samples.filter((s) => s.pass === job.pass).length > TIMING_WINDOW) {
+      this.samples.splice(
+        this.samples.findIndex((s) => s.pass === job.pass),
+        1,
+      );
+    }
   }
 
   private onInfo(role: T.EngineRole, info: UciInfo): void {
@@ -579,7 +636,7 @@ export class Scheduler {
   private publishSearch(run: Run): void {
     const lines = run.main.lines.filter(Boolean);
     const others = run.multi?.lines.filter(Boolean);
-    const { boardId, ply, tier } = run.job;
+    const { boardId, ply, tier, pass } = run.job;
     this.site.setSearch(
       {
         boardId,
@@ -591,6 +648,8 @@ export class Scheduler {
         multi: others ? { depth: others[0]?.depth ?? 0, nps: run.multi!.nps, lines: others } : null,
         startedAt: run.startedAt,
         tier,
+        pass,
+        ms: run.ms,
       },
       run.job.tourId,
     );

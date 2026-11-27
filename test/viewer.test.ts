@@ -281,6 +281,17 @@ describe('statusLine', () => {
       text: 'Done · depth 21',
     });
   });
+  it('a Complete eval says how long it searched, when known', () => {
+    const e = { ...ev('complete', 24), ms: 10_000 };
+    expect(statusLine(withEval(mk(1, 3), 2, e), 2, null, q()).text).toBe('Done · depth 24 · 10 s');
+    expect(statusLine(withEval(mk(1, 3), 2, { ...e, ms: 6420 }), 2, null, q()).text).toBe('Done · depth 24 · 6.4 s');
+  });
+  it('a deepening search of the ply is Deepening, at the deeper of its depth and the eval', () => {
+    const deep = (depth: number) => ({ ...srch('g1', 2, depth), pass: 2, ms: 100_000 }) as SearchInfo;
+    const b = withEval(mk(1, 3), 2, { ...ev('complete', 24), ms: 10_000 });
+    expect(statusLine(b, 2, deep(18), q())).toEqual({ state: 'searching', text: 'Deepening · depth 24 · 100 s' });
+    expect(statusLine(b, 2, deep(27), q()).text).toBe('Deepening · depth 27 · 100 s');
+  });
   it('the running search is Searching; depth 0 has no depth', () => {
     expect(statusLine(mk(1, 3), 2, srch('g1', 2, 21), q())).toEqual({
       state: 'searching',

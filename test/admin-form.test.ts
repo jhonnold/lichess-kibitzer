@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { boardIndex, formatJobTime, jobTimeMs, mergeForms, trackedIds, type EvBlock } from '../shared/admin-form.js';
+import {
+  boardIndex,
+  formatJobTime,
+  formatPasses,
+  jobTimeMs,
+  mergeForms,
+  passesMs,
+  trackedIds,
+  type EvBlock,
+} from '../shared/admin-form.js';
 
 describe('jobTimeMs', () => {
   it('converts seconds to ms', () => {
@@ -8,6 +17,26 @@ describe('jobTimeMs', () => {
     expect(jobTimeMs('0.1')).toBe(100);
   });
   it.each(['', ' ', '0', '0.0004', '-1', 'x', 'Infinity'])('%j is invalid', (s) => expect(jobTimeMs(s)).toBeNull());
+});
+
+describe('passesMs', () => {
+  it('converts the three fields; a blank Pass 2 or 3 is off', () => {
+    expect(passesMs(['1', '10', '100'])).toEqual([1000, 10_000, 100_000]);
+    expect(passesMs(['0.5', '', ' '])).toEqual([500, null, null]);
+    expect(passesMs(['1', '', '100'])).toEqual([1000, null, 100_000]);
+  });
+  it('says why when invalid', () => {
+    expect(passesMs(['', '10', '100'])).toBe('Pass 1: enter seconds > 0');
+    expect(passesMs(['1', 'x', ''])).toBe('Enter seconds > 0, or leave Pass 2 / 3 blank');
+    expect(passesMs(['10', '1', ''])).toBe('Passes must be strictly ascending');
+  });
+});
+
+describe('formatPasses', () => {
+  it('shows unset, or each Pass with off', () => {
+    expect(formatPasses(null)).toBe('unset — the Queue is idle');
+    expect(formatPasses([1000, null, 100_000])).toBe('1 s · off · 100 s');
+  });
 });
 
 describe('formatJobTime', () => {

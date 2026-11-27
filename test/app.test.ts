@@ -18,7 +18,7 @@ const app = createApp({
   scheduler: {
     engine: null,
     running: null,
-    setJobTime: vi.fn(),
+    setPasses: vi.fn(),
     setTracked: vi.fn(),
     setEngine: vi.fn(),
   },
