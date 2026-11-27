@@ -88,16 +88,19 @@ analysis.ccrl.live {
 `GET /api/admin/metrics` serves Prometheus text. It uses HTTP basic auth (user `admin`, password `ADMIN_PASSWORD`), not
 the Admin cookie; with no `ADMIN_PASSWORD` it always answers 401.
 
-- `kibitzer_queue_depth{tier}`: Jobs waiting, `current` and `backfill`
+- `kibitzer_queue_depth{tier}`: Pass 0 Jobs waiting, `current` and `backfill`. `kibitzer_queue_pass_depth{pass}`: Jobs
+  waiting per Pass (`0`, `1`, `2`), deepening Jobs included
 - `kibitzer_dead_letter_queue_size`: Jobs in the Dead-letter queue (every Event's)
 - `kibitzer_engine_state{role,state}`: per engine copy (`role` `main` or `multi`), 1 for the current state (`up`,
   `restarting`, or `idle` with no Round), 0 for the others. `kibitzer_engine_up{role}`: 1 while up (0 both while
   restarting and when idle); `kibitzer_engine_restarts_total{role}`: restarts since boot
-- `kibitzer_jobs_total{tier,outcome}`: one outcome per Job run. `recorded` (an Eval, evicted Provisional ones
-  included), `empty` (the search gave no scored line), `dropped` (a Round swap, an untrack or a stop),
+- `kibitzer_jobs_total{tier,pass,outcome}`: one outcome per Job run. `recorded` (an Eval, evicted Provisional ones
+  included), `empty` (the search gave no scored line), `discarded` (a stopped deepening Job that got no deeper than
+  the eval it would replace), `dropped` (a Round swap, an untrack or a stop),
   `interrupted` (engine restart), `crashed` (the engine died; requeued) or `dead_lettered` (its last crash)
-- `kibitzer_job_duration_seconds`, `kibitzer_job_depth` and `kibitzer_job_nps` (histograms, `tier` and `kind`
-  labels; depth and nps also `role`): Jobs that recorded an Eval; nps is the copy's last report
+- `kibitzer_job_duration_seconds`, `kibitzer_job_depth` and `kibitzer_job_nps` (histograms, `tier`, `pass` and
+  `kind` labels; depth and nps also `role`): Jobs that recorded an Eval; `kind` is `complete` when it ran its full
+  time; nps is the copy's last report
 - `kibitzer_lichess_requests_total{endpoint,outcome}`: every Lichess API call. `endpoint` is `event`, `round` or
   `explorer`; `outcome` is `ok`, `http_error`, `rate_limited` (a 429), `timeout`, `network` (no response, or a broken
   or non-JSON body) or `paused` (refused locally during the minute after a 429).
@@ -107,7 +110,8 @@ the Admin cookie; with no `ADMIN_PASSWORD` it always answers 401.
   closed it, about once a minute after a Round finishes), `http_error`, `rate_limited` or `network`
 - Deprecated, to be removed: `kibitzer_lichess_rate_limited_total{source}` (`stream` or `api`) and
   `kibitzer_opening_lookups_total`; use `kibitzer_lichess_requests_total` and the reconnect `reason`
-- `kibitzer_evictions_total{reason}`: running Jobs stopped early (`stale`, `live`, `backfill`)
+- `kibitzer_evictions_total{reason}`: running Jobs stopped early (`stale`, `live`, `backfill`, `upgrade`: a
+  deepening Job gave way to a lower Pass, or an Event went live during a top-Pass Job)
 - `kibitzer_following`: the number of registered Events. `kibitzer_follower_polls_total{event,outcome}`: Event polls
   (every 60 s) per Event (its tourId), `ok` or `error` (the Event fetch or the Round swap failed); series of removed
   Events stay. `kibitzer_follower_last_success_timestamp_seconds{event}`: when that Event was last fetched, no sample

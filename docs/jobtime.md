@@ -1,9 +1,13 @@
 # Default job time
 
 Answers the PRD open question "Default job time": how long should one Job (one position, MultiPV 5) search?
-The default is **15 000 ms** (`DEFAULT_JOB_TIME_MS` in `shared/types.ts`). Measured before the engine ran as two copies:
-the main copy (MultiPV 1, the eval) now reaches deeper than these MultiPV 5 numbers in the same time; not re-measured. It only applies to a fresh state file;
-existing state keeps its value (a saved "unset" stays unset). The Admin page changes or unsets it at any time.
+Superseded by search Passes ([plans/search-passes.md](./plans/search-passes.md)): the default is now **1 s, 10 s,
+100 s** (`DEFAULT_PASSES_MS` in `shared/types.ts`), and a state file with a job time migrates to it. The measurements
+below still bound the depth each Pass reaches, read off the tables: 1 s is below the 1.9 s median for depth 20, 10 s
+reaches a median depth 25, and 100 s lies between depth 32 (median 48.9 s) and depth 36 (144.7 s). Before Passes, the
+default was **15 000 ms**, chosen below. Measured before the engine ran as two copies: the main copy (MultiPV 1, the
+eval) now reaches deeper than these MultiPV 5 numbers in the same time; not re-measured. A saved "unset" stays unset;
+the Admin page changes or unsets the Passes at any time.
 
 ## Run it
 

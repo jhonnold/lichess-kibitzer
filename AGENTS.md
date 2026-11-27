@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Lichess Kibitzer: full-screen live engine analysis of Lichess broadcast Events (several followed at once, one is the Primary Event), each followed Round by Round: the top N Boards of each Event's Round are Tracked, two copies of one UCI engine (main: MultiPV 1, the eval, accuracy and marks; multi: MultiPV N, the Lines) work through one shared Queue of Jobs together, Viewers step a Cursor through the game, and finished Rounds stay in an Archive. Plan: [docs/plans/live-analysis.md](./docs/plans/live-analysis.md). v2 plan: [docs/plans/v2.md](./docs/plans/v2.md). Multi-Event plan: [docs/plans/multi-event.md](./docs/plans/multi-event.md).
+Lichess Kibitzer: full-screen live engine analysis of Lichess broadcast Events (several followed at once, one is the Primary Event), each followed Round by Round: the top N Boards of each Event's Round are Tracked, two copies of one UCI engine (main: MultiPV 1, the eval, accuracy and marks; multi: MultiPV N, the Lines) work through one shared Queue of Jobs together, each position searched in up to three Passes (e.g. 1 s right away, 10 s in free time, 100 s only while no Event is live), Viewers step a Cursor through the game, and finished Rounds stay in an Archive. Plan: [docs/plans/live-analysis.md](./docs/plans/live-analysis.md). v2 plan: [docs/plans/v2.md](./docs/plans/v2.md). Multi-Event plan: [docs/plans/multi-event.md](./docs/plans/multi-event.md). Search Passes plan: [docs/plans/search-passes.md](./docs/plans/search-passes.md).
 
 ## Commands
 
@@ -63,7 +63,8 @@ Gate before commit: `npm run lint && npm run check && npm test && npm run build`
 | Engine config (per-copy Threads/Hash/MultiPV, legacy migration, launch order) | `shared/engine-config.ts` |
 | Event following (one Follower per Event: poll, Round rollover) | `src/follower.ts`, `shared/rollover.ts` |
 | Event cards, default topN (8 ÷ Events) | `shared/events.ts` |
-| Job time benchmark and the default job time | `scripts/bench-jobtime.mjs`, `docs/jobtime.md` |
+| Search Passes (next Pass of a position, top-Pass gate, validation; Queue orders by Pass) | `shared/passes.ts`, `shared/queue.ts`, `src/scheduler.ts` |
+| Job time benchmark and the default Passes | `scripts/bench-jobtime.mjs`, `docs/jobtime.md` |
 | Demo server (`npm run demo`; fake engine, synthesized Round, `--events N` for several; flags in file header) | `scripts/demo.ts` |
 | Hash router (routes, `#/e/<tourId>/…` forms, deep links to a move, streaming layout params) | `shared/route.ts` |
 | Tests | `test/` |
