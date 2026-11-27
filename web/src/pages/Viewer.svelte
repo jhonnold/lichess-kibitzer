@@ -10,7 +10,7 @@
   import BoardStrip from '../components/BoardStrip.svelte';
   import PlayerBar from '../components/PlayerBar.svelte';
   import { arrows } from '$shared/arrows';
-  import { archiveHash, boardHash, type Layout } from '$shared/route';
+  import { archiveHash, boardHash, homeHash, type Layout } from '$shared/route';
   import type { SnapSource } from '$lib/live.svelte';
   import type { ArchiveCtx } from '$shared/archive';
   import { clockOf } from '$lib/position';
@@ -51,8 +51,9 @@
     layout: Layout;
     query?: string;
     ctx?: ArchiveCtx | null;
+    tourId?: string | null; // the route's Event (null = the Primary); live Viewer only
   };
-  const { store, board, ply = null, layout, query = '', ctx = null }: Props = $props();
+  const { store, board, ply = null, layout, query = '', ctx = null, tourId = null }: Props = $props();
 
   let now = $state(Date.now());
   onMount(() => {
@@ -97,7 +98,11 @@
     const p = view.live ? undefined : view.ply;
     const n = board ?? game.board;
     const want =
-      (ctx ? archiveHash(ctx.tourId, ctx.roundId, n, p) : board === null && view.live ? '#/' : boardHash(n, p)) + query;
+      (ctx
+        ? archiveHash(ctx.tourId, ctx.roundId, n, p)
+        : board === null && view.live
+          ? homeHash(tourId)
+          : boardHash(n, p, tourId)) + query;
     if (location.hash !== want) history.replaceState(null, '', want);
   });
 
@@ -264,7 +269,7 @@
   <main class="viewer" class:nopanel={!layout.panel} class:stream={!layout.chrome}>
     {#if layout.chrome}
       <div class="strip">
-        <BoardStrip {boards} selected={game.board} {ctx} {query} />
+        <BoardStrip {boards} selected={game.board} {ctx} {query} {tourId} />
         <div class="tools">
           <button
             type="button"

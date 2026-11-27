@@ -8,10 +8,22 @@
   import TabBar from './components/TabBar.svelte';
   import { ArchiveStore } from '$lib/archive.svelte';
   import { LiveStore } from '$lib/live.svelte';
-  import { ARCHIVE_HASH, archiveHash, boardHash, layoutOf, navLinks, parseHash, ROUND_HASH } from '$shared/route';
+  import { unknownTour } from '$shared/events';
+  import {
+    ARCHIVE_HASH,
+    archiveHash,
+    backHash,
+    homeHash,
+    layoutOf,
+    navLinks,
+    overviewToggle,
+    parseHash,
+    routeTour,
+    type LastBoard,
+  } from '$shared/route';
   import { boardState } from '$shared/viewer';
 
-  // Hash router: see shared/route.ts. One LiveStore (one EventSource) for every page.
+  // Hash router: see shared/route.ts. One LiveStore (one EventSource) for every page, bound to the stream tour.
   let hash = $state(location.hash);
   const parsed = $derived(parseHash(hash));
   const route = $derived(parsed.route);
@@ -24,12 +36,28 @@
   const store = new LiveStore();
   const archive = new ArchiveStore();
 
-  let lastBoard = $state<number | null>(null);
-  $effect(() => {
-    if (route.page === 'viewer') lastBoard = route.board;
+  // The stream's Event: the tourId of the last Event-scoped route (sticky across Admin/Archive). Computed with the
+  // route, not in an effect, so the Viewer never rewrites the new Event's hash with the old Event's. null = the Primary.
+  let lastTour: string | null = null;
+  const tour = $derived.by(() => {
+    const t = routeTour(route);
+    if (t !== undefined) lastTour = t;
+    return lastTour;
   });
-  // Where `o` returns to from the overview: the last Board seen, else the Viewer's default (board 1 may be untracked).
-  const back = $derived((lastBoard === null ? '#/' : boardHash(lastBoard)) + query);
+  // Reads only `tour` (a primitive): reconnects only when the Event changes.
+  $effect(() => store.connect(tour));
+  const ready = $derived(store.tour === tour);
+  const notFollowed = $derived(
+    (route.page === 'viewer' || route.page === 'round') && ready && unknownTour(store.snap, tour),
+  );
+
+  let last = $state<LastBoard | null>(null);
+  $effect(() => {
+    if (route.page === 'viewer') last = { tour: route.tourId, board: route.board };
+  });
+  // Where `o` returns to from the overview: the last Board seen in this Event, else its default Board (board 1 may be
+  // untracked).
+  const back = $derived(backHash(last, tour) + query);
 
   // The archived Round on screen: one fetch per Round; its Boards are the Tracked ones as of the swap.
   let lastArchiveBoard = $state<number | null>(null);
@@ -45,7 +73,7 @@
   );
 
   // Navigation (hidden under ?chrome=0): the sections, and what is on screen.
-  const links = $derived(navLinks(route, back, query));
+  const links = $derived(navLinks(route, back, query, tour));
   const here = $derived(
     route.page === 'archive-round'
       ? {
@@ -66,8 +94,7 @@
   onMount(() => {
     const onHashChange = () => (hash = location.hash);
     window.addEventListener('hashchange', onHashChange);
-    const disconnect = store.connect();
-    return () => (window.removeEventListener('hashchange', onHashChange), disconnect());
+    return () => window.removeEventListener('hashchange', onHashChange);
   });
 
   /** `o`: Viewer ↔ overview. Same guards as the Viewer's keys. */
@@ -75,8 +102,6 @@
     const t = e.target as HTMLElement | null;
     if (
       (e.key !== 'o' && e.key !== 'O') ||
-      route.page === 'admin' ||
-      route.page === 'archive' ||
       e.altKey ||
       e.ctrlKey ||
       e.metaKey ||
@@ -84,14 +109,13 @@
       /^(INPUT|TEXTAREA|SELECT)$/.test(t?.tagName ?? '')
     )
       return;
-    location.hash =
+    const to =
       route.page === 'archive-round'
         ? route.board === null
           ? archiveBack
           : archiveHash(route.tourId, route.roundId) + query
-        : route.page === 'round'
-          ? back
-          : ROUND_HASH + query;
+        : overviewToggle(route, back, query);
+    if (to !== null) location.hash = to;
   }
 </script>
 
@@ -104,8 +128,23 @@
   <div class="page">
     {#if route.page === 'admin'}
       <Admin {store} />
-    {:else if route.page === 'round'}
-      <Overview {store} {layout} {query} />
+    {:else if route.page === 'round' || route.page === 'viewer'}
+      {#key tour}
+        {#if !ready}
+          <main class="message">Connecting…</main>
+        {:else if notFollowed}
+          <main class="message">
+            <p>
+              This Event is not followed · <a href={homeHash(null) + query}>Live</a> ·
+              <a href={ARCHIVE_HASH}>Archive</a>
+            </p>
+          </main>
+        {:else if route.page === 'round'}
+          <Overview {store} {layout} {query} tourId={route.tourId} />
+        {:else}
+          <Viewer {store} board={route.board} ply={route.ply} {layout} {query} tourId={route.tourId} />
+        {/if}
+      {/key}
     {:else if route.page === 'archive'}
       <Archive />
     {:else if route.page === 'archive-round'}
@@ -117,8 +156,6 @@
       {:else}
         <Viewer store={archive} board={route.board} ply={route.ply} {layout} {query} {ctx} />
       {/if}
-    {:else}
-      <Viewer {store} board={route.board} ply={route.ply} {layout} {query} />
     {/if}
   </div>
   {#if layout.chrome}<TabBar {links} />{/if}

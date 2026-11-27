@@ -5,9 +5,9 @@
   import type { Board } from '$shared/types';
   import { archivedResult, boardState, formatResult, shortName } from '$shared/viewer';
 
-  type Props = { boards: Board[]; selected: number; ctx?: ArchiveCtx | null; query?: string };
-  const { boards, selected, ctx = null, query = '' }: Props = $props();
-  const href = (n: number) => (ctx ? archiveHash(ctx.tourId, ctx.roundId, n) : boardHash(n)) + query;
+  type Props = { boards: Board[]; selected: number; ctx?: ArchiveCtx | null; query?: string; tourId?: string | null };
+  const { boards, selected, ctx = null, query = '', tourId = null }: Props = $props();
+  const href = (n: number) => (ctx ? archiveHash(ctx.tourId, ctx.roundId, n) : boardHash(n, undefined, tourId)) + query;
 </script>
 
 <nav aria-label="Tracked boards">
