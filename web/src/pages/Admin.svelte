@@ -7,10 +7,12 @@
   import StatusPanel from '../components/StatusPanel.svelte';
   import type { LiveStore } from '$lib/live.svelte';
   import type { DeadJob } from '$shared/queue';
-  import { formatJobTime, jobTimeMs } from '$shared/admin-form';
-  import { countdown, formatResult } from '$shared/viewer';
+  import { formatJobTime, jobTimeMs, mergeForms } from '$shared/admin-form';
+  import { defaultTopN } from '$shared/events';
+  import { estimatedLoad } from '$shared/timing';
+  import AdminEvent from '../components/AdminEvent.svelte';
 
-  type Section = 'login' | 'event' | 'engine' | 'status' | 'tracking';
+  type Section = 'login' | 'events' | 'jobtime' | 'engine' | 'status';
 
   const { store }: { store: LiveStore } = $props(); // site state + Lichess stream status, same feed as the Viewer
   let authed = $state<boolean | null>(null); // null: checking the cookie
@@ -31,10 +33,13 @@
   let values = $state<Record<string, string>>({});
   let saved = $state(false);
   let status = $state<AdminStatus | null>(null);
-  let topN = $state(''); // the Primary's next-Round default (Tracking form)
+  // Per-Event form state, keyed by tourId; only refresh() rewrites it, so a poll never resets typed input.
+  let topN = $state<Record<string, string>>({});
+  let checked = $state<Record<string, string[]>>({}); // ids of the boards ticked in each Event's Tracked set
+  let rounds: Record<string, string> = {}; // Current Round each Event's forms were filled from
+  let gen = 0; // bumped by refresh(): a poll that started before it is stale and dropped
   let addTopN = $state(''); // the add-Event form: empty = the server's default
   let jobSeconds = $state('');
-  let checked = $state<string[]>([]); // ids of the boards ticked in the Tracked set
 
   /** One action at a time; failures show inline in their section. A 401 means the cookie is gone: back to login. */
   async function run(section: Section, action: () => Promise<void>): Promise<void> {
@@ -52,19 +57,27 @@
     }
   }
 
-  /** GET /status into `status`; the Tracking form follows the server's values. */
-  async function refresh(): Promise<AdminStatus> {
-    const s = (status = await getStatus());
-    if (s.event) topN = String(s.topN); // Idle: keep the admin's value for the next add
-    checked = s.round?.boards.filter((b) => b.tracked).map((b) => b.id) ?? [];
+  /** GET /status into `status`. Forms follow the server only for the Event acted on (`acted`), one whose Round
+   *  changed, and new Events; the others keep what was typed. */
+  async function refresh(acted?: string): Promise<AdminStatus> {
+    gen++;
+    const s = await getStatus();
+    gen++;
+    status = s;
+    ({ topN, checked, rounds } = mergeForms({ topN, checked, rounds }, s.events, acted));
     return s;
   }
-  /** The Status section's own 2 s poll: not refresh() (that would reset the Tracking form) and not run() (busy). */
+  /** The 2 s poll: not refresh() (forms keep their input) and not run() (busy). A poll overtaken by a refresh()
+   *  is dropped, or it would bring back a removed Event. */
   async function poll(): Promise<void> {
     if (!authed || document.hidden) return;
     now = Date.now();
+    const g = gen;
     try {
-      status = await getStatus();
+      const s = await getStatus();
+      if (g !== gen) return;
+      status = s;
+      ({ topN, checked, rounds } = mergeForms({ topN, checked, rounds }, s.events)); // seeds new Events
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) authed = false; // the login form shows
     }
@@ -89,7 +102,7 @@
     });
 
   const register = () =>
-    run('event', async () => {
+    run('events', async () => {
       await adminApi('POST', '/event', {
         link,
         ...(addTopN !== '' && Number.isInteger(Number(addTopN)) && Number(addTopN) > 0 && { topN: Number(addTopN) }),
@@ -111,21 +124,21 @@
       [config, saved] = [cfg.options, true];
     });
   const press = (name: string) => run('engine', () => adminApi('POST', '/engine/button', { name }));
-  const clear = () =>
-    run('status', async () => {
-      if (status?.event) await adminApi('DELETE', `/event/${status.event.tourId}`);
-      await refresh();
+  /** One control: send it, then re-read the status. */
+  const control = (section: Section, method: string, path: string, body?: unknown, acted?: string) =>
+    run(section, async () => {
+      await adminApi(method, path, body);
+      await refresh(acted);
     });
-  /** One Tracking control: send it, then re-read the status. */
-  const control = (path: string, body: unknown) =>
-    run('tracking', async () => {
-      await adminApi('PUT', path, body);
-      await refresh();
-    });
+  const remove = (t: string) => control('events', 'DELETE', `/event/${t}`);
+  const makePrimary = (t: string) => control('events', 'PUT', '/primary', { tourId: t });
+  const saveTopN = (t: string) => control('events', 'PUT', `/event/${t}/topn`, { n: Number(topN[t]) }, t);
+  const saveTracked = (t: string) =>
+    control('events', 'PUT', `/event/${t}/tracked`, { boardIds: $state.snapshot(checked[t]) }, t);
   const setJobTime = () => {
     const ms = jobTimeMs(String(jobSeconds));
-    if (ms === null) errors.tracking = 'Enter seconds > 0';
-    else control('/jobtime', { ms });
+    if (ms === null) errors.jobtime = 'Enter seconds > 0';
+    else control('jobtime', 'PUT', '/jobtime', { ms });
   };
 
   onMount(() => {
@@ -140,24 +153,28 @@
   });
 
   const snap = $derived(store.snap);
-  const tracked = $derived(status?.round?.boards.filter((b) => b.tracked).length ?? 0);
-  // Admin is about the Primary (what `status` flattens), whichever Event the stream is on.
-  const running = $derived(!!status?.round); // an engine runs while there is a Current Round
+  // Everything Event-specific comes from `status`, whichever Event the stream is on (the snapshot only adds the
+  // live search depth, when it matches the running Job).
+  const running = $derived(!!status?.events.some((e) => e.round)); // an engine runs while some Event has a Round
+  const evs = $derived(status?.events ?? []);
+  const load = $derived(status ? estimatedLoad(status.tracked, status.jobTimeMs) : null);
+  const streams = $derived(evs.filter((e) => e.stream === 'connected').length);
 
-  // A swap (or a new Event) changes the Current Round: re-read the follow status without a reload.
+  // Any Event's swap, add, remove or Primary change: re-read the status without a reload.
   // A derived string, not the ids read in the effect: every Snapshot is a new object and would re-run it (and
-  // refresh() resets the Tracking form).
-  const primary = $derived(snap?.events.find((e) => e.primary));
-  const roundKey = $derived(`${primary?.tourId}/${primary?.round?.roundId}`);
+  // refresh() resets the forms).
+  const eventsKey = $derived(
+    (snap?.events ?? []).map((e) => `${e.tourId}/${e.round?.roundId ?? ''}/${e.primary}`).join(),
+  );
   $effect(() => {
-    void roundKey;
+    void eventsKey;
     if (authed) untrack(() => run('status', async () => void (await refresh())));
   });
   // Side menu (chips on a phone): scrolls to a section; the hash stays #/admin.
   const SECTIONS = [
     ['status', 'Status'],
-    ['event', 'Event'],
-    ['tracking', 'Tracking & job time'],
+    ['events', 'Events'],
+    ['jobtime', 'Job time'],
     ['engine', 'Engine'],
   ] as const;
   let section = $state<string>('status');
@@ -165,12 +182,6 @@
     section = id;
     document.getElementById(`admin-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
-  const ago = (ms: number) =>
-    `${new Date(ms).toLocaleTimeString()} · ${Math.max(0, Math.round((now - ms) / 1000))} s ago`;
-  const when = (ms: number) => {
-    const left = countdown(ms, now);
-    return `${new Date(ms).toLocaleString()}${left === 'starting' ? '' : ` · in ${left}`}`;
-  };
 </script>
 
 <main class="admin">
@@ -191,7 +202,7 @@
         </svg>
       </span>
       <h1>Admin</h1>
-      <p class="muted">Log in to manage the Event, tracking and engine.</p>
+      <p class="muted">Log in to manage the Events, tracking and engine.</p>
       <label class="field">
         <span>Password</span>
         <input type="password" bind:value={password} autocomplete="current-password" required />
@@ -216,41 +227,25 @@
           <div class="head">
             <h1>Status</h1>
             <span class="fill"></span>
-            {#if status?.follow.polledAt != null}<span class="muted small">
-                Last Event poll {ago(status.follow.polledAt)}
-              </span>{/if}
           </div>
           <div class="grid">
             <article>
-              <h2>Event</h2>
-              {#if status?.event}<a class="big" href={status.event.link}>{status.event.name}</a>{:else}<p class="big">
-                  –
-                </p>{/if}
-              <p>
-                Current Round <b>{status?.round?.name ?? '–'}</b>
-                {#if status?.round}· {tracked} Tracked {tracked === 1 ? 'board' : 'boards'}{/if}
+              <h2>Events</h2>
+              <p class="big">
+                {evs.length}
+                {evs.length === 1 ? 'Event' : 'Events'} · {status?.tracked ?? 0} Tracked
+                {status?.tracked === 1 ? 'board' : 'boards'}
               </p>
+              <p class={{ warn: load !== null && load >= 0.9 }}>
+                Estimated load <b>{load === null ? '–' : `≈ ${Math.round(load * 100)}%`}</b>
+              </p>
+              <p class="muted small">estimate: one move per Board every ~3 min</p>
             </article>
-            {#if status?.event}
-              {@const { next, swapAt, error } = status.follow}
-              <article>
-                <h2>Next Round</h2>
-                {#if next}
-                  <p class="big">{next.name}</p>
-                  <p>Starts {next.startsAt === null ? 'when Lichess reports it' : when(next.startsAt)}</p>
-                  <p>Swap <b>{swapAt === null ? 'when Lichess reports it live' : when(swapAt)}</b></p>
-                {:else}
-                  <p class="big">– (last Round)</p>
-                {/if}
-                {#if error}<p class="error">{error}</p>{/if}
-              </article>
-            {/if}
             <article>
               <h2>Connections</h2>
               <p class="dotrow">
-                <i class={status?.stream === 'connected' ? 'ok' : status?.stream === 'reconnecting' ? 'warn' : ''}
-                ></i>Lichess stream
-                <b>{status?.stream ?? '–'}</b>
+                <i class={streams === evs.length && evs.length ? 'ok' : streams ? 'warn' : ''}></i>Lichess
+                <b>{streams} of {evs.length} {evs.length === 1 ? 'stream' : 'streams'} connected</b>
               </p>
               <p class="dotrow">
                 <i class={store.connected ? 'ok' : 'warn'}></i>Server
@@ -262,8 +257,28 @@
           {#if errors.status}<p class="error">{errors.status}</p>{/if}
         </section>
 
-        <section id="admin-event" class="card">
-          <h2 class="title">Event</h2>
+        <section id="admin-events" class="card">
+          <h2 class="title">Events</h2>
+          <div class="evlist">
+            {#each evs as ev (ev.event.tourId)}
+              {@const t = ev.event.tourId}
+              {#if t in topN && t in checked}
+                <AdminEvent
+                  {ev}
+                  {busy}
+                  {now}
+                  bind:topN={topN[t]}
+                  bind:checked={checked[t]}
+                  onTopN={() => saveTopN(t)}
+                  onTracked={() => saveTracked(t)}
+                  onPrimary={() => makePrimary(t)}
+                  onRemove={() => remove(t)}
+                />
+              {/if}
+            {:else}
+              <p class="muted">No Events yet. Add one below.</p>
+            {/each}
+          </div>
           <form class="inline" onsubmit={(e) => (e.preventDefault(), register())}>
             <label class="field grow">
               <span>Event link</span>
@@ -276,75 +291,29 @@
                 min="1"
                 max="64"
                 step="1"
-                placeholder={String(status?.nextTopN ?? '')}
+                placeholder={String(defaultTopN(evs.length + 1))}
                 bind:value={addTopN}
               />
             </label>
-            <button class="primary" disabled={busy}>Register Event</button>
+            <button class="primary" disabled={busy}>Add Event</button>
           </form>
-          {#if errors.event}<p class="error">{errors.event}</p>{/if}
-          <div class="danger">
-            <div>
-              <b>Clear Event</b>
-              <p class="muted small">Stops polling the Event and stops the engine.</p>
-            </div>
-            <button class="dangerBtn" disabled={busy || !status?.event} onclick={clear}>Clear Event</button>
-          </div>
+          {#if errors.events}<p class="error">{errors.events}</p>{/if}
         </section>
 
         {#if status}
-          <section id="admin-tracking" class="card">
-            <h2 class="title">Tracking &amp; job time</h2>
-            <div class="pair">
-              <form
-                class="inline"
-                onsubmit={(e) => (
-                  e.preventDefault(),
-                  status?.event && control(`/event/${status.event.tourId}/topn`, { n: Number(topN) })
-                )}
-              >
-                <label class="field">
-                  <span>Tracked boards in the next Round (top N)</span>
-                  <input type="number" min="1" max="64" step="1" required bind:value={topN} />
-                </label>
-                <button disabled={busy}>Save</button>
-              </form>
-              <form class="inline" onsubmit={(e) => (e.preventDefault(), setJobTime())}>
-                <label class="field">
-                  <span>Job time · now <b>{formatJobTime(status.jobTimeMs)}</b></span>
-                  <input type="number" min="0.1" step="0.1" placeholder="Seconds" bind:value={jobSeconds} />
-                </label>
-                <button disabled={busy}>Set</button>
-                <button type="button" disabled={busy} onclick={() => control('/jobtime', { ms: null })}>Unset</button>
-              </form>
-            </div>
-            {#if status.round}
-              <form
-                onsubmit={(e) => (
-                  e.preventDefault(),
-                  status?.event && control(`/event/${status.event.tourId}/tracked`, { boardIds: checked })
-                )}
-              >
-                <p class="label">Tracked boards in this Round</p>
-                <div class="boards">
-                  {#each status.round.boards as b (b.id)}
-                    <label class="check">
-                      <input type="checkbox" value={b.id} bind:group={checked} />
-                      <span class="n">{b.board}</span>
-                      <span class="names">{b.white.name} – {b.black.name}</span>
-                      <span class="muted">{formatResult(b.result)}</span>
-                    </label>
-                  {/each}
-                </div>
-                <div class="actions">
-                  <button disabled={busy}>Save tracked boards</button>
-                  <small class="muted">Applies to this Round only</small>
-                </div>
-              </form>
-            {:else}
-              <p class="muted">No Current Round</p>
-            {/if}
-            {#if errors.tracking}<p class="error">{errors.tracking}</p>{/if}
+          <section id="admin-jobtime" class="card">
+            <h2 class="title">Job time</h2>
+            <form class="inline" onsubmit={(e) => (e.preventDefault(), setJobTime())}>
+              <label class="field">
+                <span>Job time · now <b>{formatJobTime(status.jobTimeMs)}</b></span>
+                <input type="number" min="0.1" step="0.1" placeholder="Seconds" bind:value={jobSeconds} />
+              </label>
+              <button disabled={busy}>Set</button>
+              <button type="button" disabled={busy} onclick={() => control('jobtime', 'PUT', '/jobtime', { ms: null })}>
+                Unset
+              </button>
+            </form>
+            {#if errors.jobtime}<p class="error">{errors.jobtime}</p>{/if}
           </section>
         {/if}
 
@@ -517,11 +486,6 @@
     border-color: var(--accent);
     background: var(--accent);
     color: var(--onLight);
-  }
-  .dangerBtn {
-    border-color: var(--blunder);
-    background: none;
-    color: var(--liveText);
   }
   .field {
     display: flex;
@@ -710,25 +674,13 @@
     font-size: 18px;
     font-weight: 700;
   }
-  .danger {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    padding-top: 16px;
-    border-top: 1px solid var(--surface3);
-  }
-  .pair {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 16px 32px;
-  }
-  .boards {
+  .evlist {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-    gap: 4px 16px;
-    margin-top: 8px;
+    grid-template-columns: repeat(auto-fill, minmax(min(380px, 100%), 1fr));
+    gap: 12px;
+  }
+  .warn b {
+    color: var(--warn);
   }
   .check {
     display: flex;
@@ -737,16 +689,6 @@
     min-height: 40px;
     min-width: 0;
     cursor: pointer;
-  }
-  .check .n {
-    font: 600 12px var(--fontMono);
-    color: var(--accent);
-  }
-  .check .names {
-    min-width: 0;
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
   }
   .options {
     display: grid;

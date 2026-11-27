@@ -2,7 +2,7 @@
   import type { DeadJob, EvictedJob, Eviction } from '$shared/queue';
   import type { Snapshot } from '$shared/types';
   import type { AdminStatus } from '$lib/admin-api';
-  import { formatJobTime } from '$shared/admin-form';
+  import { boardIndex, formatJobTime } from '$shared/admin-form';
   import { formatLine } from '$lib/format';
 
   type Props = {
@@ -20,7 +20,12 @@
   ] as const;
   const stateLabel = (s: AdminStatus['copies']['main']['state']) =>
     s === 'up' ? 'Up' : s === 'restarting' ? 'Restarting' : '– (no Round)';
-  const boardNo = (id: string) => status.round?.boards.find((b) => b.id === id)?.board ?? '?';
+  const idx = $derived(boardIndex(status.events));
+  const boardNo = (id: string) => idx.get(id)?.board ?? '?';
+  const several = $derived(status.events.length > 1);
+  const eventName = (tourId: string) => status.events.find((e) => e.event.tourId === tourId)?.event.name ?? tourId;
+  /** Every Event's entries, oldest first. */
+  const dead = $derived(status.events.flatMap((e) => e.dead).sort((a, b) => a.at - b.at));
   const queued = $derived(snap?.queue.current ?? status.queue.current);
   const deferred = $derived(snap?.queue.deferred ?? status.queue.deferred);
   const REASON: Record<Eviction, string> = {
@@ -36,7 +41,7 @@
   /** "21... Nc6": the position's move when the Board is in the Snapshot (Tracked), else the ply. */
   const moveLabel = (d: DeadJob | EvictedJob) => {
     const san = snap?.round?.boards.find((b) => b.id === d.boardId)?.plies[d.ply]?.move?.san;
-    return san ? formatLine(d.ply - 1, [san]) : `ply ${d.ply}`;
+    return san ? ` (${formatLine(d.ply - 1, [san])})` : '';
   };
   const sec = (ms: number) => (ms / 1000).toFixed(1);
   const t = $derived(status.timing);
@@ -53,7 +58,8 @@
   );
 </script>
 
-<!-- Cards in the Admin status grid (the parent lays them out). -->
+<!-- Cards in the Admin status grid (the parent lays them out). Depth and elapsed time come from the stream's Event
+     (the one EventSource): a Job of another Event shows "depth – · – s". -->
 <article>
   <h2>Engine</h2>
   {#each COPIES as [role, label] (role)}
@@ -76,6 +82,7 @@
       <span class="muted">
         {runLabel}
       </span>
+      <span class="muted">{eventName(status.running.tourId)}</span>
     </div>
     {#if progress !== null}
       <div
@@ -101,7 +108,11 @@
   {#if queued.length}
     <ol>
       {#each queued as j (j.boardId + ':' + j.ply)}
-        <li>Board {boardNo(j.boardId)} · ply {j.ply}</li>
+        <li class="job">
+          Board {boardNo(j.boardId)} · ply {j.ply}{#if several}<span class="muted">
+              {' · ' + (idx.get(j.boardId)?.event ?? '')}
+            </span>{/if}
+        </li>
       {/each}
     </ol>
   {/if}
@@ -109,7 +120,11 @@
     <p class="muted">Full search queued (latest position, evicted) for</p>
     <ol>
       {#each deferred as j (j.boardId + ':' + j.ply)}
-        <li>Board {boardNo(j.boardId)} · ply {j.ply}</li>
+        <li class="job">
+          Board {boardNo(j.boardId)} · ply {j.ply}{#if several}<span class="muted">
+              {' · ' + (idx.get(j.boardId)?.event ?? '')}
+            </span>{/if}
+        </li>
       {/each}
     </ol>
   {/if}
@@ -127,15 +142,15 @@
   {/if}
 </article>
 
-<article class:alert={status.dead.length > 0}>
+<article class:alert={dead.length > 0}>
   <h2>Dead-letter queue</h2>
-  {#if status.dead.length}
+  {#if dead.length}
     <ul>
-      {#each status.dead as d (d.boardId + ':' + d.ply)}
+      {#each dead as d (d.boardId + ':' + d.ply)}
         <li>
           <span>
-            <b>Board {d.board}</b> · ply {d.ply} ({moveLabel(d)})<br /><small>
-              since {new Date(d.at).toLocaleTimeString()}
+            <b>Board {d.board}</b> · ply {d.ply}{moveLabel(d)}<br /><small>
+              {eventName(d.tourId)} · since {new Date(d.at).toLocaleTimeString()}
             </small>
           </span>
           <span class="actions">
@@ -157,8 +172,8 @@
       {#each status.evictions as v, i (i)}
         <li>
           <span>
-            <b>Board {v.board}</b> · ply {v.ply} ({moveLabel(v)}) · depth {v.depth ?? '–'}<br /><small>
-              {new Date(v.at).toLocaleTimeString()} · {REASON[v.reason]}
+            <b>Board {v.board}</b> · ply {v.ply}{moveLabel(v)} · depth {v.depth ?? '–'}<br /><small>
+              {eventName(v.tourId)} · {new Date(v.at).toLocaleTimeString()} · {REASON[v.reason]}
             </small>
           </span>
         </li>
@@ -258,6 +273,9 @@
     align-items: center;
     justify-content: space-between;
     gap: 8px;
+  }
+  li.job {
+    display: list-item;
   }
   small {
     color: var(--muted);

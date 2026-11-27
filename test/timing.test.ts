@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { jobTiming, percentile, spread, type JobSample } from '../shared/timing.js';
+import { estimatedLoad, jobTiming, percentile, spread, type JobSample } from '../shared/timing.js';
 
 describe('percentile', () => {
   it('is null for no values and the value for one', () => {
@@ -34,5 +34,14 @@ describe('jobTiming', () => {
 
   it('has no spreads when every Job was Provisional', () => {
     expect(jobTiming([s(1, 3, 'provisional')])).toEqual({ jobs: 0, provisional: 1, ms: null, depth: null });
+  });
+});
+
+describe('estimatedLoad', () => {
+  it('is tracked Boards x job time over one position per Board per 176 s', () => {
+    expect(estimatedLoad(8, 15000)).toBeCloseTo(0.68, 2);
+    expect(estimatedLoad(16, 15000)).toBeCloseTo(1.36, 2);
+    expect(estimatedLoad(0, 15000)).toBe(0);
+    expect(estimatedLoad(8, null)).toBeNull();
   });
 });
