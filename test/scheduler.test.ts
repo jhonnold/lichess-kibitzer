@@ -1108,6 +1108,18 @@ describe('Scheduler Passes', () => {
     expect(sched.passCounts).toEqual([]);
   });
 
+  it('stops a running Job whose Pass is turned off, and does not queue it again', async () => {
+    setup({ topN: 1, passesMs: [5, 5000, null] });
+    await sched.startRound('T1', roundInfo('R1', ['g1']), null);
+    src.push(upd('g1', ['e2e4']));
+    await until(() => searching('g1', 1) && site.snapshot().search?.pass === 1);
+    await sched.setPasses([5, null, null]);
+    await poll(() => sched.running === null);
+    expect(sched.evictions[0]).toMatchObject({ boardId: 'g1', ply: 1, reason: 'upgrade' });
+    expect(evalOf('g1', 1)).toMatchObject({ kind: 'complete', ms: 5 });
+    expect(sched.passCounts).toEqual([]);
+  });
+
   it('runs the top Pass of a finished Event while no other Event is live, and stops it when one goes live', async () => {
     setup2({ topN: 1, passesMs: [5, null, 5000] });
     await startBoth();

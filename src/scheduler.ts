@@ -431,10 +431,12 @@ export class Scheduler {
     this.queue.addBackfill(tourId, b.id, missing, this.now, (i) => passOf(i)!);
   }
 
-  /** The highest Pass a Job may run at now: the top one only while no Tracked Board of any Event is being played. */
+  /** The highest Pass a Job may run at now: the top one only while no Tracked Board of any Event is being played, and
+   *  never one that is off (a running Job of a Pass just turned off is evicted). */
   private get maxPass(): number {
     const live = this.site.events.some((rs) => rs.round?.boards.some((b) => b.tracked && boardState(b) === 'live'));
-    return maxPass(live);
+    const on = this.site.settings.passesMs?.findLastIndex((ms) => ms !== null) ?? 0;
+    return Math.min(maxPass(live), on);
   }
 
   /** After every Queue change: publish it, then evict the running Job if the Queue says so, or start the loop. */
@@ -552,6 +554,7 @@ export class Scheduler {
     if (mr) this.copies.multi.backoff = RESTART_MIN_MS;
     const stop = this.site.event(job.tourId) === rs ? ended : 'drop'; // the Event may be gone: drop the result
     if (stop === 'drop') return void jobs.inc({ ...labels, outcome: 'dropped' });
+    let recorded = false;
     if (stop === 'restart') jobs.inc({ ...labels, outcome: 'interrupted' });
     else {
       if (evicted) evictions.inc({ reason: evicted }); // not before: a halt may override the stop
@@ -561,12 +564,14 @@ export class Scheduler {
       const prev = rs.board(boardId)?.plies[ply]?.eval;
       // An interrupted deepening Job (Pass ≥ 1) is kept, as Complete, only if it got deeper than the eval it replaces.
       const kept = !!e && !!stop && job.pass > 0 && (!prev || e.depth > prev.depth);
+      const reached = prev?.kind === 'complete' ? (prev.ms ?? 0) : 0; // a kept one never lowers the Pass reached
       const record: (T.Eval & { ms: number }) | null =
         e && (!stop || job.pass === 0 || kept)
-          ? { ...e, kind: kept ? 'complete' : kind, ms: stop ? elapsed : run.ms }
+          ? { ...e, kind: kept ? 'complete' : kind, ms: kept ? Math.max(elapsed, reached) : stop ? elapsed : run.ms }
           : null;
       jobs.inc({ ...labels, outcome: record ? 'recorded' : e ? 'discarded' : 'empty' });
       if (record) {
+        recorded = true;
         this.recordJob(job, elapsed, kind, record, run);
         // A short eviction (stale) must not replace a deeper Provisional eval of the same ply; a Complete eval never
         // replaces one that searched longer, unless it is a kept deepening search.
@@ -593,10 +598,9 @@ export class Scheduler {
     }
     // Evicted for another live position: a full search later, from the top of backfill.
     if (stop === 'preempt' && evicted === 'live') this.queue.evict(job, this.now);
-    // Stopped, or a correction bumped the epoch (eval refused): search it again if the ply still exists.
-    else if (stop || run.epoch !== rs.epoch(boardId)) this.queue.requeue(job, this.now);
-    // Done at this Pass: queue the next one, if any.
-    else {
+    // Stopped, a correction bumped the epoch (eval refused), or done at this Pass: queue the ply's next Pass, if any and
+    // if the ply still exists (an empty search is not searched again).
+    else if (stop || run.epoch !== rs.epoch(boardId) || recorded) {
       const pass = nextPass(rs.board(boardId)?.plies[ply]?.eval, ply, this.site.settings.passesMs);
       if (pass !== null) this.queue.requeue({ ...job, pass }, this.now);
     }

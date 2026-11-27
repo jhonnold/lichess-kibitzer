@@ -39,7 +39,10 @@
   let rounds: Record<string, string> = {}; // Current Round each Event's forms were filled from
   let gen = 0; // bumped by refresh(): a poll that started before it is stale and dropped
   let addTopN = $state(''); // the add-Event form: empty = the server's default
-  const passSeconds = $state<[string, string, string]>(['', '', '']);
+  // A cleared number input binds null; the fields start from the saved Passes, so changing one keeps the others.
+  const passSeconds = $state<(string | number | null)[]>(['', '', '']);
+  const passFields = (p: AdminStatus['passesMs']) =>
+    (p ?? [null, null, null]).map((ms) => (ms === null ? '' : String(ms / 1000)));
 
   /** One action at a time; failures show inline in their section. A 401 means the cookie is gone: back to login. */
   async function run(section: Section, action: () => Promise<void>): Promise<void> {
@@ -91,6 +94,7 @@
     const s = await refresh();
     authed = true;
     ({ path, options: config } = s.engine);
+    passFields(s.passesMs).forEach((v, k) => (passSeconds[k] = v));
     copies = { main: { ...s.engine.main }, multi: { ...s.engine.multi } };
     await run('engine', probe); // form prefilled with the current (or default) config
   }
@@ -136,7 +140,7 @@
   const saveTracked = (t: string) =>
     control('events', 'PUT', `/event/${t}/tracked`, { boardIds: $state.snapshot(checked[t]) }, t);
   const setPasses = () => {
-    const ms = passesMs(passSeconds.map(String) as [string, string, string]);
+    const ms = passesMs(passSeconds.map((v) => (v == null ? '' : String(v))) as [string, string, string]);
     if (typeof ms === 'string') errors.passes = ms;
     else control('passes', 'PUT', '/passes', { ms });
   };
