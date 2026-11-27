@@ -1048,18 +1048,18 @@ describe('Scheduler Passes', () => {
     return { state: persisted([]), rounds: new Map([['T1', round]]) };
   };
 
-  it('deepens each position Pass by Pass, the top Pass only once no Board is live', async () => {
+  it('deepens each position Pass by Pass, never to the deep Pass, live or not', async () => {
     setup({ topN: 1, passesMs: [5, 10, 20] });
     await sched.startRound('T1', roundInfo('R1', ['g1']), null);
     src.push(upd('g1', E4));
     await poll(() => [1, 2, 3].every((p) => msOf('g1', p) === 10) && sched.running === null);
     expect(msOf('g1', 0)).toBe(5); // the start position: Pass 0 only
-    expect(sched.passCounts).toEqual([0, 0, 3]); // held back while g1 is live
-    src.push(upd('g1', E4, '1-0'));
-    await poll(() => [1, 2, 3].every((p) => msOf('g1', p) === 20) && sched.running === null);
-    expect(msOf('g1', 0)).toBe(5);
     expect(sched.passCounts).toEqual([]);
-    expect(sched.timing.map((t) => t.jobs)).toEqual([4, 3, 3]);
+    src.push(upd('g1', E4, '1-0')); // nothing is live: the deep Pass is still on demand only
+    await idle();
+    expect([0, 1, 2, 3].map((p) => msOf('g1', p))).toEqual([5, 10, 10, 10]);
+    expect(sched.passCounts).toEqual([]);
+    expect(sched.timing.map((t) => t.jobs)).toEqual([4, 3]);
   });
 
   it('evicts a deepening Job for a new position and drops its result when it is no deeper', async () => {
@@ -1102,9 +1102,8 @@ describe('Scheduler Passes', () => {
     await sched.setPasses([5, 10, null]);
     await poll(() => [1, 2, 3].every((p) => msOf('g1', p) === 10));
     expect(msOf('g1', 0)).toBe(5);
-    await sched.setPasses([5, 20, 5000]); // Pass 2 waits for the Board to finish
-    await poll(() => sched.passCounts[2] === 3 && sched.running === null);
-    await sched.setPasses([5, 20, null]);
+    await sched.setPasses([5, 20, 5000]); // the deep Pass queues nothing
+    await poll(() => [1, 2, 3].every((p) => msOf('g1', p) === 20) && sched.running === null);
     expect(sched.passCounts).toEqual([]);
   });
 
@@ -1118,17 +1117,5 @@ describe('Scheduler Passes', () => {
     expect(sched.evictions[0]).toMatchObject({ boardId: 'g1', ply: 1, reason: 'upgrade' });
     expect(evalOf('g1', 1)).toMatchObject({ kind: 'complete', ms: 5 });
     expect(sched.passCounts).toEqual([]);
-  });
-
-  it('runs the top Pass of a finished Event while no other Event is live, and stops it when one goes live', async () => {
-    setup2({ topN: 1, passesMs: [5, null, 5000] });
-    await startBoth();
-    srcOf.R1.push(upd('a1', ['e2e4'], '1-0'));
-    await until(() => sched.running?.tourId === 'T1' && sched.running.pass === 2);
-    srcOf.S1.push(upd('b1', ['d2d4'])); // Event T2 goes live
-    await until(() => state2.board('b1')!.plies[1].eval?.kind === 'complete');
-    expect(sched.evictions[0]).toMatchObject({ boardId: 'a1', reason: 'upgrade' });
-    await poll(() => sched.running === null);
-    expect(sched.passCounts[2]).toBe(2); // a1 ply 1 waits, and so does b1's
   });
 });

@@ -120,7 +120,7 @@ const noLegalMoves = (b: Readonly<T.Board>): boolean => {
 /**
  * Drives the Current Round: every Board's moves are recorded from the source; Tracked boards get Jobs from the Queue,
  * run one at a time as `go movetime` searches on both copies at once. Each position is searched once per Pass
- * (shared/passes.ts): Pass 0 first, deeper Passes in the free time, the top one only while no Event is live. The main copy decides the Job's outcome; the
+ * (shared/passes.ts): Pass 0 first, Pass 1 in the free time; the deep Pass is never queued automatically. The main copy decides the Job's outcome; the
  * multi copy only adds Lines, and the Queue runs without it while it is down. Public methods are serialised; the search loop and the
  * source/engine handlers run outside that and stay synchronous apart from the single `engine.search` await.
  */
