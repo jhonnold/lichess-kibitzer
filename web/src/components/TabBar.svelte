@@ -4,6 +4,7 @@
   // Phone navigation (<700px); the app bar's tabs and Admin link are hidden there.
   const { links }: { links: NavLink[] } = $props();
   const ICON: Record<Tab, string> = {
+    events: 'M4 6h16M4 12h16M4 18h16',
     board: 'M4 4h16v16H4zM4 12h16M12 4v16',
     round: 'M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z',
     archive: 'M3 5h18v4H3zM5 9v10h14V9M10 13h4',
@@ -43,7 +44,8 @@
     nav {
       display: grid;
       flex: none;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
+      grid-auto-flow: column;
       padding: 4px 4px max(12px, env(safe-area-inset-bottom));
       border-top: 1px solid var(--line);
       background: var(--surface2);

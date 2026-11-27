@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events';
 import * as T from '../shared/types.js';
 import { RoundState, type RoundHost } from './round-state.js';
 import type { DataStore } from './store.js';
+import { boardState } from '../shared/viewer.js';
 
 /** `tourId` is the owning Event; null = site-wide (queue, a search of no Event). */
 export type SiteEvents = {
@@ -108,7 +109,7 @@ export class SiteState extends EventEmitter<SiteEvents> {
         name: rs.event.name,
         primary: rs.event.tourId === primary,
         round: round && { roundId: round.roundId, name: round.name, startsAt: round.startsAt },
-        live: tracked.some((b) => b.plies.length > 1),
+        live: tracked.some((b) => boardState(b) === 'live'),
         tracked: tracked.length,
       };
     });
@@ -193,7 +194,7 @@ export class SiteState extends EventEmitter<SiteEvents> {
       emit: (e, publish = true) => {
         if (!live()) return;
         this.emit('event', id, e);
-        if (publish && e.type !== 'stream-status' && e.type !== 'result') this.#publishEvents();
+        if (publish && e.type !== 'stream-status') this.#publishEvents();
       },
       changed: () => live() && this.#publishEvents(),
       save: () => live() && this.#saveState(),

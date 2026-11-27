@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { NavLink } from '$shared/route';
-  import type { StreamStatus } from '$shared/types';
+  import type { EventSummary, StreamStatus } from '$shared/types';
 
   // here: what is on screen. live: the Current Round (LIVE pill while a Board is being played). archived: an
   // archived Round, shown as a breadcrumb back into the Archive (board: the Board on screen, if any).
@@ -12,11 +12,15 @@
     here: Here;
     stream: StreamStatus | null;
     connected: boolean;
+    events: EventSummary[];
+    current: string | null; // the stream's Event
+    switchTo: (tourId: string) => string;
+    showSwitch: boolean; // more than one Event, not on the Events page
   };
-  const { links, here, stream, connected }: Props = $props();
-  const tabs = $derived(links.filter((l) => l.tab !== 'admin'));
+  const { links, here, stream, connected, events, current, switchTo, showSwitch }: Props = $props();
+  const tabs = $derived(links.filter((l) => l.tab !== 'admin' && l.tab !== 'events'));
   const admin = $derived(links.find((l) => l.tab === 'admin')!);
-  const home = $derived(links.find((l) => l.tab === 'board')!.href);
+  const home = $derived((links.find((l) => l.tab === 'events') ?? links.find((l) => l.tab === 'board')!).href);
 </script>
 
 {#snippet chevron()}
@@ -25,7 +29,7 @@
   </svg>
 {/snippet}
 
-<header>
+<header class:multi={showSwitch}>
   <a class="logo" href={home}>
     <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true">
       <rect x="1" y="1" width="20" height="20" rx="5" fill="none" stroke="currentColor" stroke-width="1.6" />
@@ -49,7 +53,15 @@
     </nav>
   {:else if here.event}
     <div class="where">
-      <span class="event">{here.event}</span>
+      {#if showSwitch}
+        <select class="switch" aria-label="Event" onchange={(e) => (location.hash = switchTo(e.currentTarget.value))}>
+          {#each events as e (e.tourId)}
+            <option value={e.tourId} selected={e.tourId === current}>{e.name}</option>
+          {/each}
+        </select>
+      {:else}
+        <span class="event">{here.event}</span>
+      {/if}
       {#if here.round}{@render chevron()}<span class="round">{here.round}</span>{/if}
       {#if here.live}<span class="live"><span></span>LIVE</span>{/if}
     </div>
@@ -149,6 +161,18 @@
   a.round:hover {
     color: var(--text);
   }
+  .switch {
+    min-width: 120px;
+    max-width: 240px;
+    padding: 3px 6px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    border: 1px solid var(--line);
+    border-radius: var(--radiusS);
+    background: var(--surface2);
+    color: var(--text);
+    font: inherit;
+  }
   .round {
     font-weight: 600;
   }
@@ -247,6 +271,12 @@
   .admin:hover {
     color: var(--text);
   }
+  /* Tablet with the switcher: make room by dropping the status labels (the dots stay). */
+  @media (max-width: 1099px) {
+    header.multi .dots .label {
+      display: none;
+    }
+  }
   /* Tablet: no Event name. Phone: the tab bar at the bottom takes over the sections. */
   @media (max-width: 1099px) {
     .event,
@@ -260,6 +290,7 @@
       padding: 0 12px;
     }
     .logo span,
+    .switch,
     .tabs,
     .admin,
     .dots .label {

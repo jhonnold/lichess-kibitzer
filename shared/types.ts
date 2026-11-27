@@ -132,7 +132,7 @@ export interface EventSummary {
   name: string;
   primary: boolean;
   round: { roundId: string; name: string; startsAt: number | null } | null; // Current Round
-  live: boolean; // a Tracked Board of the Current Round has a move; false = upcoming, or no Round
+  live: boolean; // a Tracked Board of the Current Round is being played (boardState 'live'); false = upcoming, over, or no Round
   tracked: number; // Tracked boards of the Current Round
 }
 

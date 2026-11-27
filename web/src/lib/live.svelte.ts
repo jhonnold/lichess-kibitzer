@@ -1,5 +1,5 @@
 import { applyEvent, eventsUrl } from '$shared/live';
-import type { Snapshot, SseEvent } from '$shared/types';
+import type { EventSummary, Snapshot, SseEvent } from '$shared/types';
 
 const RETRY_MS = 5_000;
 
@@ -22,6 +22,8 @@ export class LiveStore implements SnapSource {
   skew = $state(0);
   /** The Event `snap` belongs to (null = the Primary); undefined before the first connect. */
   tour = $state<string | null | undefined>(undefined);
+  /** Every registered Event: site-wide, so it survives an Event switch (connect() keeps it). */
+  events = $state.raw<EventSummary[]>([]);
 
   /**
    * Opens the stream of an Event (null = the Primary) and drops the previous Event's state; returns the cleanup.
@@ -46,6 +48,8 @@ export class LiveStore implements SnapSource {
         const e = JSON.parse(m.data) as SseEvent;
         if (e.type === 'snapshot' && e.now !== undefined) this.skew = Date.now() - e.now;
         this.snap = applyEvent(this.snap, e);
+        if (e.type === 'snapshot') this.events = e.snapshot.events;
+        else if (e.type === 'events') this.events = e.events;
       };
       es.onerror = () => {
         if (closed || es !== current) return;
