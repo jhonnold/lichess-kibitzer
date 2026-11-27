@@ -24,7 +24,7 @@ describe('dataStore', () => {
     version: 2,
     settings: { event: null, engine: null, jobTimeMs: 5000, topN: 8 },
     current: { tourId: 'T', roundId: 'R' },
-    dead: [{ boardId: 'G', board: 1, ply: 3, at: 7 }],
+    dead: [{ tourId: 'T1', boardId: 'G', board: 1, ply: 3, at: 7 }],
   };
   const round = (roundId: string): Round => ({
     tourId: 'T',
