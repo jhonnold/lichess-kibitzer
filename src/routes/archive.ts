@@ -1,17 +1,17 @@
 import { Router, type Response } from 'express';
 import { archiveIndex, isLichessId } from '../../shared/archive.js';
 import { archiveReads } from '../metrics.js';
-import type { RoundState } from '../round-state.js';
+import type { SiteState } from '../site-state.js';
 import type { DataStore } from '../store.js';
 
 export interface ArchiveDeps {
   store: Pick<DataStore, 'listRounds' | 'loadRound'>;
-  state: Pick<RoundState, 'round'>;
+  state: Pick<SiteState, 'currents'>;
 }
 
 const notFound = (res: Response) => res.status(404).json({ error: 'not found' });
 
-/** Public, read-only: the Archive = every stored Round except the Current Round (still changing). */
+/** Public, read-only: the Archive = every stored Round except the Current Round of each Event (still changing). */
 export function archiveRouter({ store, state }: ArchiveDeps): Router {
   const router = Router();
   const fail = (res: Response, err: unknown) => {
@@ -21,8 +21,7 @@ export function archiveRouter({ store, state }: ArchiveDeps): Router {
   };
   router.get('/api/archive', async (_req, res) => {
     try {
-      const { round } = state;
-      const events = archiveIndex(await store.listRounds(), round && { tourId: round.tourId, roundId: round.roundId });
+      const events = archiveIndex(await store.listRounds(), state.currents);
       archiveReads.inc({ outcome: 'ok' });
       res.set('Cache-Control', 'no-cache').json(events);
     } catch (err) {
@@ -31,8 +30,11 @@ export function archiveRouter({ store, state }: ArchiveDeps): Router {
   });
   router.get('/api/archive/:tourId/:roundId', async (req, res) => {
     const { tourId, roundId } = req.params; // decoded by Express: `..%2f` arrives as `../`
-    const cur = state.round;
-    if (!isLichessId(tourId) || !isLichessId(roundId) || (cur?.tourId === tourId && cur.roundId === roundId)) {
+    if (
+      !isLichessId(tourId) ||
+      !isLichessId(roundId) ||
+      state.currents.some((c) => c.tourId === tourId && c.roundId === roundId)
+    ) {
       notFound(res);
       return;
     }

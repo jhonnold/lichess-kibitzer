@@ -50,10 +50,10 @@ describe('archiveIndex', () => {
   });
 
   it('drops the Current Round and groups the rest by Event', () => {
-    const out = archiveIndex([m('T', 'R1', 'Round 1', 1), m('T', 'R2', 'Round 2', 2), m('T', 'R3', 'Round 3', 3)], {
-      tourId: 'T',
-      roundId: 'R3',
-    });
+    const out = archiveIndex(
+      [m('T', 'R1', 'Round 1', 1), m('T', 'R2', 'Round 2', 2), m('T', 'R3', 'Round 3', 3)],
+      [{ tourId: 'T', roundId: 'R3' }],
+    );
     expect(out).toEqual([
       {
         tourId: 'T',
@@ -69,7 +69,7 @@ describe('archiveIndex', () => {
   it('orders Rounds by start (null last), then numerically by name', () => {
     const [e] = archiveIndex(
       [m('T', 'a', 'Round 10', 5), m('T', 'b', 'Round 2', 5), m('T', 'c', 'X', null), m('T', 'd', 'Y', 1)],
-      null,
+      [],
     );
     expect(e.rounds.map((r) => r.roundId)).toEqual(['d', 'b', 'a', 'c']);
   });
@@ -82,7 +82,7 @@ describe('archiveIndex', () => {
         m('B', 'b2', 'R', 30, 'New'),
         m('C', 'c1', 'R', null, ''),
       ],
-      null,
+      [],
     );
     expect(out.map((e) => [e.tourId, e.name])).toEqual([
       ['B', 'New'],
@@ -92,7 +92,21 @@ describe('archiveIndex', () => {
   });
 
   it('omits an Event whose only Round is current', () => {
-    expect(archiveIndex([m('T', 'R', 'Round 1', 1)], { tourId: 'T', roundId: 'R' })).toEqual([]);
+    expect(archiveIndex([m('T', 'R', 'Round 1', 1)], [{ tourId: 'T', roundId: 'R' }])).toEqual([]);
+  });
+
+  it('drops every current Round of several Events', () => {
+    const out = archiveIndex(
+      [m('A', 'a1', 'R', 1), m('A', 'a2', 'R', 2), m('B', 'b1', 'R', 3), m('B', 'b2', 'R', 4)],
+      [
+        { tourId: 'A', roundId: 'a2' },
+        { tourId: 'B', roundId: 'b2' },
+      ],
+    );
+    expect(out.map((e) => [e.tourId, e.rounds.map((r) => r.roundId)])).toEqual([
+      ['B', ['b1']],
+      ['A', ['a1']],
+    ]);
   });
 });
 

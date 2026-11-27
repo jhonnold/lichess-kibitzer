@@ -52,7 +52,7 @@ Gate before commit: `npm run lint && npm run check && npm test && npm run build`
 | UCI engine | `src/engine/` (parser, Engine), `test/fixtures/fake-uci.mjs` |
 | Lichess API | `src/lichess/api.ts` |
 | Lichess stream | `src/lichess/stream.ts` |
-| Site state, persistence, wire types | `src/round-state.ts`, `src/store.ts`, `shared/types.ts` |
+| Site state (settings, Primary, one RoundState per Event), persistence, wire types | `src/site-state.ts`, `src/round-state.ts`, `src/store.ts`, `shared/types.ts` |
 | Prometheus metrics (`GET /api/admin/metrics`, basic auth; list in `docs/deploy.md`) | `src/metrics.ts`, HTTP middleware in `src/app.ts`, build sha `scripts/rev.mjs` |
 | Admin status timing (Job duration spread) and panel | `shared/timing.ts`, `web/src/components/StatusPanel.svelte` |
 | Opening name (PGN tags, explorer fallback) | `src/opening.ts`, `src/lichess/api.ts` (`fetchOpening`) |

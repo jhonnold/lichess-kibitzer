@@ -5,7 +5,7 @@ import { createApp } from '../../src/app.js';
 import { probeEngine, type Engine } from '../../src/engine/engine.js';
 import type { FollowStatus } from '../../src/follower.js';
 import { LichessError, type RoundInfo } from '../../src/lichess/api.js';
-import { RoundState } from '../../src/round-state.js';
+import { SiteState } from '../../src/site-state.js';
 import type { EngineState } from '../../src/scheduler.js';
 import type { JobTiming } from '../../shared/timing.js';
 import { DEFAULT_JOB_TIME_MS, type EngineRole } from '../../shared/types.js';
@@ -27,7 +27,7 @@ const roundInfo = (id: string): RoundInfo => ({
 const defaultEngine = engineConfig('berserk');
 
 function setup(adminPassword = 'pw') {
-  const state = new RoundState({
+  const state = new SiteState({
     load: async () => null,
     save: async () => {},
     loadRound: async () => null,
@@ -50,12 +50,12 @@ function setup(adminPassword = 'pw') {
   const status: FollowStatus = { next: null, swapAt: null, polledAt: null, error: null };
   const follower = {
     status,
-    register: vi.fn(async (link: string) => {
+    register: vi.fn(async (link: string, topN = 8) => {
       if (link === 'busy') throw new LichessError(429, 'rate limited');
       if (link !== 'ok') throw new Error('Not a URL');
-      state.setEvent({ tourId: 't', name: 'Event', link });
+      state.addEvent({ tourId: 't', name: 'Event', link }, topN);
     }),
-    clear: vi.fn(async () => state.setEvent(null)),
+    clear: vi.fn(async () => void state.removeEvent(state.primary!)),
   };
   const app = createApp({
     store: { listRounds: async () => [], loadRound: async () => null },
@@ -112,7 +112,7 @@ describe('admin auth', () => {
     }
     for (const fn of [...Object.values(scheduler), follower.register, follower.clear])
       if (vi.isMockFunction(fn)) expect(fn).not.toHaveBeenCalled();
-    expect([state.settings.topN, state.settings.event, state.round]).toEqual([8, null, null]);
+    expect([state.primaryState, state.events]).toEqual([null, []]);
   });
 });
 
@@ -180,16 +180,35 @@ describe('admin routes', () => {
     expect(await post({ link: 'busy' })).toMatchObject({ status: 429, body: { error: 'rate limited' } });
     expect(await post({ link: 'nope' })).toMatchObject({ status: 400, body: { error: 'Not a URL' } });
     expect((await post({ link: 'ok' })).status).toBe(204);
-    expect(follower.register.mock.calls.at(-1)).toEqual(['ok']);
-    expect(state.settings.event).toEqual({ tourId: 't', name: 'Event', link: 'ok' });
+    expect(follower.register.mock.calls.at(-1)).toEqual(['ok', undefined]);
+    expect(state.primaryState?.event).toEqual({ tourId: 't', name: 'Event', link: 'ok' });
+  });
+
+  it('POST /event passes topN; 400 for topN 0/65/1.5', async () => {
+    const { agent, follower } = setup();
+    await login(agent);
+    const post = (body: object) => agent.post('/api/admin/event').send(body);
+    for (const topN of [0, 65, 1.5, '3'] as const) expect((await post({ link: 'ok', topN })).status).toBe(400);
+    expect(follower.register).not.toHaveBeenCalled();
+    expect((await post({ link: 'ok', topN: 3 })).status).toBe(204);
+    expect(follower.register.mock.calls).toEqual([['ok', 3]]);
+  });
+
+  it('PUT /topn without an Event → 409', async () => {
+    const { agent } = setup();
+    await login(agent);
+    const res = await agent.put('/api/admin/topn').send({ n: 3 });
+    expect([res.status, res.body]).toEqual([409, { error: 'no Event' }]);
   });
 
   it('validates N, job time and the tracked set', async () => {
     const { agent, state, scheduler } = setup();
     await login(agent);
     for (const n of [0, 2.5, '3', 65]) expect((await agent.put('/api/admin/topn').send({ n })).status).toBe(400);
+    expect((await agent.put('/api/admin/topn').send({ n: 3 })).status).toBe(409); // no Event
+    state.addEvent({ tourId: 't', name: 'Event', link: 'ok' }, 8);
     expect((await agent.put('/api/admin/topn').send({ n: 3 })).status).toBe(204);
-    expect(state.settings.topN).toBe(3);
+    expect(state.primaryState?.topN).toBe(3);
     for (const ms of [-1, 0, 'x', undefined, 1e300]) {
       expect((await agent.put('/api/admin/jobtime').send({ ms })).status).toBe(400);
     }
@@ -198,7 +217,7 @@ describe('admin routes', () => {
     expect(scheduler.setJobTime.mock.calls).toEqual([[50], [null]]);
     const tracked = (boardIds: unknown) => agent.put('/api/admin/tracked').send({ boardIds });
     expect((await tracked(['a'])).status).toBe(409); // no Current Round
-    state.startRound(roundInfo('r1'), 1000);
+    state.primaryState!.startRound(roundInfo('r1'), 1000);
     expect((await tracked([1])).status).toBe(400);
     expect((await tracked(['b', 'zz'])).status).toBe(400); // not a Board of the Current Round
     expect((await tracked(['b'])).status).toBe(204);
@@ -256,8 +275,8 @@ describe('admin routes', () => {
       follow: status,
     };
     expect((await agent.get('/api/admin/status')).body).toEqual(idle);
-    await agent.put('/api/admin/topn').send({ n: 2 });
-    state.startRound(roundInfo('r1'), 1000);
+    state.addEvent({ tourId: 't', name: 'Event', link: 'ok' }, 2);
+    state.primaryState!.startRound(roundInfo('r1'), 1000);
     const { round } = (await agent.get('/api/admin/status')).body;
     expect(round.boards.map((b: { id: string; tracked: boolean }) => [b.id, b.tracked])).toEqual([
       ['a', true],
@@ -267,6 +286,6 @@ describe('admin routes', () => {
     expect(round).toMatchObject({ tourId: 't', roundId: 'r1', name: 'Round 1' });
     expect((await agent.post('/api/admin/clear')).status).toBe(204);
     expect(follower.clear).toHaveBeenCalledTimes(1);
-    expect([state.settings.event, state.round]).toEqual([null, null]);
+    expect([state.primaryState, state.events]).toEqual([null, []]);
   });
 });

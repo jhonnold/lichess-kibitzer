@@ -1,11 +1,17 @@
-import { EventEmitter } from 'node:events';
 import * as T from '../shared/types.js';
 import type { RoundInfo } from './lichess/api.js';
 import type { DataStore } from './store.js';
 
-type Events = { event: [T.SseEvent] };
+/** What a RoundState needs from its SiteState: the only emitter, the state file, the shared epoch counter and the
+ *  site-wide search/queue. After the Event is removed, emit and save do nothing. */
+export interface RoundHost {
+  emit(e: T.SseEvent): void; // tagged with this Event
+  save(): void; // state.json of every Event
+  nextEpoch(): number;
+  search(): T.SearchInfo | null; // the running Job's search if that Job is this Event's, else null
+  queue(): T.QueueView; // the global Queue
+}
 
-const EMPTY_QUEUE: T.QueueView = { current: [], backfill: 0, deferred: [] };
 const newBoard = (b: RoundInfo['boards'][number], i: number, tracked: boolean): T.Board => ({
   id: b.id,
   board: i + 1,
@@ -17,65 +23,38 @@ const newBoard = (b: RoundInfo['boards'][number], i: number, tracked: boolean): 
   clocks: { white: b.whiteClockMs ?? null, black: b.blackClockMs ?? null },
   plies: [{ move: null, at: null, eval: null }],
 });
-const DEFAULT_SETTINGS: T.Settings = {
-  event: null,
-  engine: null,
-  jobTimeMs: T.DEFAULT_JOB_TIME_MS,
-  topN: T.DEFAULT_TOP_N,
-};
-
-/** The Event this single-Event state runs: the Primary's entry, else the first. */
-const currentEntry = (s: T.PersistedState): T.PersistedEvent | undefined =>
-  s.events.find((e) => e.event.tourId === s.primary) ?? s.events[0];
-
-/** In-memory site state: settings, the Current Round (every Board) and transient search/queue/stream. Events are
- *  emitted for Tracked boards only; persisted parts are saved on every change. */
-export class RoundState extends EventEmitter<Events> {
-  #settings: T.Settings;
+/** One Event's in-memory state: its Current Round (every Board), Dead-letter queue and stream status. Events go to
+ *  the host for Tracked boards only; persisted parts are saved (via the host) on every change. */
+export class RoundState {
+  readonly event: T.RegisteredEvent;
+  #topN: number;
   #round: T.Round | null;
   #dead: T.DeadJob[];
-  #search: T.SearchInfo | null = null;
-  #queue: T.QueueView = EMPTY_QUEUE;
   #stream: T.StreamStatus | null = null;
-  #seq = 0; // epochs are never reused across Rounds
   #epochs = new Map<string, number>();
   #synced = new Set<string>(); // Boards synced since construction/startRound
   #unknown = false; // the source sent a game the Round lacks (a Board added on Lichess after the Round was fetched)
-  #stateSaving: Promise<void> = Promise.resolve();
   #roundSaving: Promise<void> = Promise.resolve();
 
   constructor(
-    private readonly store: DataStore,
-    init: { state: T.PersistedState | null; round: T.Round | null } = { state: null, round: null },
+    private readonly store: Pick<DataStore, 'saveRound'>,
+    private readonly host: RoundHost,
+    init: { entry: T.PersistedEvent; round: T.Round | null },
   ) {
-    super();
-    this.setMaxListeners(0); // one listener per SSE client; default cap 10 would warn
-    const entry = init.state && currentEntry(init.state);
-    this.#settings = init.state
-      ? { ...init.state.settings, event: entry?.event ?? null, topN: entry?.topN ?? DEFAULT_SETTINGS.topN }
-      : DEFAULT_SETTINGS;
-    this.#dead = entry?.dead ?? [];
+    this.event = init.entry.event;
+    this.#topN = init.entry.topN;
+    this.#dead = init.entry.dead;
     this.#round = init.round;
-    for (const b of init.round?.boards ?? []) this.#epochs.set(b.id, ++this.#seq);
+    for (const b of init.round?.boards ?? []) this.#epochs.set(b.id, host.nextEpoch());
   }
 
-  /** load() then loadRound(current) of the Primary Event (null if there is none). */
-  static async load(store: DataStore): Promise<RoundState> {
-    const state = await store.load();
-    const current = state && currentEntry(state)?.current;
-    const round = current ? await store.loadRound(current.tourId, current.roundId) : null;
-    return new RoundState(store, { state, round });
-  }
-
-  get settings(): Readonly<T.Settings> {
-    return this.#settings;
+  /** Default Tracked boards for the next Round. */
+  get topN(): number {
+    return this.#topN;
   }
   /** Every Board, untracked too. Don't mutate. */
   get round(): Readonly<T.Round> | null {
     return this.#round;
-  }
-  get queue(): Readonly<T.QueueView> {
-    return this.#queue;
   }
   get stream(): T.StreamStatus | null {
     return this.#stream;
@@ -91,60 +70,66 @@ export class RoundState extends EventEmitter<Events> {
     return this.#epochs.get(boardId) ?? -1;
   }
 
+  /** The state file's entry for this Event. */
+  persisted(): T.PersistedEvent {
+    const current = this.#round && { tourId: this.#round.tourId, roundId: this.#round.roundId };
+    return { event: this.event, topN: this.#topN, current, dead: this.#dead };
+  }
+
   snapshot(): T.Snapshot {
     const round = this.#round && { ...this.#round, boards: this.#round.boards.filter((b) => b.tracked) };
     return structuredClone({
-      event: this.#settings.event,
+      event: this.event,
       round,
-      search: this.#search,
-      queue: this.#queue,
+      search: this.host.search(),
+      queue: this.host.queue(),
       stream: this.#stream,
     });
   }
 
-  /** Resolves when every state + round save requested so far has been written (tests, shutdown). */
-  async saved(): Promise<void> {
-    await Promise.all([this.#stateSaving, this.#roundSaving]);
+  /** Resolves when every Round save requested so far has been written (tests, shutdown). */
+  saved(): Promise<void> {
+    return this.#roundSaving;
   }
 
-  /** Replace the Current Round with fresh Boards, the first settings.topN tracked. */
+  /** Replace the Current Round with fresh Boards, the first topN tracked. */
   startRound(r: RoundInfo, startsAt: number | null): void {
     this.#round = {
       tourId: r.tourId,
       roundId: r.id,
       name: r.name,
-      eventName: this.#settings.event?.name ?? '',
+      eventName: this.event.name,
       startsAt,
-      boards: r.boards.map((b, i) => newBoard(b, i, i < this.#settings.topN)),
+      boards: r.boards.map((b, i) => newBoard(b, i, i < this.#topN)),
     };
-    this.#epochs = new Map(this.#round.boards.map((b) => [b.id, ++this.#seq]));
+    this.#epochs = new Map(this.#round.boards.map((b) => [b.id, this.host.nextEpoch()]));
     this.#synced.clear();
     this.#unknown = false;
     this.#dead = [];
     this.resetTransient();
-    this.emit('event', { type: 'snapshot', snapshot: this.snapshot() });
+    this.host.emit({ type: 'snapshot', snapshot: this.snapshot() });
     this.saveRound();
-    this.saveState();
+    this.host.save();
   }
 
   /** Make a Round loaded from its file current again (evals and tracked set kept): new epochs, #synced cleared,
    *  dead [], transient reset, 'snapshot' event, saveState (no saveRound: nothing changed). */
   openRound(round: T.Round): void {
     this.#round = round;
-    this.#epochs = new Map(round.boards.map((b) => [b.id, ++this.#seq]));
+    this.#epochs = new Map(round.boards.map((b) => [b.id, this.host.nextEpoch()]));
     this.#synced.clear();
     this.#unknown = false;
     this.#dead = [];
     this.resetTransient();
-    this.emit('event', { type: 'snapshot', snapshot: this.snapshot() });
-    this.saveState();
+    this.host.emit({ type: 'snapshot', snapshot: this.snapshot() });
+    this.host.save();
   }
 
   /** Lichess moved the start. No-op when equal or no Round; else saveRound + 'snapshot' event. */
   setStartsAt(startsAt: number | null): void {
     if (!this.#round || this.#round.startsAt === startsAt) return;
     this.#round.startsAt = startsAt;
-    this.emit('event', { type: 'snapshot', snapshot: this.snapshot() });
+    this.host.emit({ type: 'snapshot', snapshot: this.snapshot() });
     this.saveRound();
   }
 
@@ -161,7 +146,7 @@ export class RoundState extends EventEmitter<Events> {
     const add = boards.filter((b) => !r.boards.some((x) => x.id === b.id));
     for (const b of add) {
       r.boards.push(newBoard(b, r.boards.length, false));
-      this.#epochs.set(b.id, ++this.#seq);
+      this.#epochs.set(b.id, this.host.nextEpoch());
     }
     if (add.length) this.saveRound();
   }
@@ -175,7 +160,7 @@ export class RoundState extends EventEmitter<Events> {
       if (b.tracked === want.has(b.id)) continue;
       b.tracked = !b.tracked;
       changed = true;
-      this.emit('event', b.tracked ? { type: 'board', board: structuredClone(b) } : { type: 'untrack', boardId: b.id });
+      this.host.emit(b.tracked ? { type: 'board', board: structuredClone(b) } : { type: 'untrack', boardId: b.id });
     }
     if (changed) this.saveRound();
   }
@@ -200,11 +185,11 @@ export class RoundState extends EventEmitter<Events> {
     b.plies.length = kept + 1;
     for (const move of moves.slice(kept)) b.plies.push({ move, at, eval: null });
     if (retracted) {
-      this.#epochs.set(boardId, ++this.#seq);
-      if (b.tracked) this.emit('event', { type: 'board', board: structuredClone(b) });
+      this.#epochs.set(boardId, this.host.nextEpoch());
+      if (b.tracked) this.host.emit({ type: 'board', board: structuredClone(b) });
     } else if (b.tracked) {
       for (let i = kept + 1; i < b.plies.length; i++) {
-        this.emit('event', { type: 'ply', boardId, index: i, ply: b.plies[i] });
+        this.host.emit({ type: 'ply', boardId, index: i, ply: b.plies[i] });
       }
     }
     this.saveRound();
@@ -216,7 +201,7 @@ export class RoundState extends EventEmitter<Events> {
     const b = this.board(boardId) as T.Board | undefined;
     if (!b || !opening || b.opening === opening) return;
     b.opening = opening;
-    if (b.tracked) this.emit('event', { type: 'board', board: structuredClone(b) });
+    if (b.tracked) this.host.emit({ type: 'board', board: structuredClone(b) });
     this.saveRound();
   }
 
@@ -228,7 +213,7 @@ export class RoundState extends EventEmitter<Events> {
     }
     if (e.kind === 'provisional' && b.plies[index].eval?.kind === 'complete') return false;
     const ply = (b.plies[index] = { ...b.plies[index], eval: e }); // replace, never mutate: emitted objects stay valid
-    if (b.tracked) this.emit('event', { type: 'ply', boardId, index, ply });
+    if (b.tracked) this.host.emit({ type: 'ply', boardId, index, ply });
     this.saveRound();
     return true;
   }
@@ -238,76 +223,30 @@ export class RoundState extends EventEmitter<Events> {
     const b = this.board(boardId) as T.Board | undefined;
     if (!b || b.result === result) return;
     b.result = result;
-    if (b.tracked) this.emit('event', { type: 'result', boardId, result });
+    if (b.tracked) this.host.emit({ type: 'result', boardId, result });
     this.saveRound();
-  }
-
-  setSearch(search: T.SearchInfo | null): void {
-    this.#search = search;
-    this.emit('event', { type: 'search', search });
-  }
-
-  setQueue(queue: T.QueueView): void {
-    this.#queue = queue;
-    this.emit('event', { type: 'queue', queue });
   }
 
   setStream(status: T.StreamStatus | null): void {
     if (status === this.#stream) return;
     this.#stream = status;
-    this.emit('event', { type: 'stream-status', status });
-  }
-
-  /** Register (or clear with null) the Event. Drops the Current Round (its file stays: Archive), the Dead-letter queue
-   *  and transient state. */
-  setEvent(event: T.RegisteredEvent | null): void {
-    this.#settings = { ...this.#settings, event };
-    this.#round = null;
-    this.#epochs.clear();
-    this.#synced.clear();
-    this.#unknown = false;
-    this.#dead = [];
-    this.resetTransient();
-    this.emit('event', { type: 'snapshot', snapshot: this.snapshot() });
-    this.saveState();
-  }
-
-  setEngine(engine: T.EngineConfig): void {
-    this.#settings = { ...this.#settings, engine };
-    this.saveState();
-  }
-
-  setJobTime(jobTimeMs: number | null): void {
-    this.#settings = { ...this.#settings, jobTimeMs };
-    this.saveState();
+    this.host.emit({ type: 'stream-status', status });
   }
 
   /** The next Round's default only; the current tracked set is unchanged. */
   setTopN(topN: number): void {
-    this.#settings = { ...this.#settings, topN };
-    this.saveState();
+    this.#topN = topN;
+    this.host.save();
   }
 
   /** The Queue is the source of truth; this persists it. */
   setDead(dead: T.DeadJob[]): void {
     this.#dead = dead;
-    this.saveState();
+    this.host.save();
   }
 
   private resetTransient(): void {
-    this.#search = null;
-    this.#queue = EMPTY_QUEUE;
     this.#stream = null;
-  }
-
-  private saveState(): void {
-    const current = this.#round && { tourId: this.#round.tourId, roundId: this.#round.roundId };
-    const { event, topN, ...site } = this.#settings;
-    // An Idle site writes no entry, so its topN is not persisted: the in-memory value is kept until restart.
-    const events = event ? [{ event, topN, current, dead: this.#dead }] : [];
-    this.#stateSaving = this.store
-      .save({ version: 3, settings: site, primary: event?.tourId ?? null, events })
-      .catch((err: unknown) => console.error('round-state: save failed', err));
   }
 
   private saveRound(): void {

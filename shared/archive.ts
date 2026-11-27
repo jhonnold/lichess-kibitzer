@@ -48,17 +48,17 @@ const byStart = (a: number | null, b: number | null) => (a === b ? 0 : a === nul
 const collate = new Intl.Collator('en', { numeric: true });
 
 /**
- * Group by tourId, dropping `current`. Rounds: startsAt ascending (null last), then name (numeric collation).
+ * Group by tourId, dropping every Event's Current Round in `currents`. Rounds: startsAt ascending (null last), then name (numeric collation).
  * Events: by their latest Round's startsAt, newest first (null last). Event name = the last Round's non-empty
  * eventName, else tourId. An Event left with no Rounds is omitted.
  */
 export function archiveIndex(
   metas: readonly RoundMeta[],
-  current: { tourId: string; roundId: string } | null,
+  currents: readonly { tourId: string; roundId: string }[],
 ): ArchiveEvent[] {
   const tours = new Map<string, RoundMeta[]>();
   for (const m of metas) {
-    if (m.tourId === current?.tourId && m.roundId === current.roundId) continue;
+    if (currents.some((c) => c.tourId === m.tourId && c.roundId === m.roundId)) continue;
     tours.set(m.tourId, [...(tours.get(m.tourId) ?? []), m]);
   }
   const events = [...tours].map(([tourId, ms]) => {

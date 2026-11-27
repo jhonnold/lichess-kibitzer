@@ -3,7 +3,7 @@ import { basename } from 'node:path';
 import { collectDefaultMetrics, Counter, Gauge, Histogram, Registry } from 'prom-client';
 import type { EngineConfig, EngineRole } from '../shared/types.js';
 import type { Follower } from './follower.js';
-import type { RoundState } from './round-state.js';
+import type { SiteState } from './site-state.js';
 import type { Scheduler } from './scheduler.js';
 
 /** Own registry (not prom-client's global one), served by GET /api/admin/metrics. */
@@ -12,7 +12,7 @@ collectDefaultMetrics({ register, prefix: 'kibitzer_' });
 
 /** What the scrape-time metrics read. Set by createApp; before that they report nothing. */
 export interface MetricSources {
-  state: Pick<RoundState, 'queue' | 'dead' | 'settings'>;
+  state: Pick<SiteState, 'settings' | 'queue' | 'events'>;
   scheduler: Pick<Scheduler, 'copyState' | 'copyRestarts'>;
   follower: Pick<Follower, 'status'>;
   defaultEngine: EngineConfig;
@@ -67,7 +67,7 @@ export const deadLetterSize = new Gauge({
   registers: [register],
   collect() {
     this.reset();
-    if (src) this.set(src.state.dead.length);
+    if (src) this.set(src.state.events.reduce((n, rs) => n + rs.dead.length, 0));
   },
 });
 /** `role`: the engine copy, main (MultiPV 1) or multi (MultiPV N). */
@@ -209,11 +209,11 @@ export const followerLastSuccess = new Gauge({
 });
 export const following = new Gauge({
   name: 'kibitzer_following',
-  help: '1 while an Event is registered',
+  help: 'Events registered (0 or 1 for now)',
   registers: [register],
   collect() {
     this.reset();
-    if (src) this.set(src.state.settings.event ? 1 : 0);
+    if (src) this.set(src.state.events.length);
   },
 });
 /** One per file write, not per save request: writes are coalesced (src/store.ts jsonWriter). */

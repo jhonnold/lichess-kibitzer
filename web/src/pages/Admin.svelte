@@ -54,7 +54,8 @@
   /** GET /status into `status`; the Tracking form follows the server's values. */
   async function refresh(): Promise<AdminStatus> {
     const s = (status = await adminApi<AdminStatus>('GET', '/status'));
-    [topN, checked] = [String(s.topN), s.round?.boards.filter((b) => b.tracked).map((b) => b.id) ?? []];
+    if (s.event) topN = String(s.topN); // Idle: keep the admin's value for the next add
+    checked = s.round?.boards.filter((b) => b.tracked).map((b) => b.id) ?? [];
     return s;
   }
   /** The Status section's own 2 s poll: not refresh() (that would reset the Tracking form) and not run() (busy). */
@@ -88,7 +89,10 @@
 
   const register = () =>
     run('event', async () => {
-      await adminApi('POST', '/event', { link });
+      await adminApi('POST', '/event', {
+        link,
+        ...(Number.isInteger(Number(topN)) && Number(topN) > 0 && { topN: Number(topN) }),
+      });
       await refresh();
     });
 
@@ -278,7 +282,10 @@
           <section id="admin-tracking" class="card">
             <h2 class="title">Tracking &amp; job time</h2>
             <div class="pair">
-              <form class="inline" onsubmit={(e) => (e.preventDefault(), control('/topn', { n: Number(topN) }))}>
+              <form
+                class="inline"
+                onsubmit={(e) => (e.preventDefault(), status?.event && control('/topn', { n: Number(topN) }))}
+              >
                 <label class="field">
                   <span>Tracked boards in the next Round (top N)</span>
                   <input type="number" min="1" max="64" step="1" required bind:value={topN} />

@@ -5,7 +5,7 @@ import type { EngineConfig } from '../shared/types.js';
 import { createApp, type AppDeps } from './app.js';
 import { Follower, type FollowerOpts, type LichessClient } from './follower.js';
 import { fetchEvent, fetchOpening, fetchRound } from './lichess/api.js';
-import { RoundState } from './round-state.js';
+import { SiteState } from './site-state.js';
 import { Scheduler, type SchedulerOpts } from './scheduler.js';
 import type { DataStore } from './store.js';
 
@@ -23,7 +23,7 @@ export interface ServerOpts {
 export interface Running {
   server: Server;
   port: number;
-  state: RoundState;
+  state: SiteState;
   scheduler: Scheduler;
   follower: Follower;
   shutdown(): Promise<void>;
@@ -33,7 +33,7 @@ export interface Running {
  *  state file throws. */
 export async function startServer(opts: ServerOpts): Promise<Running> {
   const { store, defaultEngine, adminPassword } = opts;
-  const state = await RoundState.load(store);
+  const state = await SiteState.load(store);
   const lichess = opts.lichess ?? { fetchEvent, fetchRound, fetchOpening };
   const scheduler = new Scheduler(state, { fetchOpening: lichess.fetchOpening, ...opts.scheduler, defaultEngine });
   const follower = new Follower(state, scheduler, { ...opts.follow, lichess, store });

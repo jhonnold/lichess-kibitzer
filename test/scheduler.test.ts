@@ -7,7 +7,8 @@ import type * as T from '../shared/types.js';
 import { Engine } from '../src/engine/engine.js';
 import type { RoundInfo } from '../src/lichess/api.js';
 import type { GameUpdate } from '../src/lichess/stream.js';
-import { RoundState } from '../src/round-state.js';
+import type { RoundState } from '../src/round-state.js';
+import { SiteState } from '../src/site-state.js';
 import { MAX_CRASHES, MIN_LIVE_SLICE_MS } from '../shared/queue.js';
 import { RESTART_MIN_MS, Scheduler } from '../src/scheduler.js';
 import { val } from './helpers/metric.js';
@@ -24,13 +25,12 @@ const E4 = ['e2e4', 'e7e5', 'g1f3'];
 const D4 = ['d2d4', 'd7d5', 'c2c4'];
 const FOOLS = ['f2f3', 'e7e5', 'g2g4', 'd8h4'];
 
+const EVENT_T1: T.RegisteredEvent = { tourId: 'T1', name: 'E', link: 'https://lichess.org/broadcast/x/T1' };
 const persisted = (dead: T.DeadJob[]): T.PersistedState => ({
   version: 3,
   settings: { engine: null, jobTimeMs: null },
   primary: 'T1',
-  events: [
-    { event: { tourId: 'T1', name: 'E', link: 'https://lichess.org/broadcast/x/T1' }, topN: 1, current: null, dead },
-  ],
+  events: [{ event: EVENT_T1, topN: 1, current: null, dead }],
 });
 const roundInfo = (id: string, boards: string[]): RoundInfo => ({
   id,
@@ -51,7 +51,12 @@ const upd = (gameId: string, uci: string[], result: T.Result = '*'): GameUpdate 
 });
 
 let dir: string, logFile: string, multiLog: string, t: number;
-let state: RoundState, sched: Scheduler, src: ReplaySource, sources: ReplaySource[], sourceIds: string[];
+let site: SiteState,
+  state: RoundState,
+  sched: Scheduler,
+  src: ReplaySource,
+  sources: ReplaySource[],
+  sourceIds: string[];
 let engineArgs: string[]; // read per launch
 let delays: number[]; // restart delays asked of `after`
 let fire: (() => void)[]; // manual mode: timers waiting to be fired by hand
@@ -66,21 +71,21 @@ function setup(
     launch?: (real: () => Promise<Engine>) => Promise<Engine>; // the main copy
     multiArgs?: string[]; // the multi copy: its own log (multiLog), --offset 5 so its scores differ from main's
     launchMulti?: (real: () => Promise<Engine>) => Promise<Engine>;
-    init?: ConstructorParameters<typeof RoundState>[1];
+    init?: { state: T.PersistedState | null; rounds?: ReadonlyMap<string, T.Round> };
     fetchOpening?: (uci: readonly string[]) => Promise<string | null>;
   } = {},
 ) {
-  state = new RoundState(
+  site = new SiteState(
     { load: async () => null, save: async () => {}, loadRound: async () => null, saveRound: async () => {} },
     opts.init,
   );
-  if (opts.init === undefined) state.setTopN(opts.topN ?? 3);
-  state.setJobTime(opts.jobTimeMs === undefined ? 15 : opts.jobTimeMs);
+  state = site.event('T1') ?? site.addEvent(EVENT_T1, opts.topN ?? 3);
+  site.setJobTime(opts.jobTimeMs === undefined ? 15 : opts.jobTimeMs);
   engineArgs = opts.engineArgs ?? [];
   const real = () => Engine.start(process.execPath, { args: [FAKE, '--log', logFile, '--ply-score', ...engineArgs] });
   const multiArgs = ['--log', multiLog, '--ply-score', '--offset', '5', ...(opts.multiArgs ?? [])];
   const realMulti = () => Engine.start(process.execPath, { args: [FAKE, ...multiArgs] });
-  sched = new Scheduler(state, {
+  sched = new Scheduler(site, {
     defaultEngine: engineConfig('fake', {}, 3),
     launch: (_cfg, role) =>
       role === 'main'
@@ -108,9 +113,9 @@ const positions = () => readLog().filter((l) => l.startsWith('position '));
 const count = (cmd: string) => readLog().filter((l) => l === cmd || l.startsWith(cmd + ' ')).length;
 const evalOf = (id: string, ply: number) => state.board(id)!.plies[ply].eval;
 const complete = (id: string, ply: number) => evalOf(id, ply)?.kind === 'complete';
-const queueView = () => state.snapshot().queue;
+const queueView = () => site.snapshot().queue;
 const searching = (id: string, ply: number) => {
-  const s = state.snapshot().search;
+  const s = site.snapshot().search;
   return s?.boardId === id && s.ply === ply;
 };
 
@@ -121,14 +126,14 @@ function until(pred: () => boolean, ms = 2000): Promise<void> {
     const check = () => {
       if (!pred()) return;
       clearTimeout(timer);
-      state.off('event', check);
+      site.off('event', check);
       resolve();
     };
     const timer = setTimeout(() => {
-      state.off('event', check);
+      site.off('event', check);
       reject(new Error('until: timeout'));
     }, ms);
-    state.on('event', check);
+    site.on('event', check);
   });
 }
 /** For conditions no state event announces (engine up again). */
@@ -275,12 +280,12 @@ describe('Scheduler', () => {
     expect(queueView().backfill).toBe(1); // g1's latest ply, waiting for a full search
     expect(queueView().deferred).toEqual([{ boardId: 'g1', ply: 0 }]);
     expect(sched.evictions).toMatchObject([{ boardId: 'g1', board: 1, ply: 0, reason: 'live', depth: 3 }]);
-    expect(state.snapshot().search?.tier).toBe('current');
+    expect(site.snapshot().search?.tier).toBe('current');
     expect((await val(evictions, { reason: 'live' })) - live0).toBe(1);
     await sched.setJobTime(15);
     await sched.engine!.stop(); // cut short g2's search, started at 5000 ms
     await until(() => searching('g1', 0));
-    expect(state.snapshot().search?.tier).toBe('backfill');
+    expect(site.snapshot().search?.tier).toBe('backfill');
     await until(() => complete('g1', 0));
     expect(queueView().deferred).toEqual([]);
   });
@@ -332,10 +337,10 @@ describe('Scheduler', () => {
     setup({ topN: 1, jobTimeMs: 5000 });
     await sched.startRound(roundInfo('R1', ['g1']), null);
     await until(() => {
-      const s = state.snapshot().search;
+      const s = site.snapshot().search;
       return s?.lines.length === 1 && s.depth === 3 && s.multi?.lines.length === 3 && s.multi.depth === 3;
     });
-    expect(state.snapshot().search).toMatchObject({ depth: 3, multi: { depth: 3, nps: 100000 } });
+    expect(site.snapshot().search).toMatchObject({ depth: 3, multi: { depth: 3, nps: 100000 } });
     await sched.engine!.stop(); // the main copy ends the Job: the multi copy is stopped with it
     await until(() => complete('g1', 0));
     expect(readLog(multiLog)).toContain('stop');
@@ -485,6 +490,22 @@ describe('Scheduler', () => {
     expect(ids.every((id) => id === 'h1' || id === 'h2')).toBe(true);
   });
 
+  it("startRound's snapshot carries no search, stream or Queue of the previous Round", async () => {
+    setup({ topN: 2, jobTimeMs: null });
+    await sched.startRound(roundInfo('R1', ['g1', 'g2']), null);
+    src.status('connected');
+    expect(queueView().current.length).toBeGreaterThan(0);
+    const seen: T.Snapshot[] = [];
+    site.on('event', (_t, e) => e.type === 'snapshot' && seen.push(e.snapshot));
+    await sched.startRound(roundInfo('R2', ['h1', 'h2']), null);
+    expect(seen).toHaveLength(1);
+    expect([seen[0].search, seen[0].stream, seen[0].queue]).toEqual([
+      null,
+      null,
+      { current: [], backfill: 0, deferred: [] },
+    ]);
+  });
+
   it('untracking a Board removes its Jobs', async () => {
     setup({ topN: 2, jobTimeMs: null });
     await sched.startRound(roundInfo('R1', ['g1', 'g2']), null);
@@ -527,7 +548,7 @@ describe('Scheduler', () => {
       plies: [ply(null, ev('complete')), ply('e2e4', ev('provisional')), ply('e7e5', null)],
     };
     const round: T.Round = { tourId: 'T1', roundId: 'R1', name: 'R1', eventName: 'E', startsAt: null, boards: [board] };
-    setup({ jobTimeMs: null, init: { state: persisted([]), round } });
+    setup({ jobTimeMs: null, init: { state: persisted([]), rounds: new Map([['T1', round]]) } });
     await sched.resume();
     expect(sourceIds).toEqual(['R1']);
     expect(queueView()).toEqual({ current: [{ boardId: 'g1', ply: 2 }], backfill: 1, deferred: [] });
@@ -653,7 +674,7 @@ describe('Scheduler', () => {
         boards: [board],
       };
       const dead = [{ tourId: 'T1', boardId: 'g1', board: 1, ply: 1, at: 5 }];
-      setup({ jobTimeMs: null, init: { state: persisted(dead), round } });
+      setup({ jobTimeMs: null, init: { state: persisted(dead), rounds: new Map([['T1', round]]) } });
       await sched.resume();
       expect(queueView()).toEqual({ current: [], backfill: 1, deferred: [] });
       expect(state.dead).toEqual(dead);

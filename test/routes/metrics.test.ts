@@ -4,7 +4,7 @@ import request from 'supertest';
 import { describe, expect, it, vi } from 'vitest';
 import { createApp } from '../../src/app.js';
 import { httpDuration, httpRequests } from '../../src/metrics.js';
-import { RoundState } from '../../src/round-state.js';
+import { SiteState } from '../../src/site-state.js';
 import type { EngineState } from '../../src/scheduler.js';
 import type { EngineRole } from '../../shared/types.js';
 import { val } from '../helpers/metric.js';
@@ -12,7 +12,7 @@ import { sse } from '../helpers/sse.js';
 
 function setup(...pw: [string | undefined] | []) {
   const adminPassword = pw.length ? pw[0] : 'pw';
-  const state = new RoundState({
+  const state = new SiteState({
     load: async () => null,
     save: async () => {},
     loadRound: async () => null,
@@ -116,7 +116,7 @@ describe('GET /api/admin/metrics', () => {
   it('reports the Queue, Dead-letter queue and engine at scrape time', async () => {
     const { app, state, scheduler } = setup();
     state.setQueue({ current: [{ boardId: 'a', ply: 3 }], backfill: 4, deferred: [] });
-    state.setDead([{ boardId: 'a', board: 1, ply: 2, at: 1 }]);
+    state.addEvent({ tourId: 'T', name: 'E', link: 'x' }, 2).setDead([{ boardId: 'a', board: 1, ply: 2, at: 1 }]);
     const body = (await scrape(app, basic('admin:pw'))).text;
     expect(body).toContain('kibitzer_queue_depth{tier="current"} 1');
     expect(body).toContain('kibitzer_queue_depth{tier="backfill"} 4');
@@ -145,7 +145,7 @@ describe('GET /api/admin/metrics', () => {
     let body = (await scrape(app, basic('admin:pw'))).text;
     expect(body).toContain('kibitzer_following 0');
     expect(body).toContain('kibitzer_follower_last_success_timestamp_seconds 0');
-    state.setEvent({ tourId: 'T', name: 'E', link: 'https://lichess.org/broadcast/x/T' });
+    state.addEvent({ tourId: 'T', name: 'E', link: 'https://lichess.org/broadcast/x/T' }, 2);
     follower.status.polledAt = 1_700_000_000_000;
     body = (await scrape(app, basic('admin:pw'))).text;
     expect(body).toContain('kibitzer_following 1');

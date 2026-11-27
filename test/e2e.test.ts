@@ -77,11 +77,11 @@ async function admin(method: 'POST' | 'PUT', path: string, body: object = {}) {
   });
   expect(res.status).toBe(204);
 }
-const track = () => admin('POST', '/event', { link: 'x' });
+const track = () => admin('POST', '/event', { link: 'x', topN: 2 });
 const replay = () => {
   for (let i = 0; i < 7; i++) src.next();
 };
-const tracked = (): Board[] => srv.state.round!.boards.filter((b) => b.tracked);
+const tracked = (): Board[] => srv.state.primaryState!.round!.boards.filter((b) => b.tracked);
 /** Every ply but a final position nobody can move from has a Complete eval. */
 const allComplete = (b: Board) => b.plies.slice(0, -1).every((p) => p.eval?.kind === 'complete');
 const drained = () => {
@@ -120,7 +120,6 @@ describe('live analysis over SSE', () => {
       expect(srv.state.snapshot()).toMatchObject({ event: null, round: null });
       expect([srv.scheduler.engine, existsSync(logFile)]).toEqual([null, false]); // Idle: no engine process ever spawned
 
-      await admin('PUT', '/topn', { n: 2 });
       await admin('PUT', '/jobtime', { ms: null }); // job time unset: the Queue idles
       await track();
       await vi.waitFor(() => expect(c.events.at(-1)?.type).toBe('queue'), WAIT);
@@ -146,7 +145,7 @@ describe('live analysis over SSE', () => {
           .filter((p) => lastTwo.includes(p)),
       ).toEqual([]); // each latest searched once, first
       expect(readLog(multiLog).filter((l) => l.startsWith('position startpos moves '))).toEqual(positions()); // paired
-      const qb = srv.state.board('qbPxmdQ2')!;
+      const qb = srv.state.primaryState!.board('qbPxmdQ2')!;
       expect([qb.plies.length > 1, qb.tracked, qb.result]).toEqual([true, false, '0-1']); // recorded, not analysed
       expect((await freshSnapshot()).round?.boards.some((b) => b.id === qb.id)).toBe(false);
       expect(positions()).not.toContain(`position startpos moves ${latest(qb.id)}`);
@@ -196,10 +195,10 @@ describe('live analysis over SSE', () => {
 
       fetchEvent.mockClear();
       srv = await boot();
-      expect([srv.state.round?.roundId, srv.scheduler.engine?.exited]).toEqual([ROUND, false]);
+      expect([srv.state.primaryState?.round?.roundId, srv.scheduler.engine?.exited]).toEqual([ROUND, false]);
       expect(fetchEvent).toHaveBeenCalledTimes(1); // boot resumes following: one poll, no swap
       expect(srv.follower.status.error).toBeNull();
-      const kept = srv.state.round!.boards.flatMap((b) =>
+      const kept = srv.state.primaryState!.round!.boards.flatMap((b) =>
         b.plies.filter((p) => p.eval?.kind === 'complete').map((p) => p.eval),
       );
       expect(kept).toEqual(expect.arrayContaining(before));

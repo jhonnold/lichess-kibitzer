@@ -1,10 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { RoundState } from '../src/round-state.js';
+import { SiteState } from '../src/site-state.js';
 import type { RoundInfo } from '../src/lichess/api.js';
 import type { DataStore } from '../src/store.js';
-import { DEFAULT_JOB_TIME_MS } from '../shared/types.js';
 import type * as T from '../shared/types.js';
-import { engineConfig } from '../shared/engine-config.js';
 
 const mv = (uci: string): T.Move => ({ uci, san: uci, clock: null });
 const ev = (cp: number, kind: T.EvalKind = 'complete'): T.Eval => ({
@@ -46,47 +44,29 @@ function setup(init?: { state: T.PersistedState | null; round: T.Round | null })
     saveRound: async (r) => void rounds.push(structuredClone(r)),
     listRounds: async () => [],
   };
-  const rs = new RoundState(store, init);
+  const site = new SiteState(store, {
+    state: init?.state ?? null,
+    rounds: new Map(init?.round ? [['T1', init.round]] : []),
+  });
+  const rs = site.event('T1') ?? site.addEvent(event, 8);
   const events: T.SseEvent[] = [];
-  rs.on('event', (e) => events.push(e));
-  return { rs, store, states, rounds, events };
+  site.on('event', (_t, e) => events.push(e));
+  return { site, rs, store, states, rounds, events };
 }
 const started = (n = 10) => {
   const s = setup();
-  s.rs.setEvent(event); // an Idle site persists no Round
   s.rs.startRound(info(n), 1234);
   s.events.length = 0;
   return s;
 };
 
 describe('RoundState', () => {
-  it('defaults the job time on a fresh state only: a persisted null stays unset', () => {
-    expect(setup().rs.settings.jobTimeMs).toBe(DEFAULT_JOB_TIME_MS);
-    const state = persisted({ jobTimeMs: null });
-    expect(setup({ state, round: null }).rs.settings.jobTimeMs).toBeNull();
-  });
-
-  it('persists an Idle site as no Events and the Event as the Primary entry', async () => {
-    const { rs, states } = setup();
-    rs.setJobTime(9000);
-    await rs.saved();
-    expect(states.at(-1)).toEqual({
-      version: 3,
-      settings: { engine: null, jobTimeMs: 9000 },
-      primary: null,
-      events: [],
-    });
-    rs.setEvent(event);
-    await rs.saved();
-    expect(states.at(-1)).toMatchObject({ primary: 'T1', events: [{ event, topN: 8, current: null, dead: [] }] });
-  });
-
-  it('starts with defaults and an empty snapshot', () => {
+  it('starts with its topN and an empty Round', () => {
     const { rs } = setup();
-    expect(rs.settings).toEqual({ event: null, engine: null, jobTimeMs: DEFAULT_JOB_TIME_MS, topN: 8 });
+    expect(rs.topN).toBe(8);
     expect(rs.dead).toEqual([]);
     expect(rs.snapshot()).toEqual({
-      event: null,
+      event,
       round: null,
       search: null,
       queue: { current: [], backfill: 0, deferred: [] },
@@ -95,13 +75,11 @@ describe('RoundState', () => {
   });
 
   it('startRound builds fresh Boards, tracks the first topN and resets the rest', async () => {
-    const { rs, events, states, rounds } = setup({
+    const { site, rs, events, states, rounds } = setup({
       state: persisted({}),
       round: null,
     });
     rs.setDead([{ boardId: 'x', board: 1, ply: 1, at: 1 }]);
-    rs.setSearch({ boardId: 'g1', ply: 0, engine: 'E', depth: 1, nps: null, lines: [], startedAt: 1 });
-    rs.setQueue({ current: [{ boardId: 'g1', ply: 0 }], backfill: 2, deferred: [] });
     rs.setStream('connected');
     events.length = 0;
     rs.startRound(info(), 1234);
@@ -115,8 +93,8 @@ describe('RoundState', () => {
     expect(events.map((e) => e.type)).toEqual(['snapshot']);
     const snap = rs.snapshot();
     expect(snap.round?.boards).toHaveLength(8);
-    expect([snap.search, snap.stream, snap.queue]).toEqual([null, null, { current: [], backfill: 0, deferred: [] }]);
-    await rs.saved();
+    expect(snap.stream).toBeNull();
+    await site.saved();
     expect(rounds.at(-1)?.boards).toHaveLength(10);
     expect(states.at(-1)?.events[0]).toMatchObject({ current: { tourId: 'T1', roundId: 'R1' }, dead: [] });
     rs.setTopN(3);
@@ -265,62 +243,52 @@ describe('RoundState', () => {
     expect(rs.syncMoves('nope', [], 1)).toBeNull();
   });
 
-  it('transient setters emit; setStream dedups', () => {
+  it('setStream emits and dedups; startRound resets it', () => {
     const { rs, events } = started();
-    const search: T.SearchInfo = { boardId: 'g1', ply: 0, engine: 'E', depth: 1, nps: null, lines: [], startedAt: 1 };
-    rs.setSearch(search);
-    rs.setQueue({ current: [], backfill: 3, deferred: [] });
     rs.setStream('connected');
     rs.setStream('connected');
-    expect(events.map((e) => e.type)).toEqual(['search', 'queue', 'stream-status']);
-    expect(rs.snapshot()).toMatchObject({ search, queue: { backfill: 3 }, stream: 'connected' });
+    expect(events.map((e) => e.type)).toEqual(['stream-status']);
+    expect(rs.snapshot()).toMatchObject({ stream: 'connected' });
+    rs.startRound(info(), null);
+    expect(rs.stream).toBeNull();
   });
 
-  it('settings mutators persist silently; setEvent drops the Round and transient state', async () => {
-    const { rs, events, states } = started();
-    rs.setEngine(engineConfig('p'));
-    rs.setJobTime(7000);
+  it('setTopN and setDead save the Event entry silently', async () => {
+    const { site, rs, events, states } = started();
     rs.setTopN(2);
+    rs.setDead([{ boardId: 'g1', board: 1, ply: 0, at: 1 }]);
     expect(events).toEqual([]);
-    rs.setStream('connected');
-    events.length = 0;
-    await rs.saved();
-    expect(states.at(-1)?.settings).toMatchObject({ engine: { path: 'p' }, jobTimeMs: 7000 });
-    expect(states.at(-1)?.events[0].topN).toBe(2);
-    expect(rs.snapshot().round?.boards).toHaveLength(8);
-    rs.setEvent(event);
-    expect(events.map((e) => e.type)).toEqual(['snapshot']);
-    expect(rs.round).toBeNull();
-    expect(rs.snapshot()).toMatchObject({ event, round: null, stream: null });
-    await rs.saved();
-    expect(states.at(-1)).toMatchObject({ primary: 'T1', events: [{ event, current: null, dead: [] }] });
+    await site.saved();
+    expect(states.at(-1)?.events[0]).toMatchObject({ topN: 2, dead: [{ boardId: 'g1' }] });
+    expect(rs.persisted()).toMatchObject({ event, topN: 2, current: { tourId: 'T1', roundId: 'R1' } });
   });
 
   it('load restores the tracked set; the first sync after a restore has at null', async () => {
     const a = started();
     a.rs.setTracked(['g10']);
-    await a.rs.saved();
+    await a.site.saved();
     const state = a.states.at(-1)!;
     const round = a.rounds.at(-1)!;
-    const rs = await RoundState.load({
+    const site = await SiteState.load({
       load: async () => state,
       loadRound: async () => round,
       save: async () => {},
       saveRound: async () => {},
+      listRounds: async () => [],
     });
+    const rs = site.event('T1')!;
     expect(rs.snapshot().round?.boards.map((b) => b.id)).toEqual(['g10']);
     expect(rs.epoch('g1')).toBeGreaterThan(0);
     rs.syncMoves('g10', [mv('e2e4')], 99);
     expect(rs.board('g10')?.plies[1].at).toBeNull();
   });
 
-  it('openRound makes a loaded Round current again: evals and tracked kept, new epochs, no Round-file save', () => {
+  it('openRound makes a loaded Round current again: evals and tracked kept, new epochs, no Round-file save', async () => {
     const a = started(3);
     a.rs.setEval('g1', 0, ev(10), a.rs.epoch('g1'));
     a.rs.setTracked(['g3']);
     const file = structuredClone(a.rs.round!) as T.Round;
     const b = setup();
-    b.rs.setEvent(event);
     b.rs.setTopN(2);
     b.rs.startRound(info(2), null); // some other Round is current
     const old = b.rs.epoch('g1');
@@ -335,6 +303,7 @@ describe('RoundState', () => {
     expect(b.rs.dead).toEqual([]);
     expect(b.events.map((e) => e.type)).toEqual(['snapshot']);
     expect(b.rounds).toEqual([]);
+    await b.site.saved();
     expect(b.states.at(-1)!.events[0].current).toEqual({ tourId: 'T1', roundId: 'R1' });
   });
 

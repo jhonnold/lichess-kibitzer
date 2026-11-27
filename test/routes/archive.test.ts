@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import express from 'express';
 import request from 'supertest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { RoundState } from '../../src/round-state.js';
+import { SiteState } from '../../src/site-state.js';
 import type { RoundInfo } from '../../src/lichess/api.js';
 import { archiveRouter } from '../../src/routes/archive.js';
 import { dataStore } from '../../src/store.js';
@@ -46,7 +46,7 @@ const setup = (current: Round | null = round('current1')) => {
     listRounds: vi.fn(async () => [...stored.values()].map(roundMeta)),
     loadRound: vi.fn(async (_t: string, r: string) => stored.get(r) ?? null),
   };
-  const state = { round: current };
+  const state = { currents: current ? [{ tourId: current.tourId, roundId: current.roundId }] : [] };
   return { store, app: express().use(archiveRouter({ store, state })) };
 };
 
@@ -132,9 +132,8 @@ describe('GET /api/archive/:tourId/:roundId', () => {
     });
     const ev: Eval = { score: { cp: 20 }, depth: 12, kind: 'complete', bestmove: 'e7e5', lines: [] };
     const store = dataStore(join(dir, 'state.json'));
-    const state = await RoundState.load(store);
-    state.setEvent({ tourId: 'abcdefgh', name: 'Event', link: 'x' });
-    state.setTopN(2);
+    const site = await SiteState.load(store);
+    const state = site.addEvent({ tourId: 'abcdefgh', name: 'Event', link: 'x' }, 2);
     state.startRound(info('round001'), 5);
     state.syncMoves('game0001', [{ uci: 'e2e4', san: 'e4', clock: 100 }], 10);
     state.setEval('game0001', 1, ev, state.epoch('game0001'));
@@ -142,8 +141,8 @@ describe('GET /api/archive/:tourId/:roundId', () => {
     state.setTracked(['game0001', 'game0002']);
     const last = state.snapshot().round;
     state.startRound(info('round002'), 6);
-    await state.saved();
-    const app = express().use(archiveRouter({ store, state }));
+    await site.saved();
+    const app = express().use(archiveRouter({ store, state: site }));
     const res = await request(app).get('/api/archive/abcdefgh/round001');
     expect(res.body).toEqual(last);
     expect(res.body.boards).toHaveLength(2);

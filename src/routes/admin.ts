@@ -17,7 +17,8 @@ import type { UciOption } from '../engine/uci-parser.js';
 import type { Follower, FollowStatus } from '../follower.js';
 import { LichessError } from '../lichess/api.js';
 import { register } from '../metrics.js';
-import type { RoundState } from '../round-state.js';
+import { DEFAULT_TOP_N } from '../../shared/types.js';
+import type { SiteState } from '../site-state.js';
 import type { EngineState, Scheduler } from '../scheduler.js';
 
 export const COOKIE = 'kibitzer_admin';
@@ -25,7 +26,7 @@ const MAX_AGE_MS = 7 * 24 * 3600_000;
 const MAX_JOB_MS = 3600_000; // keeps `go movetime` a plain integer
 
 export interface AdminDeps {
-  state: RoundState;
+  state: SiteState;
   scheduler: Pick<
     Scheduler,
     | 'engine'
@@ -170,19 +171,22 @@ export function adminRouter(deps: AdminDeps): Router {
   });
   /** Register an Event: from then on the Follower picks the Current Round. */
   r.post('/event', (req, res) => {
-    const link: unknown = req.body?.link;
-    if (typeof link !== 'string' || !link) return void res.status(400).json({ error: 'expected { link }' });
-    follower.register(link).then(() => res.sendStatus(204), fail(res));
+    const { link, topN }: { link?: unknown; topN?: unknown } = req.body ?? {};
+    if (typeof link !== 'string' || !link || (topN !== undefined && !intIn(topN, 1, 64)))
+      return void res.status(400).json({ error: 'expected { link: string, topN?: integer 1-64 }' });
+    follower.register(link, topN as number | undefined).then(() => res.sendStatus(204), fail(res));
   });
   r.post('/clear', (_req, res) => {
     follower.clear().then(() => res.sendStatus(204), fail(res));
   });
-  /** The next Round's default; the Scheduler has no topN. */
+  /** The Primary's next Round default; the Scheduler has no topN. */
   r.put('/topn', (req, res) => {
     const n: unknown = req.body?.n;
     if (!Number.isInteger(n) || (n as number) < 1 || (n as number) > 64)
       return void res.status(400).json({ error: 'expected { n: integer 1-64 }' });
-    state.setTopN(n as number);
+    const rs = state.primaryState;
+    if (!rs) return void res.status(409).json({ error: 'no Event' });
+    rs.setTopN(n as number);
     res.sendStatus(204);
   });
   r.put('/jobtime', (req, res) => {
@@ -195,8 +199,9 @@ export function adminRouter(deps: AdminDeps): Router {
     const ids: unknown = req.body?.boardIds;
     if (!Array.isArray(ids) || !ids.every((x) => typeof x === 'string'))
       return void res.status(400).json({ error: 'expected { boardIds: string[] }' });
-    if (!state.round) return void res.status(409).json({ error: 'no Current Round' });
-    const known = new Set(state.round.boards.map((b) => b.id));
+    const round = state.primaryState?.round;
+    if (!round) return void res.status(409).json({ error: 'no Current Round' });
+    const known = new Set(round.boards.map((b) => b.id));
     if (!ids.every((id) => known.has(id)))
       return void res.status(400).json({ error: 'not a Board of the Current Round' });
     scheduler.setTracked(ids as string[]).then(() => res.sendStatus(204), fail(res));
@@ -216,9 +221,10 @@ export function adminRouter(deps: AdminDeps): Router {
     });
   }
   r.get('/status', (_req, res) => {
-    const round = state.round;
+    const rs = state.primaryState;
+    const round = rs?.round ?? null;
     const body: AdminStatus = {
-      event: state.settings.event,
+      event: rs?.event ?? null,
       round: round && {
         tourId: round.tourId,
         roundId: round.roundId,
@@ -232,7 +238,7 @@ export function adminRouter(deps: AdminDeps): Router {
           tracked,
         })),
       },
-      stream: state.stream,
+      stream: rs?.stream ?? null,
       engine: state.settings.engine ?? defaultEngine,
       engineRunning: scheduler.engine !== null,
       copies: {
@@ -241,10 +247,10 @@ export function adminRouter(deps: AdminDeps): Router {
       },
       timing: scheduler.timing,
       jobTimeMs: state.settings.jobTimeMs,
-      topN: state.settings.topN,
+      topN: rs?.topN ?? DEFAULT_TOP_N,
       running: scheduler.running,
       queue: state.queue,
-      dead: state.dead,
+      dead: rs?.dead ?? [],
       evictions: scheduler.evictions,
       follow: follower.status,
     };

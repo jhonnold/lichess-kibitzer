@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import type { SseEvent } from '../../shared/types.js';
 import { viewers } from '../metrics.js';
-import type { RoundState } from '../round-state.js';
+import type { SiteState } from '../site-state.js';
 
 export interface SseOpts {
   throttleMs?: number; // min gap between `search` events per client; default 250 (~4/s)
@@ -10,10 +10,12 @@ export interface SseOpts {
 
 /**
  * GET /api/events: one unnamed `data: <SseEvent JSON>` frame per event (clients use `onmessage`).
- * A `snapshot` first, then every RoundState event. `search` is coalesced per client (latest wins); a pending
+ * A `snapshot` of the Primary first, then the events of the Event the client is bound to (the Primary, rebound with a
+ * fresh `snapshot` whenever it changes) and the site-wide ones. A `search` of another Event reaches the client as a
+ * single null. `search` is coalesced per client (latest wins); a pending
  * `search` is flushed before any other event, so order is kept and the last `search` (even `null`) is never dropped.
  */
-export function eventsRouter(state: RoundState, opts: SseOpts = {}): Router {
+export function eventsRouter(site: SiteState, opts: SseOpts = {}): Router {
   const { throttleMs = 250, heartbeatMs = 25_000 } = opts;
   return Router().get('/api/events', (_req, res) => {
     res.set({
@@ -36,17 +38,39 @@ export function eventsRouter(state: RoundState, opts: SseOpts = {}): Router {
       send(pending);
       pending = null;
     };
-    const onEvent = (e: SseEvent) => {
-      if (e.type !== 'search') return (flush(), send(e));
-      pending = e;
-      timer ??= setTimeout(flush, Math.max(0, last + throttleMs - Date.now()));
+    let bound = site.primary;
+    let searching = false; // the last search queued or sent to this client is not null
+    const onEvent = (t: string | null, e: SseEvent) => {
+      if (e.type === 'search') {
+        if (t !== bound) {
+          if (!searching) return;
+          e = { type: 'search', search: null };
+        }
+        searching = e.search !== null;
+        pending = e;
+        timer ??= setTimeout(flush, Math.max(0, last + throttleMs - Date.now()));
+        return;
+      }
+      if (t !== null && t !== bound) return;
+      flush();
+      send(e);
+    };
+    const onPrimary = (p: string | null) => {
+      if (p === bound) return;
+      bound = p;
+      flush();
+      searching = site.search !== null && site.snapshot(p).search !== null;
+      send({ type: 'snapshot', snapshot: site.snapshot(p), now: Date.now() });
     };
     const heartbeat = setInterval(() => res.write(': hb\n\n'), heartbeatMs);
-    state.on('event', onEvent);
-    send({ type: 'snapshot', snapshot: state.snapshot(), now: Date.now() });
+    site.on('event', onEvent);
+    site.on('primary', onPrimary);
+    send({ type: 'snapshot', snapshot: site.snapshot(bound), now: Date.now() });
+    searching = site.snapshot(bound).search !== null;
     res.on('close', () => {
       viewers.dec();
-      state.off('event', onEvent);
+      site.off('event', onEvent);
+      site.off('primary', onPrimary);
       clearInterval(heartbeat);
       clearTimeout(timer);
     });
