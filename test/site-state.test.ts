@@ -149,7 +149,10 @@ describe('SiteState', () => {
     log.length = 0;
     expect(site.removeEvent('nope')).toBe(false);
     expect(site.removeEvent('T1')).toBe(true);
-    expect(log).toMatchObject([['T1', { type: 'snapshot', snapshot: { event: null, round: null, search: null } }]]);
+    expect(log).toMatchObject([
+      ['T1', { type: 'snapshot', snapshot: { event: null, round: null, search: null } }],
+      [null, { type: 'events' }],
+    ]);
     expect(site.primary).toBe('T2');
     expect(primaries.at(-1)).toBe('T2');
     await site.saved();
@@ -206,7 +209,14 @@ describe('SiteState', () => {
     expect(site.snapshot('T2')).toMatchObject({ event: ev(2), search, queue });
     expect(site.snapshot('T1')).toMatchObject({ event: ev(1), search: null, queue });
     expect(site.snapshot()).toMatchObject({ event: ev(1), search: null }); // the Primary
-    expect(site.snapshot('nope')).toEqual({ event: null, round: null, search: null, queue, stream: null });
+    expect(site.snapshot('nope')).toEqual({
+      events: site.summaries(),
+      event: null,
+      round: null,
+      search: null,
+      queue,
+      stream: null,
+    });
     expect(site.snapshot(null).event).toBeNull();
     site.setSearch(null, null);
     expect(site.snapshot('T2').search).toBeNull();
@@ -224,6 +234,7 @@ describe('SiteState', () => {
     site.setSearch(null, 'T2');
     expect(log.map(([t, e]) => [t, e.type])).toEqual([
       ['T1', 'snapshot'],
+      [null, 'events'],
       ['T2', 'stream-status'],
       [null, 'queue'],
       ['T2', 'search'],
@@ -239,6 +250,70 @@ describe('SiteState', () => {
     await site.saved();
     expect(log).toEqual([]);
     expect(states.length).toBe(writes);
+  });
+
+  it("summaries: primary flag, Current Round name and startsAt, live after a Tracked Board's first move, tracked count", () => {
+    const { site } = setup();
+    const a = site.addEvent(ev(1), 2);
+    site.addEvent(ev(2), 5);
+    expect(site.summaries()).toEqual([
+      { tourId: 'T1', name: 'Event 1', primary: true, round: null, live: false, tracked: 0 },
+      { tourId: 'T2', name: 'Event 2', primary: false, round: null, live: false, tracked: 0 },
+    ]);
+    a.startRound(info('T1', 4), 99);
+    expect(site.summaries()[0]).toEqual({
+      tourId: 'T1',
+      name: 'Event 1',
+      primary: true,
+      round: { roundId: 'R1', name: 'Round 1', startsAt: 99 },
+      live: false,
+      tracked: 2,
+    });
+    a.syncMoves('g4', [{ uci: 'e2e4', san: 'e4', clock: null }], 1); // untracked: not live
+    expect(site.summaries()[0].live).toBe(false);
+    a.syncMoves('g1', [{ uci: 'e2e4', san: 'e4', clock: null }], 1);
+    expect(site.summaries()[0].live).toBe(true);
+    site.setPrimary('T2');
+    expect(site.summaries().map((s) => s.primary)).toEqual([false, true]);
+  });
+
+  it("emits 'events' on add/remove/primary/startRound/setTracked/first move, never twice for the same summaries", () => {
+    const { site, log } = setup();
+    const count = () => log.filter(([, e]) => e.type === 'events').length;
+    const a = site.addEvent(ev(1), 2);
+    expect(count()).toBe(1);
+    site.addEvent(ev(2), 2);
+    expect(count()).toBe(2);
+    expect(log.at(-1)).toEqual([null, { type: 'events', events: site.summaries() }]);
+    site.setPrimary('T2');
+    expect(count()).toBe(3);
+    site.setPrimary('T2'); // unchanged
+    a.startRound(info('T1', 4), null);
+    expect(count()).toBe(4);
+    a.setTracked(['g1', 'g2', 'g3']);
+    expect(count()).toBe(5);
+    a.setTracked(['g1', 'g2', 'g3']); // unchanged
+    const m = [{ uci: 'e2e4', san: 'e4', clock: null }];
+    a.syncMoves('g1', m, 1);
+    expect(count()).toBe(6);
+    a.syncMoves('g1', [...m, { uci: 'e7e5', san: 'e5', clock: null }], 2); // still live: same summaries
+    a.setStream('connected'); // not a summary event
+    a.setResult('g1', '1-0');
+    expect(count()).toBe(6);
+    site.removeEvent('T1');
+    expect(count()).toBe(7);
+  });
+
+  it("setTracked publishes one 'events' frame with the final summary", () => {
+    const { site, log } = setup();
+    const a = site.addEvent(ev(1), 2);
+    a.startRound(info('T1', 4), null);
+    a.syncMoves('g3', [{ uci: 'e2e4', san: 'e4', clock: null }], 1);
+    log.length = 0;
+    a.setTracked(['g3', 'g4']); // {g1,g2} -> {g3,g4}
+    const frames = log.filter(([, e]) => e.type === 'events');
+    expect(frames).toEqual([[null, { type: 'events', events: site.summaries() }]]);
+    expect(site.summaries()[0]).toMatchObject({ tracked: 2, live: true });
   });
 
   it("setPrimary: unknown → false; emits 'primary' and saves", async () => {

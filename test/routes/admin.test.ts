@@ -54,9 +54,10 @@ function setup(adminPassword = 'pw') {
     add: vi.fn(async (link: string, topN = 8) => {
       if (link === 'busy') throw new LichessError(429, 'rate limited');
       if (link !== 'ok') throw new Error('Not a URL');
-      return state.addEvent({ tourId: 't', name: 'Event', link }, topN).event;
+      return state.addEvent({ tourId: link === 'ok' ? 't' : 'u', name: 'Event', link }, topN).event;
     }),
     remove: vi.fn(async (tourId: string) => state.removeEvent(tourId)),
+    setPrimary: vi.fn((tourId: string) => state.setPrimary(tourId)),
   };
   const app = createApp({
     store: { listRounds: async () => [], loadRound: async () => null },
@@ -95,15 +96,16 @@ describe('admin auth', () => {
 
   it('refuses every route but login without the cookie, changing nothing', async () => {
     const { app, state, scheduler, site } = setup();
-    const calls: ['get' | 'post' | 'put', string, object?][] = [
+    const calls: ['get' | 'post' | 'put' | 'delete', string, object?][] = [
       ['post', '/engine/probe', { path: FAKE }],
       ['post', '/engine/button', { name: 'Clear Hash' }],
       ['put', '/config', { path: 'x', options: {} }],
       ['post', '/event', { link: 'ok' }],
-      ['post', '/clear'],
-      ['put', '/topn', { n: 3 }],
+      ['delete', '/event/t'],
+      ['put', '/event/t/topn', { n: 3 }],
+      ['put', '/event/t/tracked', { boardIds: [] }],
+      ['put', '/primary', { tourId: 't' }],
       ['put', '/jobtime', { ms: 50 }],
-      ['put', '/tracked', { boardIds: [] }],
       ['post', '/dead/requeue', { boardId: 'a', ply: 1 }],
       ['post', '/dead/discard', { boardId: 'a', ply: 1 }],
     ];
@@ -111,7 +113,7 @@ describe('admin auth', () => {
       const res = await request(app)[method](`/api/admin${path}`).send(body);
       expect([path, res.status]).toEqual([path, 401]);
     }
-    for (const fn of [...Object.values(scheduler), site.add, site.remove])
+    for (const fn of [...Object.values(scheduler), ...Object.values(site)])
       if (vi.isMockFunction(fn)) expect(fn).not.toHaveBeenCalled();
     expect([state.primaryState, state.events]).toEqual([null, []]);
   });
@@ -195,34 +197,80 @@ describe('admin routes', () => {
     expect(site.add.mock.calls).toEqual([['ok', 3]]);
   });
 
-  it('PUT /topn without an Event → 409', async () => {
-    const { agent } = setup();
+  it('DELETE /event/:t removes through the Site: 204, 404 for an unknown Event', async () => {
+    const { agent, state, site } = setup();
     await login(agent);
-    const res = await agent.put('/api/admin/topn').send({ n: 3 });
-    expect([res.status, res.body]).toEqual([409, { error: 'no Event' }]);
+    state.addEvent({ tourId: 't', name: 'Event', link: 'ok' }, 2);
+    state.addEvent({ tourId: 'u', name: 'U', link: 'u' }, 2);
+    expect((await agent.delete('/api/admin/event/nope')).status).toBe(404);
+    expect((await agent.delete('/api/admin/event/t')).status).toBe(204);
+    expect(site.remove.mock.calls).toEqual([['nope'], ['t']]);
+    expect([state.primary, state.events.map((e) => e.event.tourId)]).toEqual(['u', ['u']]);
   });
 
-  it('validates N, job time and the tracked set', async () => {
+  it('PUT /event/:t/topn: 204 for that Event only, 400 for a bad n, 404 for an unknown Event', async () => {
+    const { agent, state } = setup();
+    await login(agent);
+    state.addEvent({ tourId: 't', name: 'Event', link: 'ok' }, 8);
+    state.addEvent({ tourId: 'u', name: 'U', link: 'u' }, 8);
+    const put = (t: string, n: unknown) => agent.put(`/api/admin/event/${t}/topn`).send({ n });
+    for (const n of [0, 2.5, '3', 65, undefined]) expect((await put('u', n)).status).toBe(400);
+    expect((await put('nope', 3)).status).toBe(404);
+    expect((await put('u', 3)).status).toBe(204);
+    expect(state.events.map((e) => e.topN)).toEqual([8, 3]);
+  });
+
+  it('PUT /event/:t/tracked: 404 unknown Event, 409 no Current Round, 400 bad ids; reaches that Event', async () => {
     const { agent, state, scheduler } = setup();
     await login(agent);
-    for (const n of [0, 2.5, '3', 65]) expect((await agent.put('/api/admin/topn').send({ n })).status).toBe(400);
-    expect((await agent.put('/api/admin/topn').send({ n: 3 })).status).toBe(409); // no Event
-    state.addEvent({ tourId: 't', name: 'Event', link: 'ok' }, 8);
-    expect((await agent.put('/api/admin/topn').send({ n: 3 })).status).toBe(204);
-    expect(state.primaryState?.topN).toBe(3);
+    const t = state.addEvent({ tourId: 't', name: 'Event', link: 'ok' }, 2);
+    state.addEvent({ tourId: 'u', name: 'U', link: 'u' }, 2);
+    const tracked = (tourId: string, boardIds: unknown) =>
+      agent.put(`/api/admin/event/${tourId}/tracked`).send({ boardIds });
+    expect((await tracked('nope', ['a'])).status).toBe(404);
+    expect((await tracked('t', ['a'])).status).toBe(409); // no Current Round
+    t.startRound(roundInfo('r1'), 1000);
+    expect((await tracked('u', ['a'])).status).toBe(409); // u has none: t's Boards are not its
+    expect((await tracked('t', [1])).status).toBe(400);
+    expect((await tracked('t', 'a')).status).toBe(400);
+    expect((await tracked('t', ['b', 'zz'])).status).toBe(400); // not a Board of the Current Round
+    expect(scheduler.setTracked).not.toHaveBeenCalled();
+    expect((await tracked('t', ['b'])).status).toBe(204);
+    expect(scheduler.setTracked.mock.calls).toEqual([['t', ['b']]]);
+  });
+
+  it('PUT /primary: 204, 400 when not a string, 404 for an unknown Event', async () => {
+    const { agent, state } = setup();
+    await login(agent);
+    state.addEvent({ tourId: 't', name: 'Event', link: 'ok' }, 2);
+    state.addEvent({ tourId: 'u', name: 'U', link: 'u' }, 2);
+    const put = (tourId: unknown) => agent.put('/api/admin/primary').send({ tourId });
+    for (const tourId of [undefined, 1, null]) expect((await put(tourId)).status).toBe(400);
+    expect((await put('nope')).status).toBe(404);
+    expect(state.primary).toBe('t');
+    expect((await put('u')).status).toBe(204);
+    expect(state.primary).toBe('u');
+  });
+
+  it('/clear, /topn and /tracked are gone', async () => {
+    const { agent, state } = setup();
+    await login(agent);
+    state.addEvent({ tourId: 't', name: 'Event', link: 'ok' }, 2);
+    expect((await agent.post('/api/admin/clear')).status).toBe(404);
+    expect((await agent.put('/api/admin/topn').send({ n: 3 })).status).toBe(404);
+    expect((await agent.put('/api/admin/tracked').send({ boardIds: [] })).status).toBe(404);
+    expect(state.events).toHaveLength(1);
+  });
+
+  it('validates the job time', async () => {
+    const { agent, scheduler } = setup();
+    await login(agent);
     for (const ms of [-1, 0, 'x', undefined, 1e300]) {
       expect((await agent.put('/api/admin/jobtime').send({ ms })).status).toBe(400);
     }
     await agent.put('/api/admin/jobtime').send({ ms: 50 });
     await agent.put('/api/admin/jobtime').send({ ms: null });
     expect(scheduler.setJobTime.mock.calls).toEqual([[50], [null]]);
-    const tracked = (boardIds: unknown) => agent.put('/api/admin/tracked').send({ boardIds });
-    expect((await tracked(['a'])).status).toBe(409); // no Current Round
-    state.primaryState!.startRound(roundInfo('r1'), 1000);
-    expect((await tracked([1])).status).toBe(400);
-    expect((await tracked(['b', 'zz'])).status).toBe(400); // not a Board of the Current Round
-    expect((await tracked(['b'])).status).toBe(204);
-    expect(scheduler.setTracked.mock.calls).toEqual([['t', ['b']]]);
   });
 
   it('requeues and discards Dead-letter queue entries', async () => {
@@ -256,41 +304,49 @@ describe('admin routes', () => {
     expect((await agent.get('/api/admin/status')).body.timing).toEqual(scheduler.timing);
   });
 
-  it('reports status (with follow), and clears the Event through the Site', async () => {
-    const { agent, state, site, status } = setup();
+  it('reports status: site fields, then every Event in order with the primary flag, the total tracked, the running tourId', async () => {
+    const { agent, state, status, scheduler } = setup();
     await login(agent);
     const idle = {
-      event: null,
-      round: null,
-      stream: null,
       engine: defaultEngine,
       engineRunning: false,
       copies: { main: { state: 'up', restarts: 2 }, multi: { state: 'up', restarts: 1 } },
       timing: { jobs: 0, provisional: 0, ms: null, depth: null },
       jobTimeMs: DEFAULT_JOB_TIME_MS,
-      topN: 8,
       running: null,
       queue: { current: [], backfill: 0, deferred: [] },
-      dead: [],
       evictions: [],
-      follow: { next: null, swapAt: null, polledAt: null, error: null },
+      tracked: 0,
+      primary: null,
+      events: [],
     };
     expect((await agent.get('/api/admin/status')).body).toEqual(idle);
-    state.addEvent({ tourId: 'z', name: 'Z', link: 'z' }, 2); // not the Primary: its status must not show
-    state.removeEvent('z');
-    state.addEvent({ tourId: 't', name: 'Event', link: 'ok' }, 2);
-    state.addEvent({ tourId: 'u', name: 'U', link: 'u' }, 2);
-    state.primaryState!.startRound(roundInfo('r1'), 1000);
-    const { round, follow } = (await agent.get('/api/admin/status')).body;
-    expect(follow).toEqual(status);
-    expect(round.boards.map((b: { id: string; tracked: boolean }) => [b.id, b.tracked])).toEqual([
+    const t = state.addEvent({ tourId: 't', name: 'Event', link: 'ok' }, 2);
+    const u = state.addEvent({ tourId: 'u', name: 'U', link: 'u' }, 3);
+    t.startRound(roundInfo('r1'), 1000);
+    u.startRound({ ...roundInfo('r2'), tourId: 'u' }, 1000);
+    scheduler.running = { tourId: 'u', boardId: 'a', ply: 1, tier: 'current' } as never;
+    const body = (await agent.get('/api/admin/status')).body;
+    expect(body).toMatchObject({ tracked: 5, primary: 't', running: { tourId: 'u' } });
+    expect(
+      body.events.map((e: { event: { tourId: string }; primary: boolean; topN: number }) => [
+        e.event.tourId,
+        e.primary,
+        e.topN,
+      ]),
+    ).toEqual([
+      ['t', true, 2],
+      ['u', false, 3],
+    ]);
+    const [a, b] = body.events;
+    expect(a.follow).toEqual(status);
+    expect(b.follow).toEqual({ ...status, polledAt: 9 });
+    expect(a.round).toMatchObject({ tourId: 't', roundId: 'r1', name: 'Round 1' });
+    expect(a.round.boards.map((x: { id: string; tracked: boolean }) => [x.id, x.tracked])).toEqual([
       ['a', true],
       ['b', true],
       ['c', false],
     ]);
-    expect(round).toMatchObject({ tourId: 't', roundId: 'r1', name: 'Round 1' });
-    expect((await agent.post('/api/admin/clear')).status).toBe(204);
-    expect(site.remove).toHaveBeenCalledWith('t');
-    expect([state.primary, state.events.map((e) => e.event.tourId)]).toEqual(['u', ['u']]);
+    expect(a).toMatchObject({ stream: null, dead: [] });
   });
 });

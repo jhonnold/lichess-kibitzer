@@ -89,7 +89,7 @@ analysis.ccrl.live {
 the Admin cookie; with no `ADMIN_PASSWORD` it always answers 401.
 
 - `kibitzer_queue_depth{tier}`: Jobs waiting, `current` and `backfill`
-- `kibitzer_dead_letter_queue_size`: Jobs in the Dead-letter queue
+- `kibitzer_dead_letter_queue_size`: Jobs in the Dead-letter queue (every Event's)
 - `kibitzer_engine_state{role,state}`: per engine copy (`role` `main` or `multi`), 1 for the current state (`up`,
   `restarting`, or `idle` with no Round), 0 for the others. `kibitzer_engine_up{role}`: 1 while up (0 both while
   restarting and when idle); `kibitzer_engine_restarts_total{role}`: restarts since boot
@@ -102,16 +102,16 @@ the Admin cookie; with no `ADMIN_PASSWORD` it always answers 401.
   `explorer`; `outcome` is `ok`, `http_error`, `rate_limited` (a 429), `timeout`, `network` (no response, or a broken
   or non-JSON body) or `paused` (refused locally during the minute after a 429).
   `kibitzer_lichess_request_duration_seconds{endpoint}` (histogram): calls that got a response.
-- `kibitzer_lichess_stream_connected`: 1 while the Round stream is open and receiving.
+- `kibitzer_lichess_stream_connected`: the number of open Round streams that are receiving (one per Event).
   `kibitzer_lichess_stream_reconnects_total{reason}`: the stream ended and was reopened; `reason` is `eof` (Lichess
   closed it, about once a minute after a Round finishes), `http_error`, `rate_limited` or `network`
 - Deprecated, to be removed: `kibitzer_lichess_rate_limited_total{source}` (`stream` or `api`) and
   `kibitzer_opening_lookups_total`; use `kibitzer_lichess_requests_total` and the reconnect `reason`
 - `kibitzer_evictions_total{reason}`: running Jobs stopped early (`stale`, `live`, `backfill`)
-- `kibitzer_following`: 1 while an Event is registered. `kibitzer_follower_polls_total{outcome}`: Event polls (every
-  60 s), `ok` or `error` (the Event fetch or the Round swap failed). `kibitzer_follower_last_success_timestamp_seconds`:
-  when the Event was last fetched, 0 before the first fetch; with `kibitzer_following == 1`, a value more than 5 min
-  old means the follower is stale
+- `kibitzer_following`: the number of registered Events. `kibitzer_follower_polls_total{event,outcome}`: Event polls
+  (every 60 s) per Event (its tourId), `ok` or `error` (the Event fetch or the Round swap failed); series of removed
+  Events stay. `kibitzer_follower_last_success_timestamp_seconds{event}`: when that Event was last fetched, no sample
+  before the first fetch; a value more than 5 min old means that Event's follower is stale
 - `kibitzer_store_writes_total{store,outcome}`: state file (`state`) and Round file (`round`) writes, `ok` or `error`
   (one per write: quick saves are coalesced). `kibitzer_store_last_save_timestamp_seconds{store}`: the last write
 - `kibitzer_archive_reads_total{outcome}`: Archive list and Round reads, `ok` (a missing Round file included) or `error`

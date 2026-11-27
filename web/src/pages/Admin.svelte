@@ -3,7 +3,7 @@
   import { changedOptions, initialValues, type UciOption } from '$shared/engine-form';
   import { COPY_OPTIONS, DEFAULT_COPY, DEFAULT_MULTI_PV, MAX_MULTI_PV } from '$shared/engine-config';
   import type { EngineConfig } from '$shared/types';
-  import { adminApi, ApiError, type AdminStatus, type Probe } from '$lib/admin-api';
+  import { adminApi, ApiError, getStatus, type AdminStatus, type Probe } from '$lib/admin-api';
   import StatusPanel from '../components/StatusPanel.svelte';
   import type { LiveStore } from '$lib/live.svelte';
   import type { DeadJob } from '$shared/queue';
@@ -31,7 +31,8 @@
   let values = $state<Record<string, string>>({});
   let saved = $state(false);
   let status = $state<AdminStatus | null>(null);
-  let topN = $state('');
+  let topN = $state(''); // the Primary's next-Round default (Tracking form)
+  let addTopN = $state(''); // the add-Event form: empty = the server's default
   let jobSeconds = $state('');
   let checked = $state<string[]>([]); // ids of the boards ticked in the Tracked set
 
@@ -53,7 +54,7 @@
 
   /** GET /status into `status`; the Tracking form follows the server's values. */
   async function refresh(): Promise<AdminStatus> {
-    const s = (status = await adminApi<AdminStatus>('GET', '/status'));
+    const s = (status = await getStatus());
     if (s.event) topN = String(s.topN); // Idle: keep the admin's value for the next add
     checked = s.round?.boards.filter((b) => b.tracked).map((b) => b.id) ?? [];
     return s;
@@ -63,7 +64,7 @@
     if (!authed || document.hidden) return;
     now = Date.now();
     try {
-      status = await adminApi<AdminStatus>('GET', '/status');
+      status = await getStatus();
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) authed = false; // the login form shows
     }
@@ -91,8 +92,9 @@
     run('event', async () => {
       await adminApi('POST', '/event', {
         link,
-        ...(Number.isInteger(Number(topN)) && Number(topN) > 0 && { topN: Number(topN) }),
+        ...(addTopN !== '' && Number.isInteger(Number(addTopN)) && Number(addTopN) > 0 && { topN: Number(addTopN) }),
       });
+      addTopN = '';
       await refresh();
     });
 
@@ -111,7 +113,7 @@
   const press = (name: string) => run('engine', () => adminApi('POST', '/engine/button', { name }));
   const clear = () =>
     run('status', async () => {
-      await adminApi('POST', '/clear');
+      if (status?.event) await adminApi('DELETE', `/event/${status.event.tourId}`);
       await refresh();
     });
   /** One Tracking control: send it, then re-read the status. */
@@ -266,6 +268,17 @@
               <span>Event link</span>
               <input bind:value={link} placeholder="https://lichess.org/broadcast/…" required />
             </label>
+            <label class="field">
+              <span>Top N</span>
+              <input
+                type="number"
+                min="1"
+                max="64"
+                step="1"
+                placeholder={String(status?.nextTopN ?? '')}
+                bind:value={addTopN}
+              />
+            </label>
             <button class="primary" disabled={busy}>Register Event</button>
           </form>
           {#if errors.event}<p class="error">{errors.event}</p>{/if}
@@ -284,7 +297,10 @@
             <div class="pair">
               <form
                 class="inline"
-                onsubmit={(e) => (e.preventDefault(), status?.event && control('/topn', { n: Number(topN) }))}
+                onsubmit={(e) => (
+                  e.preventDefault(),
+                  status?.event && control(`/event/${status.event.tourId}/topn`, { n: Number(topN) })
+                )}
               >
                 <label class="field">
                   <span>Tracked boards in the next Round (top N)</span>
@@ -302,7 +318,12 @@
               </form>
             </div>
             {#if status.round}
-              <form onsubmit={(e) => (e.preventDefault(), control('/tracked', { boardIds: checked }))}>
+              <form
+                onsubmit={(e) => (
+                  e.preventDefault(),
+                  status?.event && control(`/event/${status.event.tourId}/tracked`, { boardIds: checked })
+                )}
+              >
                 <p class="label">Tracked boards in this Round</p>
                 <div class="boards">
                   {#each status.round.boards as b (b.id)}

@@ -82,6 +82,7 @@ export interface ArchiveCtx {
 /** A Snapshot for the Viewer/overview from an archived Round (Tracked boards only, as the API serves it). */
 export function archiveSnapshot(r: Round): Snapshot {
   return {
+    events: [],
     event: { tourId: r.tourId, name: r.eventName || r.tourId, link: '' },
     round: r,
     search: null,

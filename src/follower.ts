@@ -85,11 +85,11 @@ export class Follower {
         ev = await this.opts.lichess.fetchEvent(event.link);
       } catch (err) {
         this.st = { ...this.st, error: message(err) };
-        followerPolls.inc({ outcome: 'error' });
+        followerPolls.inc({ event: this.tourId, outcome: 'error' });
         return;
       }
       await this.apply(ev);
-      followerPolls.inc({ outcome: this.st.error ? 'error' : 'ok' });
+      followerPolls.inc({ event: this.tourId, outcome: this.st.error ? 'error' : 'ok' });
     });
   }
 

@@ -18,7 +18,6 @@ import { IDLE, type FollowStatus } from '../follower.js';
 import type { Site } from '../site.js';
 import { LichessError } from '../lichess/api.js';
 import { register } from '../metrics.js';
-import { DEFAULT_TOP_N } from '../../shared/types.js';
 import type { SiteState } from '../site-state.js';
 import type { EngineState, Scheduler } from '../scheduler.js';
 
@@ -43,14 +42,17 @@ export interface AdminDeps {
     | 'timing'
     | 'evictions'
   >;
-  site: Pick<Site, 'add' | 'remove' | 'status'>;
+  site: Pick<Site, 'add' | 'remove' | 'status' | 'setPrimary'>;
   defaultEngine: EngineConfig; // shown (and used) while no config is saved
   adminPassword?: string; // unset or empty: every login is refused
   probe?: (path: string) => Promise<{ name: string; options: UciOption[] }>; // default probeEngine
 }
 
-export interface AdminStatus {
-  event: RegisteredEvent | null;
+/** One followed Event: its own settings, Current Round, stream, Dead-letter queue and follow status. */
+export interface AdminEventStatus {
+  event: RegisteredEvent;
+  primary: boolean;
+  topN: number;
   round: {
     tourId: string;
     roundId: string;
@@ -58,17 +60,23 @@ export interface AdminStatus {
     boards: { id: string; board: number; white: Player; black: Player; result: Result; tracked: boolean }[];
   } | null;
   stream: StreamStatus | null;
+  dead: readonly DeadJob[];
+  follow: FollowStatus;
+}
+
+/** The site fields stay flat; `events` has one block per Event, in registration order. */
+export interface AdminStatus {
   engine: EngineConfig; // saved, else the default
   engineRunning: boolean; // the main copy
   copies: Record<EngineRole, { state: EngineState; restarts: number }>;
   timing: JobTiming;
   jobTimeMs: number | null;
-  topN: number;
-  running: Job | null;
+  running: Job | null; // carries its tourId
   queue: QueueView;
-  dead: readonly DeadJob[];
   evictions: EvictedJob[]; // newest first
-  follow: FollowStatus;
+  tracked: number; // Tracked boards of every Event's Current Round
+  primary: string | null;
+  events: AdminEventStatus[];
 }
 
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null;
@@ -177,19 +185,22 @@ export function adminRouter(deps: AdminDeps): Router {
       return void res.status(400).json({ error: 'expected { link: string, topN?: integer 1-64 }' });
     site.add(link, topN as number | undefined).then(() => res.sendStatus(204), fail(res));
   });
-  r.post('/clear', (_req, res) => {
-    const primary = state.primary;
-    (primary === null ? Promise.resolve() : site.remove(primary)).then(() => res.sendStatus(204), fail(res));
+  r.delete('/event/:tourId', (req, res) => {
+    site.remove(req.params.tourId).then((ok) => (ok ? res.sendStatus(204) : res.sendStatus(404)), fail(res));
   });
-  /** The Primary's next Round default; the Scheduler has no topN. */
-  r.put('/topn', (req, res) => {
+  /** That Event's next Round default; the Scheduler has no topN. */
+  r.put('/event/:tourId/topn', (req, res) => {
+    const rs = state.event(req.params.tourId);
+    if (!rs) return void res.status(404).json({ error: 'unknown Event' });
     const n: unknown = req.body?.n;
-    if (!Number.isInteger(n) || (n as number) < 1 || (n as number) > 64)
-      return void res.status(400).json({ error: 'expected { n: integer 1-64 }' });
-    const rs = state.primaryState;
-    if (!rs) return void res.status(409).json({ error: 'no Event' });
+    if (!intIn(n, 1, 64)) return void res.status(400).json({ error: 'expected { n: integer 1-64 }' });
     rs.setTopN(n as number);
     res.sendStatus(204);
+  });
+  r.put('/primary', (req, res) => {
+    const tourId: unknown = req.body?.tourId;
+    if (typeof tourId !== 'string') return void res.status(400).json({ error: 'expected { tourId: string }' });
+    res.sendStatus(site.setPrimary(tourId) ? 204 : 404);
   });
   r.put('/jobtime', (req, res) => {
     const ms: unknown = req.body?.ms;
@@ -197,16 +208,19 @@ export function adminRouter(deps: AdminDeps): Router {
       return void res.status(400).json({ error: `expected { ms: integer 1-${MAX_JOB_MS} | null }` });
     scheduler.setJobTime(ms as number | null).then(() => res.sendStatus(204), fail(res));
   });
-  r.put('/tracked', (req, res) => {
+  r.put('/event/:tourId/tracked', (req, res) => {
+    const { tourId } = req.params;
+    const rs = state.event(tourId);
+    if (!rs) return void res.status(404).json({ error: 'unknown Event' });
     const ids: unknown = req.body?.boardIds;
     if (!Array.isArray(ids) || !ids.every((x) => typeof x === 'string'))
       return void res.status(400).json({ error: 'expected { boardIds: string[] }' });
-    const round = state.primaryState?.round;
+    const round = rs.round;
     if (!round) return void res.status(409).json({ error: 'no Current Round' });
     const known = new Set(round.boards.map((b) => b.id));
     if (!ids.every((id) => known.has(id)))
       return void res.status(400).json({ error: 'not a Board of the Current Round' });
-    scheduler.setTracked(state.primary!, ids as string[]).then(() => res.sendStatus(204), fail(res));
+    scheduler.setTracked(tourId, ids as string[]).then(() => res.sendStatus(204), fail(res));
   });
   for (const [path, method] of [
     ['requeue', 'requeueDead'],
@@ -223,24 +237,32 @@ export function adminRouter(deps: AdminDeps): Router {
     });
   }
   r.get('/status', (_req, res) => {
-    const rs = state.primaryState;
-    const round = rs?.round ?? null;
+    const primary = state.primary;
+    const events = state.events.map((rs): AdminEventStatus => {
+      const round = rs.round;
+      return {
+        event: rs.event,
+        primary: rs.event.tourId === primary,
+        topN: rs.topN,
+        round: round && {
+          tourId: round.tourId,
+          roundId: round.roundId,
+          name: round.name,
+          boards: round.boards.map(({ id, board, white, black, result, tracked }) => ({
+            id,
+            board,
+            white,
+            black,
+            result,
+            tracked,
+          })),
+        },
+        stream: rs.stream,
+        dead: rs.dead,
+        follow: site.status(rs.event.tourId) ?? IDLE,
+      };
+    });
     const body: AdminStatus = {
-      event: rs?.event ?? null,
-      round: round && {
-        tourId: round.tourId,
-        roundId: round.roundId,
-        name: round.name,
-        boards: round.boards.map(({ id, board, white, black, result, tracked }) => ({
-          id,
-          board,
-          white,
-          black,
-          result,
-          tracked,
-        })),
-      },
-      stream: rs?.stream ?? null,
       engine: state.settings.engine ?? defaultEngine,
       engineRunning: scheduler.engine !== null,
       copies: {
@@ -249,12 +271,12 @@ export function adminRouter(deps: AdminDeps): Router {
       },
       timing: scheduler.timing,
       jobTimeMs: state.settings.jobTimeMs,
-      topN: rs?.topN ?? DEFAULT_TOP_N,
       running: scheduler.running,
       queue: state.queue,
-      dead: rs?.dead ?? [],
       evictions: scheduler.evictions,
-      follow: (state.primary !== null && site.status(state.primary)) || IDLE,
+      tracked: events.reduce((n, e) => n + (e.round?.boards.filter((b) => b.tracked).length ?? 0), 0),
+      primary,
+      events,
     };
     res.json(body);
   });

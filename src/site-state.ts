@@ -24,6 +24,7 @@ export class SiteState extends EventEmitter<SiteEvents> {
   #queue: T.QueueView = EMPTY_QUEUE;
   #seq = 0; // epochs are never reused, across Rounds, Events and re-adds
   #stateSaving: Promise<void> = Promise.resolve();
+  #lastEvents = ''; // the summaries last emitted, as JSON
 
   constructor(
     private readonly store: DataStore,
@@ -36,6 +37,7 @@ export class SiteState extends EventEmitter<SiteEvents> {
     for (const entry of init.state?.events ?? []) {
       this.#events.set(entry.event.tourId, this.#make(entry, init.rounds?.get(entry.event.tourId) ?? null));
     }
+    this.#lastEvents = JSON.stringify(this.summaries());
   }
 
   /** load() then loadRound(current) of every Event that has a Current Round. */
@@ -84,8 +86,32 @@ export class SiteState extends EventEmitter<SiteEvents> {
   snapshot(tourId: string | null = this.primary): T.Snapshot {
     const rs = tourId === null ? undefined : this.#events.get(tourId);
     return (
-      rs?.snapshot() ?? { event: null, round: null, search: null, queue: structuredClone(this.#queue), stream: null }
+      rs?.snapshot() ?? {
+        events: this.summaries(),
+        event: null,
+        round: null,
+        search: null,
+        queue: structuredClone(this.#queue),
+        stream: null,
+      }
     );
+  }
+
+  /** Every Event as the Viewers list it, in registration order. */
+  summaries(): T.EventSummary[] {
+    const primary = this.primary;
+    return this.events.map((rs) => {
+      const round = rs.round;
+      const tracked = round?.boards.filter((b) => b.tracked) ?? [];
+      return {
+        tourId: rs.event.tourId,
+        name: rs.event.name,
+        primary: rs.event.tourId === primary,
+        round: round && { roundId: round.roundId, name: round.name, startsAt: round.startsAt },
+        live: tracked.some((b) => b.plies.length > 1),
+        tracked: tracked.length,
+      };
+    });
   }
 
   /** Register an Event (the first one becomes the Primary). An already registered tourId is returned unchanged. */
@@ -100,6 +126,7 @@ export class SiteState extends EventEmitter<SiteEvents> {
       this.#primary = event.tourId;
       this.emit('primary', event.tourId); // after the snapshot: a client following the Primary gets one frame
     }
+    this.#publishEvents();
     this.#saveState();
     return rs;
   }
@@ -116,6 +143,7 @@ export class SiteState extends EventEmitter<SiteEvents> {
       this.emit('primary', this.#primary); // before the empty snapshot: a client following it is rebound first
     }
     this.emit('event', tourId, { type: 'snapshot', snapshot: this.snapshot(tourId) });
+    this.#publishEvents();
     this.#saveState();
     return true;
   }
@@ -127,6 +155,7 @@ export class SiteState extends EventEmitter<SiteEvents> {
     this.#primary = tourId;
     this.#saveState();
     this.emit('primary', tourId);
+    this.#publishEvents();
     return true;
   }
 
@@ -161,14 +190,29 @@ export class SiteState extends EventEmitter<SiteEvents> {
     const id = entry.event.tourId;
     const live = () => this.#events.get(id) === rs;
     const host: RoundHost = {
-      emit: (e) => live() && this.emit('event', id, e),
+      emit: (e, publish = true) => {
+        if (!live()) return;
+        this.emit('event', id, e);
+        if (publish && e.type !== 'stream-status' && e.type !== 'result') this.#publishEvents();
+      },
+      changed: () => live() && this.#publishEvents(),
       save: () => live() && this.#saveState(),
       nextEpoch: () => ++this.#seq,
       search: () => (this.#searchTour === id ? this.#search : null),
       queue: () => this.#queue,
+      summaries: () => this.summaries(),
     };
     const rs = new RoundState(this.store, host, { entry, round });
     return rs;
+  }
+
+  /** Emit the summaries (site-wide) when they differ from the last emitted ones. */
+  #publishEvents(): void {
+    const events = this.summaries();
+    const json = JSON.stringify(events);
+    if (json === this.#lastEvents) return;
+    this.#lastEvents = json;
+    this.emit('event', null, { type: 'events', events });
   }
 
   #saveState(): void {

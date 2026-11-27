@@ -74,8 +74,8 @@ describe('GET /api/events', () => {
     for (let d = 11; d <= 20; d++) site.setSearch(search(d), 't');
     await vi.waitFor(() => expect(c.events.at(-1)).toEqual({ type: 'search', search: search(20) }));
     const types = c.events.map((e) => e.type);
-    expect(types.slice(0, 2)).toEqual(['snapshot', 'snapshot']);
-    expect(types.slice(2, -1)).toContain('ply');
+    expect(types.slice(0, 3)).toEqual(['snapshot', 'snapshot', 'events']); // startRound: its snapshot, the summaries
+    expect(types.slice(3, -1)).toContain('ply');
     expect(types.filter((t) => t === 'search').length).toBeLessThanOrEqual(4); // 20 sent
     expect(c.events[types.indexOf('ply') - 1]).toEqual({ type: 'search', search: search(10) }); // flushed before ply
     await vi.waitFor(() => expect(c.frames).toContain(': hb'));
@@ -90,8 +90,9 @@ describe('GET /api/events', () => {
     expect(now).toBeGreaterThanOrEqual(before);
     expect(now).toBeLessThanOrEqual(Date.now());
     state.startRound(round, null);
-    await vi.waitFor(() => expect(c.events).toHaveLength(2));
+    await vi.waitFor(() => expect(c.events).toHaveLength(3));
     expect(c.events[1]).toEqual({ type: 'snapshot', snapshot: site.snapshot() });
+    expect(c.events[2]).toEqual({ type: 'events', events: site.summaries() });
     await c.close();
   });
 
@@ -118,10 +119,10 @@ describe('GET /api/events', () => {
     site.event('u')!.setStream('connected');
     state.setStream('connected');
     await vi.waitFor(() => expect(c.events.at(-1)).toEqual({ type: 'stream-status', status: 'connected' }));
-    expect(c.events.map((e) => e.type)).toEqual(['snapshot', 'snapshot', 'stream-status']);
+    expect(c.events.map((e) => e.type)).toEqual(['snapshot', 'snapshot', 'events', 'events', 'stream-status']);
     site.setPrimary('u');
-    await vi.waitFor(() => expect(c.events).toHaveLength(4));
-    expect(c.events[3]).toMatchObject({
+    await vi.waitFor(() => expect(c.events.filter((e) => e.type === 'snapshot')).toHaveLength(3));
+    expect(c.events.filter((e) => e.type === 'snapshot').at(-1)).toMatchObject({
       type: 'snapshot',
       snapshot: { event: other, round: null, stream: 'connected' },
     });
@@ -151,9 +152,81 @@ describe('GET /api/events', () => {
     await vi.waitFor(() => expect(c.events).toHaveLength(1));
     site.removeEvent('t');
     site.addEvent({ tourId: 'u', name: 'Other', link: 'y' }, 8);
-    await vi.waitFor(() => expect(c.events).toHaveLength(3));
+    await vi.waitFor(() => expect(c.events.filter((e) => e.type === 'snapshot')).toHaveLength(3));
     await new Promise((r) => setTimeout(r, 50));
-    expect(c.events.map((e) => (e as { snapshot: Snapshot }).snapshot.event?.tourId ?? null)).toEqual(['t', null, 'u']);
+    const snaps = c.events.flatMap((e) => (e.type === 'snapshot' ? [e.snapshot.event?.tourId ?? null] : []));
+    expect(snaps).toEqual(['t', null, 'u']);
     await c.close();
+  });
+
+  describe('?tour=', () => {
+    const other = { tourId: 'u', name: 'Other', link: 'y' };
+    const round2 = { ...round, id: 'r2', tourId: 'u', boards: [{ ...round.boards[0], id: 'h' }] };
+    const types = (c: { events: SseEvent[] }) => c.events.map((e) => e.type);
+
+    it("streams only X's Board events; search of Y arrives as null", async () => {
+      const u = site.addEvent(other, 8);
+      state.startRound(round, null);
+      u.startRound(round2, null);
+      const cu = await sse(`${url}?tour=u`);
+      const ct = await sse(url); // the Primary: t
+      await vi.waitFor(() => expect(cu.events).toHaveLength(1));
+      expect(rebuild(cu.events)?.round?.boards.map((b) => b.id)).toEqual(['h']);
+      site.setSearch(search(1), 'u');
+      await vi.waitFor(() => expect(cu.events.at(-1)).toEqual({ type: 'search', search: search(1) }));
+      site.setSearch(search(2), 't');
+      await vi.waitFor(() => expect(cu.events.at(-1)).toEqual({ type: 'search', search: null }));
+      await vi.waitFor(() => expect(ct.events.at(-1)).toEqual({ type: 'search', search: search(2) }));
+      state.syncMoves('g', [{ uci: 'e2e4', san: 'e4', clock: null }], 1);
+      u.syncMoves('h', [{ uci: 'd2d4', san: 'd4', clock: null }], 1);
+      state.setEval('g', 1, ev, state.epoch('g'));
+      await vi.waitFor(() => expect(rebuild(cu.events)?.round?.boards[0].plies).toHaveLength(2));
+      await vi.waitFor(() => expect(rebuild(ct.events)?.round?.boards[0].plies[1].eval).toEqual(ev));
+      const boards = (c: { events: SseEvent[] }) =>
+        JSON.stringify(c.events.filter((e) => !['queue', 'search', 'events'].includes(e.type)));
+      expect(boards(cu)).not.toContain('"g"');
+      expect(boards(ct)).not.toContain('"h"');
+      expect(rebuild(cu.events)).toEqual(site.snapshot('u'));
+      await cu.close();
+      await ct.close();
+    });
+
+    it("unknown tour: 200 and an empty snapshot, then the Event's snapshot once it is added", async () => {
+      const c = await sse(`${url}?tour=u`);
+      expect(c.res.status).toBe(200);
+      await vi.waitFor(() => expect(c.events).toHaveLength(1));
+      expect(c.events[0]).toMatchObject({ type: 'snapshot', snapshot: { event: null, round: null } });
+      site.addEvent(other, 8);
+      await vi.waitFor(() => expect(rebuild(c.events)?.event).toEqual(other));
+      expect(c.events.filter((e) => e.type === 'snapshot')).toHaveLength(2);
+      await c.close();
+    });
+
+    it('no tour follows the Primary; ?tour= stays put when the Primary changes', async () => {
+      site.addEvent(other, 8);
+      const follow = await sse(url);
+      const fixed = await sse(`${url}?tour=t`);
+      await vi.waitFor(() => expect(fixed.events).toHaveLength(1));
+      site.setPrimary('u');
+      await vi.waitFor(() => expect(rebuild(follow.events)?.event).toEqual(other));
+      expect(follow.events.filter((e) => e.type === 'snapshot')).toHaveLength(2); // exactly one rebind
+      await vi.waitFor(() => expect(rebuild(fixed.events)?.events.map((s) => s.primary)).toEqual([false, true]));
+      expect(rebuild(fixed.events)?.event).toEqual(event);
+      expect(fixed.events.filter((e) => e.type === 'snapshot')).toHaveLength(1);
+      await follow.close();
+      await fixed.close();
+    });
+
+    it('events fan out to every client', async () => {
+      const a = await sse(`${url}?tour=t`);
+      const b = await sse(`${url}?tour=u`);
+      const c = await sse(url);
+      await vi.waitFor(() => expect(a.events.length + b.events.length + c.events.length).toBe(3));
+      site.addEvent(other, 8);
+      for (const cl of [a, b, c])
+        await vi.waitFor(() => expect(cl.events.at(-1)).toEqual({ type: 'events', events: site.summaries() }));
+      expect(types(b)).toContain('snapshot'); // b was bound to the Event that was just added
+      for (const cl of [a, b, c]) await cl.close();
+    });
   });
 });

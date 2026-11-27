@@ -34,10 +34,12 @@ function setup(...pw: [string | undefined] | []) {
     timing: { jobs: 0, provisional: 0, ms: null, depth: null },
   };
   const followStatus = { next: null, swapAt: null, polledAt: null as number | null, error: null };
+  const polled: Record<string, number | null> = {}; // tourId -> polledAt; unset: followStatus
   const site = {
     add: async () => ({ tourId: 'T', name: 'E', link: '' }),
     remove: async () => true,
-    status: () => followStatus,
+    setPrimary: () => true,
+    status: (t: string) => (t in polled ? { ...followStatus, polledAt: polled[t] } : followStatus),
   };
   const app = createApp({
     store: { listRounds: async () => [], loadRound: async () => null },
@@ -47,7 +49,7 @@ function setup(...pw: [string | undefined] | []) {
     adminPassword,
     defaultEngine: { path: 'berserk', options: {} },
   });
-  return { state, scheduler, followStatus, app };
+  return { state, scheduler, followStatus, polled, app };
 }
 const basic = (s: string) => `Basic ${Buffer.from(s).toString('base64')}`;
 const scrape = (app: ReturnType<typeof setup>['app'], auth?: string) => {
@@ -122,6 +124,11 @@ describe('GET /api/admin/metrics', () => {
     expect(body).toContain('kibitzer_queue_depth{tier="current"} 1');
     expect(body).toContain('kibitzer_queue_depth{tier="backfill"} 4');
     expect(body).toContain('kibitzer_dead_letter_queue_size 1');
+    state.addEvent({ tourId: 'U', name: 'U', link: 'y' }, 2).setDead([
+      { boardId: 'b', board: 1, ply: 2, at: 1 },
+      { boardId: 'c', board: 2, ply: 2, at: 1 },
+    ]);
+    expect((await scrape(app, basic('admin:pw'))).text).toContain('kibitzer_dead_letter_queue_size 3'); // the sum
     expect(body).toContain('kibitzer_engine_up{role="main"} 1');
     expect(body).toContain('kibitzer_engine_restarts_total{role="main"} 2');
     expect(body).toContain('kibitzer_engine_restarts_total{role="multi"} 5');
@@ -141,17 +148,25 @@ describe('GET /api/admin/metrics', () => {
     }
   });
 
-  it('reports whether an Event is followed and when it was last fetched', async () => {
-    const { app, state, followStatus } = setup();
+  it('counts the registered Events and labels the last successful poll by Event', async () => {
+    const { app, state, polled } = setup();
     let body = (await scrape(app, basic('admin:pw'))).text;
     expect(body).toContain('kibitzer_following 0');
-    expect(body).toContain('kibitzer_follower_last_success_timestamp_seconds 0');
+    expect(body).not.toContain('kibitzer_follower_last_success_timestamp_seconds{'); // no Event, no sample
     state.addEvent({ tourId: 'T', name: 'E', link: 'https://lichess.org/broadcast/x/T' }, 2);
-    state.addEvent({ tourId: 'U', name: 'U', link: 'https://lichess.org/broadcast/x/U' }, 2); // not the Primary
-    followStatus.polledAt = 1_700_000_000_000;
+    state.addEvent({ tourId: 'U', name: 'U', link: 'https://lichess.org/broadcast/x/U' }, 2);
     body = (await scrape(app, basic('admin:pw'))).text;
     expect(body).toContain('kibitzer_following 2');
-    expect(body).toContain('kibitzer_follower_last_success_timestamp_seconds 1700000000');
+    expect(body).not.toContain('kibitzer_follower_last_success_timestamp_seconds{'); // none fetched yet
+    polled.T = 1_700_000_000_000;
+    polled.U = 1_700_000_100_000;
+    body = (await scrape(app, basic('admin:pw'))).text;
+    expect(body).toContain('kibitzer_follower_last_success_timestamp_seconds{event="T"} 1700000000');
+    expect(body).toContain('kibitzer_follower_last_success_timestamp_seconds{event="U"} 1700000100');
+    state.removeEvent('T');
+    body = (await scrape(app, basic('admin:pw'))).text;
+    expect(body).toContain('kibitzer_following 1');
+    expect(body).not.toContain('last_success_timestamp_seconds{event="T"}');
   });
 
   it('reports the build and the configured engine, which follows the saved config', async () => {
