@@ -101,13 +101,6 @@ export interface RegisteredEvent {
   link: string;
 }
 
-export interface Settings {
-  event: RegisteredEvent | null; // null = Idle
-  engine: EngineConfig | null; // null = Admin page defaults
-  jobTimeMs: number | null; // null = unset: Queue idles
-  topN: number; // default Tracked boards for the next Round
-}
-
 export const DEFAULT_TOP_N = 8;
 /** Job time of a fresh state file (existing state keeps its value). Chosen in docs/jobtime.md. */
 export const DEFAULT_JOB_TIME_MS = 15_000;

@@ -1,7 +1,7 @@
 import request from 'supertest';
 import { describe, expect, it, vi } from 'vitest';
 import { createApp } from '../src/app.js';
-import { RoundState } from '../src/round-state.js';
+import { SiteState } from '../src/site-state.js';
 import type { DataStore } from '../src/store.js';
 import { engineConfig } from '../shared/engine-config.js';
 
@@ -14,7 +14,7 @@ const store: DataStore = {
 };
 const app = createApp({
   store,
-  state: new RoundState(store),
+  state: new SiteState(store),
   scheduler: {
     engine: null,
     running: null,

@@ -11,6 +11,7 @@ import { evictions, jobDepth, jobDuration, jobNps, jobs } from './metrics.js';
 import { OpeningFallback, type OpeningFetch } from './opening.js';
 import { pvToSan, toScore } from './pv.js';
 import type { RoundState } from './round-state.js';
+import type { SiteState } from './site-state.js';
 
 export const RESTART_MIN_MS = 1000;
 export const RESTART_MAX_MS = 60_000;
@@ -133,10 +134,17 @@ export class Scheduler {
   private readonly openings: OpeningFallback | null = null;
 
   constructor(
-    private readonly state: RoundState,
+    private readonly site: SiteState,
     private readonly opts: SchedulerOpts,
   ) {
-    if (opts.fetchOpening) this.openings = new OpeningFallback(state, opts.fetchOpening);
+    if (opts.fetchOpening) {
+      this.openings = new OpeningFallback({ setOpening: (id, o) => this.ev?.setOpening(id, o) }, opts.fetchOpening);
+    }
+  }
+
+  /** The Event this Scheduler works on: the Primary (temporary: one Event). */
+  private get ev(): RoundState | null {
+    return this.site.primaryState;
   }
 
   /** The main copy. Null before the first Round, after stop() or after an exit. */
@@ -183,9 +191,10 @@ export class Scheduler {
       this.detach();
       await this.halt('drop');
       this.queue.clear();
+      this.publishQueue(); // before the new Round's snapshot, which carries the Queue
       this.openings?.clear();
-      if (existing) this.state.openRound(existing);
-      else this.state.startRound(r, startsAt);
+      if (existing) this.ev!.openRound(existing);
+      else this.ev!.startRound(r, startsAt);
       this.startSource(r.id);
       this.enqueueTracked();
       this.wake();
@@ -202,7 +211,7 @@ export class Scheduler {
   /** Applies from the next Job. */
   setJobTime(ms: number | null): Promise<void> {
     return this.serial(async () => {
-      this.state.setJobTime(ms);
+      this.site.setJobTime(ms);
       this.wake();
     });
   }
@@ -210,9 +219,9 @@ export class Scheduler {
   /** Exact tracked set. Untracked Boards leave the Queue; newly tracked ones are queued with their earlier plies. */
   setTracked(boardIds: readonly string[]): Promise<void> {
     return this.serial(async () => {
-      const boards = this.state.round?.boards ?? [];
+      const boards = this.ev!.round?.boards ?? [];
       const before = new Set(boards.filter((b) => b.tracked).map((b) => b.id));
-      this.state.setTracked(boardIds);
+      this.ev!.setTracked(boardIds);
       for (const b of boards) {
         if (before.has(b.id) && !b.tracked) this.queue.removeBoard(b.id);
         else if (!before.has(b.id) && b.tracked) this.enqueue(b);
@@ -225,10 +234,11 @@ export class Scheduler {
   /** Boot: if there is a Current Round, rebuild the Queue from its plies and follow its source again. */
   resume(): Promise<void> {
     return this.serial(async () => {
-      const round = this.state.round;
-      if (!round) return;
+      const ev = this.ev;
+      const round = ev?.round;
+      if (!ev || !round) return;
       this.startSource(round.roundId);
-      this.queue.restoreDead(this.state.dead, round.tourId); // before enqueueTracked: dead positions are not queued again
+      this.queue.restoreDead(ev.dead, ev.event.tourId); // before enqueueTracked: dead positions are not queued again
       this.enqueueTracked();
       this.wake();
       this.wanted = true;
@@ -241,7 +251,7 @@ export class Scheduler {
    *  failed launch rejects (the first error) and that copy keeps retrying with backoff. */
   setEngine(cfg: T.EngineConfig): Promise<void> {
     return this.serial(async () => {
-      this.state.setEngine(cfg);
+      this.site.setEngine(cfg);
       if (!this.wanted) return;
       await this.halt('restart');
       await this.quitEngines();
@@ -296,7 +306,7 @@ export class Scheduler {
       await this.quitEngines();
       this.queue.clear();
       this.publishQueue();
-      this.state.setSearch(null);
+      this.site.setSearch(null, null);
     });
   }
 
@@ -325,27 +335,27 @@ export class Scheduler {
     // Stream handler exceptions are swallowed as network errors (and the update lost): never throw from these.
     src.start({
       game: (u) => this.source === src && this.onGame(u),
-      status: (s) => this.source === src && this.state.setStream(s),
+      status: (s) => this.source === src && this.ev?.setStream(s),
     });
   }
 
   private enqueueTracked(): void {
-    for (const b of this.state.round?.boards ?? []) if (b.tracked) this.enqueue(b);
+    for (const b of this.ev!.round?.boards ?? []) if (b.tracked) this.enqueue(b);
   }
 
   private onGame(u: GameUpdate): void {
     const moves = u.uci.map((uci, i) => ({ uci, san: u.san[i], clock: u.clocks[i] }));
-    const before = this.state.board(u.gameId)?.plies.length ?? 0;
-    const kept = this.state.syncMoves(u.gameId, moves, this.now);
+    const before = this.ev!.board(u.gameId)?.plies.length ?? 0;
+    const kept = this.ev!.syncMoves(u.gameId, moves, this.now);
     if (kept === null) return;
-    this.state.setResult(u.gameId, u.result);
-    this.state.setOpening(u.gameId, u.opening);
-    const b = this.state.board(u.gameId)!;
+    this.ev!.setResult(u.gameId, u.result);
+    this.ev!.setOpening(u.gameId, u.opening);
+    const b = this.ev!.board(u.gameId)!;
     if (b.tracked && !u.opening) this.openings?.seen(b.id, u.uci);
     if (b.tracked) {
       // A correction that does not shorten the game: forget the replaced plies first, else setLatest sees no change.
       if (kept + 1 < before && kept + 1 < b.plies.length)
-        this.queue.setLatest(this.state.round!.tourId, b.id, b.board, kept, this.now, true);
+        this.queue.setLatest(this.ev!.event.tourId, b.id, b.board, kept, this.now, true);
       this.enqueue(b);
       this.persistDead(); // a correction that shortened the game dropped its dead plies
     }
@@ -355,24 +365,26 @@ export class Scheduler {
   /** Persist the Dead-letter queue when it differs from the saved one. */
   private persistDead(): void {
     const now = this.queue.dead();
-    const saved = this.state.dead;
+    const ev = this.ev;
+    if (!ev) return;
+    const saved = ev.dead;
     if (now.length === saved.length && now.every((d, i) => d.boardId === saved[i].boardId && d.ply === saved[i].ply)) {
       return;
     }
-    this.state.setDead(now);
+    ev.setDead(now);
   }
 
   /** Idempotent: latest ply → current tier, earlier plies without a Complete eval → backfill. */
   private enqueue(b: Readonly<T.Board>): void {
     const latest = b.plies.length - 1;
     const done = noLegalMoves(b) || b.plies[latest].eval?.kind === 'complete';
-    this.queue.setLatest(this.state.round!.tourId, b.id, b.board, latest, this.now, done);
+    this.queue.setLatest(this.ev!.event.tourId, b.id, b.board, latest, this.now, done);
     const running = this.run?.job; // already out of the Queue
     const missing: number[] = [];
     for (let i = 0; i < latest; i++) {
       if (b.plies[i].eval?.kind !== 'complete' && !(running?.boardId === b.id && running.ply === i)) missing.push(i);
     }
-    this.queue.addBackfill(this.state.round!.tourId, b.id, missing, this.now);
+    this.queue.addBackfill(this.ev!.event.tourId, b.id, missing, this.now);
   }
 
   /** After every Queue change: publish it, then evict the running Job if the Queue says so, or start the loop. */
@@ -389,7 +401,7 @@ export class Scheduler {
   }
 
   private publishQueue(): void {
-    this.state.setQueue({
+    this.site.setQueue({
       current: this.queue.current().map(({ boardId, ply }) => ({ boardId, ply })),
       backfill: this.queue.backfillCount(),
       deferred: this.queue.deferred().map(({ boardId, ply }) => ({ boardId, ply })),
@@ -397,7 +409,7 @@ export class Scheduler {
   }
 
   private kick(): void {
-    if (this.busy || this.halting || !this.copies.main.engine || this.state.settings.jobTimeMs === null) return;
+    if (this.busy || this.halting || !this.copies.main.engine || this.site.settings.jobTimeMs === null) return;
     this.busy = true;
     this.loop = this.work();
   }
@@ -406,12 +418,12 @@ export class Scheduler {
     try {
       for (;;) {
         const engine = this.copies.main.engine;
-        const ms = this.state.settings.jobTimeMs;
+        const ms = this.site.settings.jobTimeMs;
         if (this.halting || !engine || ms === null) return;
         const job = this.queue.next();
         if (!job) return;
         await this.runJob(engine, this.copies.multi.engine, job, ms);
-        this.state.setSearch(null);
+        this.site.setSearch(null, null);
       }
     } catch (err) {
       console.error('scheduler:', err);
@@ -423,8 +435,7 @@ export class Scheduler {
 
   private async runJob(engine: Engine, multi: Engine | null, job: Job, ms: number): Promise<void> {
     const { boardId, ply } = job;
-    const moves = this.state
-      .board(boardId)!
+    const moves = this.ev!.board(boardId)!
       .plies.slice(1, ply + 1)
       .map((p) => p.move!.uci);
     const chess = new Chess();
@@ -432,7 +443,7 @@ export class Scheduler {
     const slice = Math.min(MIN_LIVE_SLICE_MS, ms);
     const run: Run = {
       job,
-      epoch: this.state.epoch(boardId),
+      epoch: this.ev!.epoch(boardId),
       fen: chess.fen(),
       engine: engine.name,
       main: { lines: [], nps: null },
@@ -491,11 +502,11 @@ export class Scheduler {
       if (e) {
         this.recordJob(job, this.now - run.startedAt, e, run);
         // A short eviction (stale) must not replace a deeper Provisional eval of the same ply.
-        const prev = this.state.board(boardId)?.plies[ply]?.eval;
-        if (e.kind === 'complete' || !prev || prev.depth <= e.depth) this.state.setEval(boardId, ply, e, run.epoch);
+        const prev = this.ev!.board(boardId)?.plies[ply]?.eval;
+        if (e.kind === 'complete' || !prev || prev.depth <= e.depth) this.ev!.setEval(boardId, ply, e, run.epoch);
       }
       if (evicted) {
-        const depth = this.state.board(boardId)?.plies[ply]?.eval?.depth ?? null; // what the ply kept
+        const depth = this.ev!.board(boardId)?.plies[ply]?.eval?.depth ?? null; // what the ply kept
         this.evicted.unshift({ boardId, board: job.board, ply, reason: evicted, depth, at: this.now });
         this.evicted.length = Math.min(this.evicted.length, EVICTIONS_KEPT);
       }
@@ -503,7 +514,7 @@ export class Scheduler {
     // Evicted for another live position: a full search later, from the top of backfill.
     if (stop === 'preempt' && evicted === 'live') this.queue.evict(job, this.now);
     // Stopped, or a correction bumped the epoch (eval refused): search it again if the ply still exists.
-    else if (stop || run.epoch !== this.state.epoch(boardId)) this.queue.requeue(job, this.now);
+    else if (stop || run.epoch !== this.ev!.epoch(boardId)) this.queue.requeue(job, this.now);
   }
 
   /** Duration and the Admin timing samples are the Job's (main copy's depth); depth and nps also per copy. */
@@ -535,17 +546,20 @@ export class Scheduler {
     const lines = run.main.lines.filter(Boolean);
     const others = run.multi?.lines.filter(Boolean);
     const { boardId, ply, tier } = run.job;
-    this.state.setSearch({
-      boardId,
-      ply,
-      engine: run.engine,
-      depth: lines[0]?.depth ?? 0,
-      nps: run.main.nps,
-      lines,
-      multi: others ? { depth: others[0]?.depth ?? 0, nps: run.multi!.nps, lines: others } : null,
-      startedAt: run.startedAt,
-      tier,
-    });
+    this.site.setSearch(
+      {
+        boardId,
+        ply,
+        engine: run.engine,
+        depth: lines[0]?.depth ?? 0,
+        nps: run.main.nps,
+        lines,
+        multi: others ? { depth: others[0]?.depth ?? 0, nps: run.multi!.nps, lines: others } : null,
+        startedAt: run.startedAt,
+        tier,
+      },
+      run.job.tourId,
+    );
   }
 
   private cancelPendingRestart(role: T.EngineRole): void {
@@ -585,7 +599,7 @@ export class Scheduler {
   }
 
   private async launchEngine(role: T.EngineRole): Promise<void> {
-    const cfg = this.state.settings.engine ?? this.opts.defaultEngine;
+    const cfg = this.site.settings.engine ?? this.opts.defaultEngine;
     let started: Engine | undefined;
     try {
       started = await (this.opts.launch ?? ((c) => Engine.start(c.path)))(cfg, role);

@@ -1,8 +1,10 @@
 import { rollover } from '../shared/rollover.js';
 import type { EventInfo, RoundInfo } from './lichess/api.js';
 import { followerPolls } from './metrics.js';
-import type { RoundState } from './round-state.js';
 import type { Scheduler } from './scheduler.js';
+import { DEFAULT_TOP_N } from '../shared/types.js';
+import type { RoundState } from './round-state.js';
+import type { SiteState } from './site-state.js';
 import type { DataStore } from './store.js';
 
 export const POLL_MS = 60_000;
@@ -45,7 +47,7 @@ export class Follower {
   private ops: Promise<unknown> = Promise.resolve();
 
   constructor(
-    private readonly state: RoundState,
+    private readonly site: SiteState,
     private readonly scheduler: Pick<Scheduler, 'startRound' | 'stop'>,
     private readonly opts: FollowerOpts,
   ) {}
@@ -54,34 +56,40 @@ export class Follower {
     return { ...this.st };
   }
 
-  /** fetchEvent(link) (rejects: bad link, LichessError). Same tourId as registered → no reset, just apply. Else
-   *  scheduler.stop() → setEvent → apply. Starts polling iff not already. */
-  register(link: string): Promise<void> {
+  private get state(): RoundState | null {
+    return this.site.primaryState;
+  }
+
+  /** fetchEvent(link) (rejects: bad link, LichessError). Same tourId as the Primary → no reset, just apply (topN
+   *  ignored). Else scheduler.stop() → remove the Primary → add this Event with topN → apply. Starts polling iff
+   *  not already. */
+  register(link: string, topN = DEFAULT_TOP_N): Promise<void> {
     return this.serial(async () => {
       const ev = await this.opts.lichess.fetchEvent(link);
-      if (this.state.settings.event?.tourId !== ev.id) {
+      if (this.site.primary !== ev.id) {
         await this.scheduler.stop();
-        this.state.setEvent({ tourId: ev.id, name: ev.name, link });
+        if (this.site.primary !== null) this.site.removeEvent(this.site.primary);
+        this.site.addEvent({ tourId: ev.id, name: ev.name, link }, topN);
       }
       this.poll();
       await this.apply(ev);
     });
   }
 
-  /** Stop polling, scheduler.stop(), state.setEvent(null), status reset. */
+  /** Stop polling, scheduler.stop(), remove the Primary, status reset. */
   clear(): Promise<void> {
     return this.serial(async () => {
       this.cancel?.();
       this.cancel = null;
       await this.scheduler.stop();
-      this.state.setEvent(null);
+      if (this.site.primary !== null) this.site.removeEvent(this.site.primary);
       this.st = IDLE;
     });
   }
 
   /** Boot: if an Event is registered, start polling and tick once. */
   async resume(): Promise<void> {
-    if (!this.state.settings.event) return;
+    if (!this.site.primary) return;
     this.poll();
     await this.tick();
   }
@@ -89,7 +97,7 @@ export class Follower {
   /** One poll. Never rejects: errors go to status.error and the Current Round is kept. */
   tick(): Promise<void> {
     return this.serial(async () => {
-      const event = this.state.settings.event;
+      const event = this.state?.event;
       if (!event || this.stopped) return;
       let ev: EventInfo;
       try {
@@ -134,27 +142,28 @@ export class Follower {
   private async apply(ev: EventInfo): Promise<void> {
     const { lichess, store } = this.opts;
     let error: string | null = null;
+    if (!this.state) return;
     try {
-      const cur = this.state.round?.roundId ?? null;
+      const cur = this.state!.round?.roundId ?? null;
       const { current } = rollover(ev.rounds, cur, this.now);
       if (current && current.id !== cur) {
         const info = await lichess.fetchRound(current.id);
-        await this.state.saved(); // writes are coalesced: the file read below must include the last one
+        await this.site.saved(); // writes are coalesced: the file read below must include the last one
         const existing = await store.loadRound(info.tourId, info.id);
         await this.scheduler.startRound(info, current.startsAt ?? null, existing);
-      } else if (cur && this.state.round!.boards.length === 0) {
+      } else if (cur && this.state!.round!.boards.length === 0) {
         const info = await lichess.fetchRound(cur);
         if (info.boards.length) await this.scheduler.startRound(info, current?.startsAt ?? null);
-      } else if (cur && this.state.hasUnknownBoards) {
+      } else if (cur && this.state!.hasUnknownBoards) {
         // At most once per poll; the game's moves are recorded from its next update on.
-        this.state.addBoards((await lichess.fetchRound(cur)).boards);
+        this.state!.addBoards((await lichess.fetchRound(cur)).boards);
       }
-      const shown = ev.rounds.find((r) => r.id === this.state.round?.roundId);
-      if (shown) this.state.setStartsAt(shown.startsAt ?? null);
+      const shown = ev.rounds.find((r) => r.id === this.state!.round?.roundId);
+      if (shown) this.state!.setStartsAt(shown.startsAt ?? null);
     } catch (err) {
       error = message(err);
     }
-    const { next, swapAt } = rollover(ev.rounds, this.state.round?.roundId ?? null, this.now);
+    const { next, swapAt } = rollover(ev.rounds, this.state?.round?.roundId ?? null, this.now);
     this.st = {
       next: next && { roundId: next.id, name: next.name, startsAt: next.startsAt ?? null },
       swapAt,
