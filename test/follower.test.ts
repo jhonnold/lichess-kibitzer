@@ -12,6 +12,7 @@ import { SiteState } from '../src/site-state.js';
 import { Scheduler } from '../src/scheduler.js';
 import { dataStore, type DataStore } from '../src/store.js';
 import { followerPolls } from '../src/metrics.js';
+import { archiveIndex } from '../shared/archive.js';
 import { val } from './helpers/metric.js';
 import { ReplaySource } from './helpers/replay-source.js';
 import { engineConfig } from '../shared/engine-config.js';
@@ -35,6 +36,7 @@ let boardsOf: Record<string, string[]>;
 let events: Record<string, EventInfo>;
 let sourceIds: string[];
 let fetchEvent: ReturnType<typeof vi.fn<(link: string) => Promise<EventInfo>>>;
+let fetchRoundPgn: ReturnType<typeof vi.fn<(roundId: string) => Promise<string>>>;
 let every: ReturnType<typeof vi.fn<(ms: number, fn: () => void) => () => void>>;
 let cancels: ReturnType<typeof vi.fn<() => void>>[]; // one per every() call
 let live: { sched: Scheduler; hub: Site }[];
@@ -53,6 +55,16 @@ const roundInfo = (id: string): RoundInfo => ({
   })),
 });
 
+/** The Round's games as Lichess serves them: White wins each in 2 plies, with clocks. */
+const pgnOf = (id: string) =>
+  roundInfo(id)
+    .boards.map(
+      (b) =>
+        `[White "W${b.id}"]\n[Black "B${b.id}"]\n[Result "1-0"]\n[GameURL "https://lichess.org/broadcast/x/r/${id}/${b.id}"]\n\n` +
+        '1. e4 { [%clk 1:30:00] } 1... e5 { [%clk 1:29:59] } 1-0',
+    )
+    .join('\n\n\n');
+
 function build(s: SiteState) {
   const sc = new Scheduler(s, {
     defaultEngine: engineConfig('fake'),
@@ -61,7 +73,7 @@ function build(s: SiteState) {
     now: () => t,
   });
   const h = new Site(s, sc, {
-    lichess: { fetchEvent, fetchRound: async (id) => roundInfo(id) },
+    lichess: { fetchEvent, fetchRound: async (id) => roundInfo(id), fetchRoundPgn },
     store,
     now: () => t,
     every,
@@ -80,6 +92,18 @@ const idle = async () => {
 };
 const complete = (id: string) => state().board(id)!.plies[0].eval?.kind === 'complete';
 const roundId = () => state().round?.roundId;
+const fileIds = async (tourId = 'T1') =>
+  (await store.listRounds())
+    .filter((m) => m.tourId === tourId)
+    .map((m) => m.roundId)
+    .sort();
+const finished = (id: string, startsAt?: number): RoundSummary => ({
+  id,
+  name: id,
+  ongoing: false,
+  finished: true,
+  startsAt,
+});
 const polls = async (event = 'T1') => [
   await val(followerPolls, { event, outcome: 'ok' }),
   await val(followerPolls, { event, outcome: 'error' }),
@@ -117,6 +141,7 @@ beforeEach(async () => {
     },
   };
   fetchEvent = vi.fn(async (link: string) => events[link]);
+  fetchRoundPgn = vi.fn(async (id: string) => pgnOf(id));
   cancels = [];
   every = vi.fn(() => {
     cancels.push(vi.fn());
@@ -452,5 +477,150 @@ describe('Site and Follower', () => {
 
   it('remove of an unknown tourId → false', async () => {
     expect(await hub.remove('nope')).toBe(false);
+  });
+});
+
+describe('Follower import', () => {
+  it('imports every Round before the Current Round, untracked with their moves; none after it', async () => {
+    rounds.unshift(finished('P1', T0 - 2 * HOUR), finished('P2', T0 - HOUR));
+    await hub.add(LINK, 2);
+    await follower().imported();
+    expect(roundId()).toBe('R1');
+    expect(fetchRoundPgn.mock.calls.map(([id]) => id)).toEqual(['P1', 'P2']);
+    expect(await fileIds()).toEqual(['P1', 'P2', 'R1']);
+    await site.saved();
+    const p1 = await store.loadRound('T1', 'P1');
+    expect(p1).toMatchObject({ tourId: 'T1', roundId: 'P1', eventName: 'Event 1', startsAt: T0 - 2 * HOUR });
+    expect(p1!.boards.map((b) => [b.id, b.board, b.tracked, b.result])).toEqual([
+      ['P1a', 1, false, '1-0'],
+      ['P1b', 2, false, '1-0'],
+      ['P1c', 3, false, '1-0'],
+    ]);
+    expect(p1!.boards[0].plies).toEqual([
+      { move: null, at: null, eval: null },
+      { move: { uci: 'e2e4', san: 'e4', clock: 5_400_000 }, at: null, eval: null },
+      { move: { uci: 'e7e5', san: 'e5', clock: 5_399_000 }, at: null, eval: null },
+    ]);
+    // the Archive lists them (0 Tracked boards: all untracked); the Current Round stays out
+    expect(archiveIndex(await store.listRounds(), site.currents)[0].rounds.map((r) => r.roundId)).toEqual(['P1', 'P2']);
+  });
+
+  it('skips Rounds that have a file and any Current Round; a later poll imports nothing again', async () => {
+    rounds2.unshift(finished('B0'));
+    rounds.unshift(finished('P1'), finished('B1')); // B1: another Event's Current Round (and its file)
+    await store.saveRound({ tourId: 'T1', roundId: 'P1', name: 'kept', eventName: 'x', startsAt: null, boards: [] });
+    await hub.add('other', 2);
+    await follower('T2').imported();
+    await hub.add(LINK, 2);
+    await follower().imported();
+    expect(fetchRoundPgn.mock.calls.map(([id]) => id)).toEqual(['B0']);
+    expect((await store.loadRound('T1', 'P1'))!.name).toBe('kept');
+    expect(site.event('T2')!.board('B1a')!.tracked).toBe(true);
+    await follower().tick();
+    await follower().imported();
+    expect(fetchRoundPgn).toHaveBeenCalledTimes(1);
+  });
+
+  it('an ongoing Round before the Current Round is imported only once it has finished', async () => {
+    rounds = [
+      { id: 'P1', name: 'P1', ongoing: true, finished: false, startsAt: T0 - HOUR },
+      { id: 'R2', name: 'Round 2', ongoing: false, finished: false, startsAt: T0 + 600_000 },
+    ];
+    await hub.add(LINK, 2);
+    await follower().imported();
+    expect(roundId()).toBe('R2');
+    expect(fetchRoundPgn).not.toHaveBeenCalled();
+    rounds[0] = finished('P1');
+    await follower().tick();
+    await follower().imported();
+    expect(await fileIds()).toEqual(['P1', 'R2']);
+    expect((await store.loadRound('T1', 'P1'))!.boards[0].plies).toHaveLength(3);
+  });
+
+  it('an all-finished Event has no Current Round and imports every Round', async () => {
+    rounds = [finished('R1', T0 - 2 * HOUR), finished('R2', T0 - HOUR)];
+    await hub.add(LINK, 2);
+    await follower().imported();
+    expect(state().round).toBeNull();
+    expect(status()).toMatchObject({ next: null, swapAt: null, error: null });
+    expect(site.snapshot('T1')).toMatchObject({ event: { tourId: 'T1' }, round: null });
+    expect(site.summaries()).toEqual([expect.objectContaining({ tourId: 'T1', round: null, tracked: 0 })]);
+    expect(sourceIds).toEqual([]);
+    expect(sched.engine).toBeNull();
+    expect(await fileIds()).toEqual(['R1', 'R2']);
+    expect(archiveIndex(await store.listRounds(), site.currents)[0].rounds).toHaveLength(2);
+  });
+
+  it('added mid-Event with the next Round days away: no Current Round until 10 min before it starts', async () => {
+    const start = T0 + 72 * HOUR;
+    rounds = [
+      finished('P1'),
+      finished('P2'),
+      { id: 'R3', name: 'Round 3', ongoing: false, finished: false, startsAt: start },
+    ];
+    await hub.add(LINK, 2);
+    await follower().imported();
+    expect(state().round).toBeNull();
+    expect(status()).toMatchObject({ next: { roundId: 'R3', startsAt: start }, swapAt: start - 600_000 });
+    expect(await fileIds()).toEqual(['P1', 'P2']);
+    t = start - 600_001;
+    await follower().tick();
+    expect(state().round).toBeNull();
+    t = start - 600_000;
+    await follower().tick();
+    await follower().imported();
+    expect(roundId()).toBe('R3');
+    expect(state().round!.boards.filter((b) => b.tracked)).toHaveLength(2);
+    expect(sourceIds).toEqual(['R3']);
+    expect(fetchRoundPgn).toHaveBeenCalledTimes(2); // R3 was never pre-written by the import
+  });
+
+  it('a slow import delays neither the add nor the next poll, and runs once at a time', async () => {
+    rounds.unshift(finished('P1'));
+    let release!: () => void;
+    fetchRoundPgn.mockImplementationOnce((id) => new Promise((r) => (release = () => r(pgnOf(id)))));
+    await hub.add(LINK, 2);
+    expect(roundId()).toBe('R1');
+    await vi.waitFor(() => expect(fetchRoundPgn).toHaveBeenCalledTimes(1));
+    const n = fetchEvent.mock.calls.length;
+    await follower().tick();
+    expect(fetchEvent).toHaveBeenCalledTimes(n + 1);
+    expect(fetchRoundPgn).toHaveBeenCalledTimes(1); // the poll did not start a second import
+    expect(await fileIds()).toEqual(['R1']);
+    release();
+    await follower().imported();
+    expect(await fileIds()).toEqual(['P1', 'R1']);
+  });
+
+  it('a failed import goes to status.error, stops that pass, and is retried on the next poll', async () => {
+    rounds.unshift(finished('P1'), finished('P2'));
+    fetchRoundPgn.mockRejectedValueOnce(new LichessError(429, 'rate limited'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await hub.add(LINK, 2);
+    await follower().imported();
+    expect(status().error).toBe('import P1: rate limited');
+    expect(fetchRoundPgn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+    await follower().tick();
+    expect(status().error).toBeNull();
+    await follower().imported();
+    expect(status().error).toBeNull();
+    expect(await fileIds()).toEqual(['P1', 'P2', 'R1']);
+  });
+
+  it('stop() waits for the running import, which saves nothing more', async () => {
+    rounds.unshift(finished('P1'));
+    let release!: () => void;
+    fetchRoundPgn.mockImplementationOnce((id) => new Promise((r) => (release = () => r(pgnOf(id)))));
+    await hub.add(LINK, 2);
+    await vi.waitFor(() => expect(fetchRoundPgn).toHaveBeenCalledTimes(1));
+    let stopped = false;
+    const stop = hub.stop().then(() => (stopped = true));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(stopped).toBe(false);
+    release();
+    await stop;
+    expect(await fileIds()).toEqual(['R1']);
   });
 });

@@ -53,7 +53,8 @@ export class LichessError extends Error {
 
 interface TourJson {
   tour: { id: string; name: string };
-  rounds: { id: string; name: string; ongoing?: boolean; finished?: boolean; startsAt?: number }[];
+  // `finished` is deprecated in favour of `finishedAt`
+  rounds: { id: string; name: string; ongoing?: boolean; finished?: boolean; finishedAt?: number; startsAt?: number }[];
   defaultRoundId?: string;
 }
 interface RoundJson {
@@ -93,12 +94,14 @@ export function parseEventLink(link: string): EventRef {
 // 429 pause is shared.
 const queues = { api: Promise.resolve() as Promise<unknown>, explorer: Promise.resolve() as Promise<unknown> };
 let pausedUntil = 0;
-export type Endpoint = 'event' | 'round' | 'explorer';
+export type Endpoint = 'event' | 'round' | 'pgn' | 'explorer';
 export type Outcome = 'ok' | 'http_error' | 'rate_limited' | 'timeout' | 'network' | 'paused';
-function getJson<T>(
+function get<T>(
   url: string,
   f: Fetch,
   endpoint: Endpoint,
+  accept: string,
+  read: (res: Response) => Promise<T>,
   lane: keyof typeof queues = 'api',
   timeoutMs?: number,
 ): Promise<T> {
@@ -112,7 +115,7 @@ function getJson<T>(
     let res: Response;
     try {
       res = await f(url, {
-        headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' },
+        headers: { 'User-Agent': USER_AGENT, Accept: accept },
         signal: timeoutMs === undefined ? undefined : AbortSignal.timeout(timeoutMs),
       });
     } catch (err) {
@@ -129,12 +132,12 @@ function getJson<T>(
       throw new LichessError(res.status, `Lichess ${new URL(url).pathname} → HTTP ${res.status}`);
     }
     try {
-      const body = (await res.json()) as T;
+      const body = await read(res);
       end();
       count('ok');
       return body;
     } catch (err) {
-      // The body broke off (or timed out) mid-read, or is not JSON.
+      // The body broke off (or timed out) mid-read, or is not JSON (JSON calls).
       count((err as Error | undefined)?.name === 'TimeoutError' ? 'timeout' : 'network');
       throw err;
     }
@@ -143,6 +146,9 @@ function getJson<T>(
   queues[lane] = p.catch(() => undefined);
   return p;
 }
+
+const getJson = <T>(url: string, f: Fetch, endpoint: Endpoint, lane?: keyof typeof queues, timeoutMs?: number) =>
+  get(url, f, endpoint, 'application/json', (res) => res.json() as Promise<T>, lane, timeoutMs);
 
 export async function fetchEvent(link: string, f: Fetch = fetch): Promise<EventInfo> {
   const ref = parseEventLink(link);
@@ -159,7 +165,7 @@ export async function fetchEvent(link: string, f: Fetch = fetch): Promise<EventI
       id: r.id,
       name: r.name,
       ongoing: !!r.ongoing,
-      finished: !!r.finished,
+      finished: !!r.finished || r.finishedAt !== undefined,
       startsAt: r.startsAt,
     })),
     defaultRoundId: ref.kind === 'round' ? ref.id : t.defaultRoundId,
@@ -188,6 +194,12 @@ export async function fetchRound(roundId: string, f: Fetch = fetch): Promise<Rou
       result: g.status === '½-½' ? '1/2-1/2' : (g.status as Result),
     })),
   };
+}
+
+/** The whole Round as PGN, one game per Board (GameURL tags, [%clk] comments); same lane and 429 pause as the JSON
+ *  calls. */
+export function fetchRoundPgn(roundId: string, f: Fetch = fetch): Promise<string> {
+  return get(`${BASE}/api/broadcast/round/${roundId}.pgn`, f, 'pgn', 'application/x-chess-pgn', (res) => res.text());
 }
 
 /** Masters explorer name of the position after `uci` ("C20 King's Pawn Game"), or null. Throws on HTTP errors and on a timeout. */

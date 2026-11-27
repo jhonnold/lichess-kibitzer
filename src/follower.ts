@@ -1,6 +1,8 @@
 import { rollover } from '../shared/rollover.js';
 import type { EventInfo, RoundInfo } from './lichess/api.js';
+import { parsePgn } from './lichess/stream.js';
 import { followerPolls } from './metrics.js';
+import { importRound } from './round-import.js';
 import type { Scheduler } from './scheduler.js';
 import type { RoundState } from './round-state.js';
 import type { SiteState } from './site-state.js';
@@ -11,12 +13,13 @@ export const POLL_MS = 60_000;
 export interface LichessClient {
   fetchEvent(link: string): Promise<EventInfo>;
   fetchRound(roundId: string): Promise<RoundInfo>;
+  fetchRoundPgn(roundId: string): Promise<string>;
   fetchOpening?(uci: readonly string[]): Promise<string | null>;
 }
 
 export interface FollowerOpts {
   lichess: LichessClient;
-  store: Pick<DataStore, 'loadRound'>;
+  store: Pick<DataStore, 'loadRound' | 'saveRound' | 'listRounds'>;
   now?: () => number; // default Date.now
   pollMs?: number; // default POLL_MS (demo uses less)
   every?: (ms: number, fn: () => void) => () => void; // default setInterval(unref) → cancel; tests: a stub
@@ -26,7 +29,7 @@ export interface FollowStatus {
   next: { roundId: string; name: string; startsAt: number | null } | null;
   swapAt: number | null; // null: no next Round, or it has no startsAt (swap when Lichess says ongoing)
   polledAt: number | null; // last successful fetchEvent
-  error: string | null; // last poll/swap error, cleared on success
+  error: string | null; // last poll/swap/import error, cleared by the next successful poll
 }
 
 export const IDLE: FollowStatus = { next: null, swapAt: null, polledAt: null, error: null };
@@ -37,13 +40,15 @@ const everyInterval = (ms: number, fn: () => void) => {
   return () => clearInterval(timer);
 };
 
-/** Follows one registered Event: polls it and makes that Event's Current Round the one `rollover` picks. */
+/** Follows one registered Event: polls it, makes that Event's Current Round the one `rollover` picks and imports the
+ *  Rounds before it into the Archive. */
 export class Follower {
   private st: FollowStatus = IDLE;
   private cancel: (() => void) | null = null;
   private stopped = false;
   private timerTick: Promise<void> | null = null;
   private ops: Promise<unknown> = Promise.resolve();
+  private importing: Promise<void> | null = null;
 
   constructor(
     private readonly site: SiteState,
@@ -66,6 +71,7 @@ export class Follower {
       if (this.stopped) return;
       this.poll();
       await this.apply(ev);
+      this.importPast(ev);
     });
   }
 
@@ -89,16 +95,24 @@ export class Follower {
         return;
       }
       await this.apply(ev);
+      this.importPast(ev);
       followerPolls.inc({ event: this.tourId, outcome: this.st.error ? 'error' : 'ok' });
     });
   }
 
-  /** Shutdown: cancel polling, wait for the running operation (no tick starts a Round after this). */
+  /** Shutdown: cancel polling, wait for the running operation and import (no tick starts a Round, and no import saves
+   *  one, after this). */
   async stop(): Promise<void> {
     this.stopped = true;
     this.cancel?.();
     this.cancel = null;
     await this.ops;
+    await this.imported();
+  }
+
+  /** Resolves when the running import, if any, has ended (tests, shutdown). */
+  imported(): Promise<void> {
+    return this.importing ?? Promise.resolve();
   }
 
   private poll(): void {
@@ -151,6 +165,45 @@ export class Follower {
       polledAt: this.now,
       error,
     };
+  }
+
+  /** Starts the import in the background (polls don't wait for it), unless one is running. */
+  private importPast(ev: EventInfo): void {
+    if (this.stopped || !this.state) return;
+    this.importing ??= this.importRounds(ev).finally(() => (this.importing = null));
+  }
+
+  /**
+   * Imports each Round before the Current Round (none: up to the last finished Round) that has no Round file, is no
+   * Event's Current Round and is not ongoing (a later poll imports it once finished), one at a time: fetchRound + fetchRoundPgn → importRound → saveRound. A future or current
+   * Round is never written, so its tracked set still comes from topN. Never rejects: the first error goes to
+   * status.error and ends this pass; the next poll retries.
+   */
+  private async importRounds(ev: EventInfo): Promise<void> {
+    const { lichess, store } = this.opts;
+    const state = this.state;
+    if (!state) return;
+    const cur = state.round?.roundId ?? null;
+    const end =
+      cur === null ? ev.rounds.findLastIndex((r) => r.finished) + 1 : ev.rounds.findIndex((r) => r.id === cur);
+    let name = '';
+    try {
+      // listRounds counts a save still being written, so a Current Round's first write is never overwritten
+      const saved = new Set((await store.listRounds()).filter((m) => m.tourId === this.tourId).map((m) => m.roundId));
+      for (const r of ev.rounds.slice(0, Math.max(end, 0))) {
+        if (this.stopped) return;
+        if (r.ongoing || saved.has(r.id) || this.site.currents.some((c) => c.roundId === r.id)) continue;
+        name = r.name;
+        const info = await lichess.fetchRound(r.id);
+        const games = parsePgn(await lichess.fetchRoundPgn(r.id));
+        if (this.stopped) return;
+        await store.saveRound(importRound(info, games, state.event.name, r.startsAt ?? null));
+      }
+    } catch (err) {
+      const error = name ? `import ${name}: ${message(err)}` : `import: ${message(err)}`;
+      console.warn(`follower ${this.tourId}: ${error}`);
+      this.st = { ...this.st, error };
+    }
   }
 }
 

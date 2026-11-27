@@ -91,7 +91,7 @@ const boot = async () => {
       },
     },
     app: { sse: { throttleMs: 20 } },
-    lichess: { fetchEvent, fetchRound: async (id: string) => ROUNDS[id] ?? ROUND_INFO },
+    lichess: { fetchEvent, fetchRound: async (id: string) => ROUNDS[id] ?? ROUND_INFO, fetchRoundPgn: async () => '' },
   });
 };
 async function login() {

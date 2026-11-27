@@ -101,9 +101,9 @@ the Admin cookie; with no `ADMIN_PASSWORD` it always answers 401.
 - `kibitzer_job_duration_seconds`, `kibitzer_job_depth` and `kibitzer_job_nps` (histograms, `tier`, `pass` and
   `kind` labels; depth and nps also `role`): Jobs that recorded an Eval; `kind` is `complete` when it ran its full
   time; nps is the copy's last report
-- `kibitzer_lichess_requests_total{endpoint,outcome}`: every Lichess API call. `endpoint` is `event`, `round` or
-  `explorer`; `outcome` is `ok`, `http_error`, `rate_limited` (a 429), `timeout`, `network` (no response, or a broken
-  or non-JSON body) or `paused` (refused locally during the minute after a 429).
+- `kibitzer_lichess_requests_total{endpoint,outcome}`: every Lichess API call. `endpoint` is `event`, `round`, `pgn`
+  (a past Round's games, for the import) or `explorer`; `outcome` is `ok`, `http_error`, `rate_limited` (a 429),
+  `timeout`, `network` (no response, or a broken or non-JSON body) or `paused` (refused locally during the minute after a 429).
   `kibitzer_lichess_request_duration_seconds{endpoint}` (histogram): calls that got a response.
 - `kibitzer_lichess_stream_connected`: the number of open Round streams that are receiving (one per Event).
   `kibitzer_lichess_stream_reconnects_total{reason}`: the stream ended and was reopened; `reason` is `eof` (Lichess

@@ -6,6 +6,7 @@ import {
   fetchEvent,
   fetchOpening,
   fetchRound,
+  fetchRoundPgn,
   LichessError,
   parseEventLink,
   RATE_LIMIT_MS,
@@ -96,6 +97,26 @@ describe('fetchEvent / fetchRound', () => {
     });
     expect(byId.Np4zluu9.result).toBe('1/2-1/2');
     expect(byId.qbPxmdQ2.result).toBe('0-1');
+  });
+
+  it('maps finished from finishedAt (finished is deprecated) or finished', async () => {
+    const tour = JSON.parse(readFileSync(FIX + 'tour.json', 'utf8'));
+    tour.rounds[1].finishedAt = 1_795_712_916_296;
+    tour.rounds[2].finished = true;
+    const { f } = fakeFetch({ '/api/broadcast/IjDgZVUR': () => new Response(JSON.stringify(tour)) });
+    const ev = await fetchEvent('https://lichess.org/broadcast/s/IjDgZVUR', f);
+    expect(ev.rounds.map((r) => r.finished)).toEqual([false, true, true]);
+  });
+
+  it('fetches a Round as PGN text, asking for PGN', async () => {
+    let accept: string | null = null;
+    const f: Fetch = async (input, init) => {
+      expect(new URL(String(input)).pathname).toBe('/api/broadcast/round/L3MX2oE3.pgn');
+      accept = new Headers(init?.headers).get('Accept');
+      return new Response(readFileSync(FIX + 'round-stream.pgn', 'utf8'));
+    };
+    expect(await fetchRoundPgn('L3MX2oE3', f)).toBe(readFileSync(FIX + 'round-stream.pgn', 'utf8'));
+    expect(accept).toBe('application/x-chess-pgn');
   });
 
   it('rejects a non-OK response with LichessError', async () => {
@@ -231,6 +252,13 @@ describe('request metrics', () => {
     };
     expect(await delta('round', 'network', round(down))).toEqual([1, 0]);
     expect(await delta('round', 'network', round(status(200, 'not json')))).toEqual([1, 0]);
+  });
+
+  it('labels a Round PGN request pgn; it shares the 429 pause', async () => {
+    const pgn = (f: Fetch) => () => fetchRoundPgn('L3MX2oE3', f);
+    expect(await delta('pgn', 'ok', pgn(status(200, '[Event "x"]')))).toEqual([1, 1]);
+    expect(await delta('round', 'rate_limited', round(status(429)))).toEqual([1, 1]);
+    expect(await delta('pgn', 'paused', pgn(status(200)))).toEqual([1, 0]);
   });
 
   it('counts a timed-out explorer lookup as timeout', async () => {

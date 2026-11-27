@@ -171,10 +171,10 @@ export const streamConnected = new Gauge({
   help: 'Open Lichess Round streams that are receiving (one per Event)',
   registers: [register],
 });
-/** Every Lichess API call (src/lichess/api.ts getJson); `paused` = refused locally during the 60 s pause after a 429. */
+/** Every Lichess API call (src/lichess/api.ts get); `paused` = refused locally during the 60 s pause after a 429. */
 export const lichessRequests = new Counter({
   name: 'kibitzer_lichess_requests_total',
-  help: 'Lichess API requests by endpoint (event, round, explorer) and outcome',
+  help: 'Lichess API requests by endpoint (event, round, pgn, explorer) and outcome',
   labelNames: ['endpoint', 'outcome'],
   registers: [register],
 });
