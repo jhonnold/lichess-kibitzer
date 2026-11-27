@@ -47,26 +47,27 @@ function setup(adminPassword = 'pw') {
     timing: { jobs: 0, provisional: 0, ms: null, depth: null } as JobTiming,
     evictions: [],
   };
-  const status: FollowStatus = { next: null, swapAt: null, polledAt: null, error: null };
-  const follower = {
-    status,
-    register: vi.fn(async (link: string, topN = 8) => {
+  const status: FollowStatus = { next: null, swapAt: null, polledAt: 5, error: null };
+  const other: FollowStatus = { ...status, polledAt: 9 };
+  const site = {
+    status: vi.fn((tourId: string) => (tourId === 't' ? status : other)),
+    add: vi.fn(async (link: string, topN = 8) => {
       if (link === 'busy') throw new LichessError(429, 'rate limited');
       if (link !== 'ok') throw new Error('Not a URL');
-      state.addEvent({ tourId: 't', name: 'Event', link }, topN);
+      return state.addEvent({ tourId: 't', name: 'Event', link }, topN).event;
     }),
-    clear: vi.fn(async () => void state.removeEvent(state.primary!)),
+    remove: vi.fn(async (tourId: string) => state.removeEvent(tourId)),
   };
   const app = createApp({
     store: { listRounds: async () => [], loadRound: async () => null },
     state,
     scheduler,
-    follower,
+    site,
     adminPassword,
     defaultEngine,
     probe: (path) => probeEngine(process.execPath, { args: [path] }), // fake-uci.mjs has no shebang
   });
-  return { state, scheduler, follower, status, app, agent: request.agent(app) };
+  return { state, scheduler, site, status, app, agent: request.agent(app) };
 }
 const login = async (agent: ReturnType<typeof request.agent>) =>
   agent.post('/api/admin/login').send({ password: 'pw' });
@@ -93,7 +94,7 @@ describe('admin auth', () => {
   });
 
   it('refuses every route but login without the cookie, changing nothing', async () => {
-    const { app, state, scheduler, follower } = setup();
+    const { app, state, scheduler, site } = setup();
     const calls: ['get' | 'post' | 'put', string, object?][] = [
       ['post', '/engine/probe', { path: FAKE }],
       ['post', '/engine/button', { name: 'Clear Hash' }],
@@ -110,7 +111,7 @@ describe('admin auth', () => {
       const res = await request(app)[method](`/api/admin${path}`).send(body);
       expect([path, res.status]).toEqual([path, 401]);
     }
-    for (const fn of [...Object.values(scheduler), follower.register, follower.clear])
+    for (const fn of [...Object.values(scheduler), site.add, site.remove])
       if (vi.isMockFunction(fn)) expect(fn).not.toHaveBeenCalled();
     expect([state.primaryState, state.events]).toEqual([null, []]);
   });
@@ -170,28 +171,28 @@ describe('admin routes', () => {
     });
   });
 
-  it('registers an Event through the Follower: validates, passes Lichess errors through', async () => {
-    const { agent, state, follower } = setup();
+  it('registers an Event through the Site: validates, passes Lichess errors through', async () => {
+    const { agent, state, site } = setup();
     await login(agent);
     const post = (body: object) => agent.post('/api/admin/event').send(body);
     expect((await post({})).status).toBe(400);
     expect((await post({ link: 1 })).status).toBe(400);
-    expect(follower.register).not.toHaveBeenCalled();
+    expect(site.add).not.toHaveBeenCalled();
     expect(await post({ link: 'busy' })).toMatchObject({ status: 429, body: { error: 'rate limited' } });
     expect(await post({ link: 'nope' })).toMatchObject({ status: 400, body: { error: 'Not a URL' } });
     expect((await post({ link: 'ok' })).status).toBe(204);
-    expect(follower.register.mock.calls.at(-1)).toEqual(['ok', undefined]);
+    expect(site.add.mock.calls.at(-1)).toEqual(['ok', undefined]);
     expect(state.primaryState?.event).toEqual({ tourId: 't', name: 'Event', link: 'ok' });
   });
 
   it('POST /event passes topN; 400 for topN 0/65/1.5', async () => {
-    const { agent, follower } = setup();
+    const { agent, site } = setup();
     await login(agent);
     const post = (body: object) => agent.post('/api/admin/event').send(body);
     for (const topN of [0, 65, 1.5, '3'] as const) expect((await post({ link: 'ok', topN })).status).toBe(400);
-    expect(follower.register).not.toHaveBeenCalled();
+    expect(site.add).not.toHaveBeenCalled();
     expect((await post({ link: 'ok', topN: 3 })).status).toBe(204);
-    expect(follower.register.mock.calls).toEqual([['ok', 3]]);
+    expect(site.add.mock.calls).toEqual([['ok', 3]]);
   });
 
   it('PUT /topn without an Event → 409', async () => {
@@ -255,8 +256,8 @@ describe('admin routes', () => {
     expect((await agent.get('/api/admin/status')).body.timing).toEqual(scheduler.timing);
   });
 
-  it('reports status (with follow), and clears the Event through the Follower', async () => {
-    const { agent, state, follower, status } = setup();
+  it('reports status (with follow), and clears the Event through the Site', async () => {
+    const { agent, state, site, status } = setup();
     await login(agent);
     const idle = {
       event: null,
@@ -272,12 +273,16 @@ describe('admin routes', () => {
       queue: { current: [], backfill: 0, deferred: [] },
       dead: [],
       evictions: [],
-      follow: status,
+      follow: { next: null, swapAt: null, polledAt: null, error: null },
     };
     expect((await agent.get('/api/admin/status')).body).toEqual(idle);
+    state.addEvent({ tourId: 'z', name: 'Z', link: 'z' }, 2); // not the Primary: its status must not show
+    state.removeEvent('z');
     state.addEvent({ tourId: 't', name: 'Event', link: 'ok' }, 2);
+    state.addEvent({ tourId: 'u', name: 'U', link: 'u' }, 2);
     state.primaryState!.startRound(roundInfo('r1'), 1000);
-    const { round } = (await agent.get('/api/admin/status')).body;
+    const { round, follow } = (await agent.get('/api/admin/status')).body;
+    expect(follow).toEqual(status);
     expect(round.boards.map((b: { id: string; tracked: boolean }) => [b.id, b.tracked])).toEqual([
       ['a', true],
       ['b', true],
@@ -285,7 +290,7 @@ describe('admin routes', () => {
     ]);
     expect(round).toMatchObject({ tourId: 't', roundId: 'r1', name: 'Round 1' });
     expect((await agent.post('/api/admin/clear')).status).toBe(204);
-    expect(follower.clear).toHaveBeenCalledTimes(1);
-    expect([state.primaryState, state.events]).toEqual([null, []]);
+    expect(site.remove).toHaveBeenCalledWith('t');
+    expect([state.primary, state.events.map((e) => e.event.tourId)]).toEqual(['u', ['u']]);
   });
 });

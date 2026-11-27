@@ -2,7 +2,6 @@ import { rollover } from '../shared/rollover.js';
 import type { EventInfo, RoundInfo } from './lichess/api.js';
 import { followerPolls } from './metrics.js';
 import type { Scheduler } from './scheduler.js';
-import { DEFAULT_TOP_N } from '../shared/types.js';
 import type { RoundState } from './round-state.js';
 import type { SiteState } from './site-state.js';
 import type { DataStore } from './store.js';
@@ -30,7 +29,7 @@ export interface FollowStatus {
   error: string | null; // last poll/swap error, cleared on success
 }
 
-const IDLE: FollowStatus = { next: null, swapAt: null, polledAt: null, error: null };
+export const IDLE: FollowStatus = { next: null, swapAt: null, polledAt: null, error: null };
 
 const everyInterval = (ms: number, fn: () => void) => {
   const timer = setInterval(fn, ms);
@@ -38,7 +37,7 @@ const everyInterval = (ms: number, fn: () => void) => {
   return () => clearInterval(timer);
 };
 
-/** Follows the registered Event: polls it and makes the Scheduler's Current Round the one `rollover` picks. */
+/** Follows one registered Event: polls it and makes that Event's Current Round the one `rollover` picks. */
 export class Follower {
   private st: FollowStatus = IDLE;
   private cancel: (() => void) | null = null;
@@ -48,7 +47,8 @@ export class Follower {
 
   constructor(
     private readonly site: SiteState,
-    private readonly scheduler: Pick<Scheduler, 'startRound' | 'removeEvent'>,
+    readonly tourId: string,
+    private readonly scheduler: Pick<Scheduler, 'startRound'>,
     private readonly opts: FollowerOpts,
   ) {}
 
@@ -57,37 +57,20 @@ export class Follower {
   }
 
   private get state(): RoundState | null {
-    return this.site.primaryState;
+    return this.site.event(this.tourId) ?? null;
   }
 
-  /** fetchEvent(link) (rejects: bad link, LichessError). Same tourId as the Primary → no reset, just apply (topN
-   *  ignored). Else remove the Primary (scheduler.removeEvent) → add this Event with topN → apply. Starts polling iff
-   *  not already. */
-  register(link: string, topN = DEFAULT_TOP_N): Promise<void> {
+  /** Starts polling (idempotent), then applies the fetched Event. */
+  follow(ev: EventInfo): Promise<void> {
     return this.serial(async () => {
-      const ev = await this.opts.lichess.fetchEvent(link);
-      if (this.site.primary !== ev.id) {
-        if (this.site.primary !== null) await this.scheduler.removeEvent(this.site.primary);
-        this.site.addEvent({ tourId: ev.id, name: ev.name, link }, topN);
-      }
+      if (this.stopped) return;
       this.poll();
       await this.apply(ev);
     });
   }
 
-  /** Stop polling, remove the Primary (scheduler.removeEvent), status reset. */
-  clear(): Promise<void> {
-    return this.serial(async () => {
-      this.cancel?.();
-      this.cancel = null;
-      if (this.site.primary !== null) await this.scheduler.removeEvent(this.site.primary);
-      this.st = IDLE;
-    });
-  }
-
-  /** Boot: if an Event is registered, start polling and tick once. */
+  /** Boot: start polling and tick once. */
   async resume(): Promise<void> {
-    if (!this.site.primary) return;
     this.poll();
     await this.tick();
   }

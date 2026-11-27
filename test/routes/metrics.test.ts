@@ -33,20 +33,21 @@ function setup(...pw: [string | undefined] | []) {
     copyRestarts: (role: EngineRole) => (role === 'main' ? 2 : 5),
     timing: { jobs: 0, provisional: 0, ms: null, depth: null },
   };
-  const follower = {
-    status: { next: null, swapAt: null, polledAt: null as number | null, error: null },
-    register: async () => {},
-    clear: async () => {},
+  const followStatus = { next: null, swapAt: null, polledAt: null as number | null, error: null };
+  const site = {
+    add: async () => ({ tourId: 'T', name: 'E', link: '' }),
+    remove: async () => true,
+    status: () => followStatus,
   };
   const app = createApp({
     store: { listRounds: async () => [], loadRound: async () => null },
     state,
     scheduler,
-    follower,
+    site,
     adminPassword,
     defaultEngine: { path: 'berserk', options: {} },
   });
-  return { state, scheduler, follower, app };
+  return { state, scheduler, followStatus, app };
 }
 const basic = (s: string) => `Basic ${Buffer.from(s).toString('base64')}`;
 const scrape = (app: ReturnType<typeof setup>['app'], auth?: string) => {
@@ -141,14 +142,15 @@ describe('GET /api/admin/metrics', () => {
   });
 
   it('reports whether an Event is followed and when it was last fetched', async () => {
-    const { app, state, follower } = setup();
+    const { app, state, followStatus } = setup();
     let body = (await scrape(app, basic('admin:pw'))).text;
     expect(body).toContain('kibitzer_following 0');
     expect(body).toContain('kibitzer_follower_last_success_timestamp_seconds 0');
     state.addEvent({ tourId: 'T', name: 'E', link: 'https://lichess.org/broadcast/x/T' }, 2);
-    follower.status.polledAt = 1_700_000_000_000;
+    state.addEvent({ tourId: 'U', name: 'U', link: 'https://lichess.org/broadcast/x/U' }, 2); // not the Primary
+    followStatus.polledAt = 1_700_000_000_000;
     body = (await scrape(app, basic('admin:pw'))).text;
-    expect(body).toContain('kibitzer_following 1');
+    expect(body).toContain('kibitzer_following 2');
     expect(body).toContain('kibitzer_follower_last_success_timestamp_seconds 1700000000');
   });
 

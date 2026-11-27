@@ -194,7 +194,7 @@ describe('live analysis over SSE', () => {
       srv = await boot();
       expect([srv.state.primaryState?.round?.roundId, srv.scheduler.engine?.exited]).toEqual([ROUND, false]);
       expect(fetchEvent).toHaveBeenCalledTimes(1); // boot resumes following: one poll, no swap
-      expect(srv.follower.status.error).toBeNull();
+      expect(srv.site.status('t')!.error).toBeNull();
       const kept = srv.state.primaryState!.round!.boards.flatMap((b) =>
         b.plies.filter((p) => p.eval?.kind === 'complete').map((p) => p.eval),
       );

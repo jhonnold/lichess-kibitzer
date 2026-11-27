@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { basename } from 'node:path';
 import { collectDefaultMetrics, Counter, Gauge, Histogram, Registry } from 'prom-client';
 import type { EngineConfig, EngineRole } from '../shared/types.js';
-import type { Follower } from './follower.js';
+import type { Site } from './site.js';
 import type { SiteState } from './site-state.js';
 import type { Scheduler } from './scheduler.js';
 
@@ -12,9 +12,9 @@ collectDefaultMetrics({ register, prefix: 'kibitzer_' });
 
 /** What the scrape-time metrics read. Set by createApp; before that they report nothing. */
 export interface MetricSources {
-  state: Pick<SiteState, 'settings' | 'queue' | 'events'>;
+  state: Pick<SiteState, 'settings' | 'queue' | 'events' | 'primary'>;
   scheduler: Pick<Scheduler, 'copyState' | 'copyRestarts'>;
-  follower: Pick<Follower, 'status'>;
+  site: Pick<Site, 'status'>;
   defaultEngine: EngineConfig;
 }
 let src: MetricSources | null = null;
@@ -203,7 +203,7 @@ export const followerLastSuccess = new Gauge({
   registers: [register],
   collect() {
     this.reset();
-    const at = src?.follower.status.polledAt;
+    const at = src && src.state.primary !== null ? src.site.status(src.state.primary)?.polledAt : null;
     if (at != null) this.set(at / 1000);
   },
 });
