@@ -159,13 +159,13 @@ describe('dataStore', () => {
 });
 
 describe('dataStore.listRounds', () => {
-  const round = (roundId: string, name = 'Round 1', tracked = true): Round => ({
+  const round = (roundId: string, name = 'Round 1', boards = 2): Round => ({
     tourId: 'ABCDEFGH',
     roundId,
     name,
     eventName: 'Event',
     startsAt: 5,
-    boards: [{ tracked }, { tracked: false }] as Round['boards'],
+    boards: Array.from({ length: boards }, (_, i) => ({ tracked: i === 0 })) as Round['boards'],
   });
   const file = () => join(dir, 'state.json');
 
@@ -173,14 +173,14 @@ describe('dataStore.listRounds', () => {
     expect(await dataStore(file()).listRounds()).toEqual([]);
   });
 
-  it('scans files another store wrote, with Tracked board counts', async () => {
+  it('scans files another store wrote, with board counts (untracked too)', async () => {
     const w = dataStore(file());
     await w.saveRound(round('abcdefg1'));
     await w.saveRound(round('abcdefg2', 'Round 2'));
     const metas = await dataStore(file()).listRounds();
     expect(metas.map((m) => [m.roundId, m.name, m.boards, m.eventName]).sort()).toEqual([
-      ['abcdefg1', 'Round 1', 1, 'Event'],
-      ['abcdefg2', 'Round 2', 1, 'Event'],
+      ['abcdefg1', 'Round 1', 2, 'Event'],
+      ['abcdefg2', 'Round 2', 2, 'Event'],
     ]);
   });
 
@@ -188,11 +188,11 @@ describe('dataStore.listRounds', () => {
     const s = dataStore(file());
     await s.saveRound(round('abcdefg1'));
     expect((await s.listRounds()).map((m) => m.name)).toEqual(['Round 1']);
-    await s.saveRound(round('abcdefg1', 'Renamed', false));
+    await s.saveRound(round('abcdefg1', 'Renamed', 3));
     await s.saveRound(round('abcdefg2'));
     expect((await s.listRounds()).map((m) => [m.name, m.boards])).toEqual([
-      ['Renamed', 0],
-      ['Round 1', 1],
+      ['Renamed', 3],
+      ['Round 1', 2],
     ]);
   });
 

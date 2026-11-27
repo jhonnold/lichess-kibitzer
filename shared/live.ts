@@ -6,7 +6,7 @@ export const eventsUrl = (tour: string | null): string =>
 
 /**
  * A Viewer's copy of the site state, from the SSE stream. `snapshot` replaces it; the rest patch the Current Round's
- * Tracked boards. Pure: never mutates `s`; a patch that changes nothing (no snapshot yet, no Round, unknown Board,
+ * Boards. Pure: never mutates `s`; a patch that changes nothing (no snapshot yet, no Round, unknown Board,
  * a gap in the plies) returns `s` itself. `search` is kept as sent: the Viewer decides if it is relevant.
  */
 export function applyEvent(s: Snapshot | null, e: SseEvent): Snapshot | null {
@@ -31,10 +31,6 @@ export function applyEvent(s: Snapshot | null, e: SseEvent): Snapshot | null {
       if (i >= 0) return withBoards(round.boards.map((b, j) => (j === i ? e.board : b)));
       return withBoards([...round.boards, e.board].sort((a, b) => a.board - b.board));
     }
-    case 'untrack':
-      return round.boards.some((b) => b.id === e.boardId)
-        ? withBoards(round.boards.filter((b) => b.id !== e.boardId))
-        : s;
     case 'ply': {
       const b = round.boards.find((x) => x.id === e.boardId);
       if (!b || e.index < 0 || e.index > b.plies.length) return s;

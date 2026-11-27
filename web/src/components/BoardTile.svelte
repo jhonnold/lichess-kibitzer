@@ -24,7 +24,13 @@
   const latest = $derived(board.plies.length - 1);
   const bar = $derived(barScore(board, latest, search));
   const dot = $derived(statusLine(board, latest, search, queue));
-  const QUEUE: Record<JobState, string> = { searching: 'Analysing', queued: 'Queued', done: 'Up to date', none: '' };
+  const QUEUE: Record<JobState, string> = {
+    searching: 'Analysing',
+    queued: 'Queued',
+    done: 'Up to date',
+    none: '',
+    off: 'Not analysed',
+  };
   const state = $derived(
     archived ? archivedResult(board) : t.state === 'live' ? 'LIVE' : t.state === 'upcoming' ? 'UPCOMING' : t.result,
   );
@@ -124,6 +130,10 @@
   }
   i.queued {
     background: var(--warn);
+  }
+  i.off {
+    background: transparent;
+    box-shadow: inset 0 0 0 1px var(--muted);
   }
   .mid {
     display: flex;

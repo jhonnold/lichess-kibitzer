@@ -45,8 +45,8 @@ export function archiveRouter({ store, state }: ArchiveDeps): Router {
         notFound(res);
         return;
       }
-      // Not immutable: re-registering the Event can re-open an archived Round and write it again.
-      res.set('Cache-Control', 'public, max-age=300').json({ ...round, boards: round.boards.filter((b) => b.tracked) });
+      // Not immutable: re-registering the Event can re-open an archived Round, and deep analysis writes it again.
+      res.set('Cache-Control', 'no-cache').json(round);
     } catch (err) {
       fail(res, err);
     }

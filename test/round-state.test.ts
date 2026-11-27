@@ -93,30 +93,42 @@ describe('RoundState', () => {
     expect(rs.dead).toEqual([]);
     expect(events.map((e) => e.type)).toEqual(['snapshot']);
     const snap = rs.snapshot();
-    expect(snap.round?.boards).toHaveLength(8);
+    expect(snap.round?.boards.map((b) => b.tracked)).toEqual(Array.from({ length: 10 }, (_, i) => i < 8)); // every Board
     expect(snap.stream).toBeNull();
     await site.saved();
     expect(rounds.at(-1)?.boards).toHaveLength(10);
     expect(states.at(-1)?.events[0]).toMatchObject({ current: { tourId: 'T1', roundId: 'R1' }, dead: [] });
     rs.setTopN(3);
     rs.startRound(info(), null);
-    expect(rs.snapshot().round?.boards).toHaveLength(3);
+    expect(rs.snapshot().round?.boards.filter((b) => b.tracked)).toHaveLength(3);
   });
 
-  it('setTracked emits board/untrack and keeps untracked data in round', () => {
+  it('setTracked emits board (the new flag) both ways and keeps untracked data in round and snapshot', () => {
     const { rs, events } = started();
     rs.syncMoves('g1', [mv('e2e4')], 1);
     rs.setEval('g1', 1, ev(10), rs.epoch('g1'));
     events.length = 0;
     rs.setTracked([...Array.from({ length: 8 }, (_, i) => `g${i + 2}`), 'g9', 'nope']);
-    expect(events.map((e) => e.type)).toEqual(['untrack', 'board']);
-    expect(events[0]).toEqual({ type: 'untrack', boardId: 'g1' });
+    expect(events).toMatchObject([
+      { type: 'board', board: { id: 'g1', tracked: false, plies: [{}, { eval: ev(10) }] } },
+      { type: 'board', board: { id: 'g9', tracked: true } },
+    ]);
     expect(rs.board('g1')?.tracked).toBe(false);
     expect(rs.board('g1')?.plies[1].eval).toEqual(ev(10));
-    expect(rs.snapshot().round?.boards.map((b) => b.id)).not.toContain('g1');
+    expect(rs.snapshot().round?.boards.find((b) => b.id === 'g1')).toMatchObject({ tracked: false });
   });
 
-  it('setOpening sets, saves and emits for Tracked; null, same or unknown is a no-op; untracked saves silently', async () => {
+  it('addBoards appends the missing Boards untracked, with a board event each', () => {
+    const { rs, events } = started(2);
+    rs.addBoards(info(4).boards);
+    expect(events).toMatchObject([
+      { type: 'board', board: { id: 'g3', board: 3, tracked: false } },
+      { type: 'board', board: { id: 'g4', board: 4, tracked: false } },
+    ]);
+    expect(rs.snapshot().round?.boards.map((b) => b.id)).toEqual(['g1', 'g2', 'g3', 'g4']);
+  });
+
+  it('setOpening sets, saves and emits, untracked too; null, same or unknown is a no-op', async () => {
     const { rs, events, rounds } = started();
     events.length = 0;
     rs.setOpening('g1', 'E06 Catalan');
@@ -128,7 +140,10 @@ describe('RoundState', () => {
     expect(events).toHaveLength(1);
     expect(rs.board('g1')?.opening).toBe('E06 Catalan');
     rs.setOpening('g10', 'A00 Untracked');
-    expect(events).toHaveLength(1);
+    expect(events).toMatchObject([
+      {},
+      { type: 'board', board: { id: 'g10', tracked: false, opening: 'A00 Untracked' } },
+    ]);
     await rs.saved();
     expect(rounds.at(-1)?.boards.map((b) => b.opening)).toEqual([
       'E06 Catalan',
@@ -137,7 +152,7 @@ describe('RoundState', () => {
     ]);
   });
 
-  it('syncMoves: first sync at null, later at now, no-op on same list, silent when untracked', () => {
+  it('syncMoves: first sync at null, later at now, no-op on same list, emits when untracked too', () => {
     const { rs, events } = started();
     expect(rs.syncMoves('g1', [mv('e2e4')], 100)).toBe(0);
     expect(rs.syncMoves('g1', [mv('e2e4'), mv('e7e5')], 200)).toBe(1);
@@ -146,8 +161,9 @@ describe('RoundState', () => {
     expect(events[1]).toMatchObject({ boardId: 'g1', index: 2 });
     events.length = 0;
     expect(rs.syncMoves('g1', [mv('e2e4'), mv('e7e5')], 300)).toBe(2);
-    rs.syncMoves('g10', [mv('d2d4')], 300);
     expect(events).toEqual([]);
+    rs.syncMoves('g10', [mv('d2d4')], 300);
+    expect(events).toMatchObject([{ type: 'ply', boardId: 'g10', index: 1 }]);
     expect(rs.board('g10')?.plies).toHaveLength(2);
   });
 
@@ -177,7 +193,7 @@ describe('RoundState', () => {
     expect(rs.board('g1')?.plies[1].at).toBeNull();
   });
 
-  it('an untracked Board records evals, results and retracts silently but still saves', () => {
+  it('an untracked Board records and emits evals, results and retracts, and saves', () => {
     const { rs, events, rounds } = started();
     rs.syncMoves('g1', [mv('e2e4'), mv('e7e5')], 1);
     rs.setTracked(Array.from({ length: 7 }, (_, i) => `g${i + 2}`));
@@ -187,7 +203,11 @@ describe('RoundState', () => {
     rs.setResult('g1', '1-0');
     const old = rs.epoch('g1');
     rs.syncMoves('g1', [mv('d2d4')], 2);
-    expect(events).toEqual([]);
+    expect(events).toMatchObject([
+      { type: 'ply', boardId: 'g1', index: 1, ply: { eval: ev(7) } },
+      { type: 'result', boardId: 'g1', result: '1-0' },
+      { type: 'board', board: { id: 'g1', tracked: false } },
+    ]);
     expect(rs.epoch('g1')).toBeGreaterThan(old);
     expect(rs.board('g1')).toMatchObject({ result: '1-0', plies: [{}, { move: { uci: 'd2d4' } }] });
     rs.syncMoves('g1', [mv('e2e4')], 3);
@@ -278,7 +298,12 @@ describe('RoundState', () => {
       listRounds: async () => [],
     });
     const rs = site.event('T1')!;
-    expect(rs.snapshot().round?.boards.map((b) => b.id)).toEqual(['g10']);
+    expect(
+      rs
+        .snapshot()
+        .round?.boards.filter((b) => b.tracked)
+        .map((b) => b.id),
+    ).toEqual(['g10']);
     expect(rs.epoch('g1')).toBeGreaterThan(0);
     rs.syncMoves('g10', [mv('e2e4')], 99);
     expect(rs.board('g10')?.plies[1].at).toBeNull();

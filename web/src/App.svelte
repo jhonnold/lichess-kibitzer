@@ -24,7 +24,8 @@
     switchHref,
     type LastBoard,
   } from '$shared/route';
-  import { boardState } from '$shared/viewer';
+  import type { Board } from '$shared/types';
+  import { boardState, selectedBoard } from '$shared/viewer';
 
   // Hash router: see shared/route.ts. One LiveStore (one EventSource) for every page, bound to the stream tour.
   let hash = $state(location.hash);
@@ -69,13 +70,12 @@
   $effect(() => {
     if (route.page === 'viewer') last = { tour: route.tourId, board: route.board };
   });
-  // Where `o` returns to from the overview: the last Board seen in this Event, else its default Board (board 1 may be
-  // untracked).
-  const back = $derived(
-    backHash(last, tour, multi && ready ? (store.snap?.round?.boards[0]?.board ?? 1) : null) + query,
-  );
+  // Where `o` returns to from the overview: the last Board seen in this Event, else its default Board (the first
+  // Tracked one; board 1 may be untracked).
+  const firstBoard = (boards: readonly Board[] = []) => selectedBoard(boards, null)?.board ?? 1;
+  const back = $derived(backHash(last, tour, multi && ready ? firstBoard(store.snap?.round?.boards) : null) + query);
 
-  // The archived Round on screen: one fetch per Round; its Boards are the Tracked ones as of the swap.
+  // The archived Round on screen: one fetch per Round; every Board, with its analysis as of the swap (none: imported).
   let lastArchiveBoard = $state<number | null>(null);
   $effect(() => {
     if (route.page !== 'archive-round') return;
@@ -84,7 +84,7 @@
   });
   const archiveBack = $derived(
     route.page === 'archive-round'
-      ? archiveHash(route.tourId, route.roundId, lastArchiveBoard ?? archive.snap?.round?.boards[0]?.board ?? 1) + query
+      ? archiveHash(route.tourId, route.roundId, lastArchiveBoard ?? firstBoard(archive.snap?.round?.boards)) + query
       : ARCHIVE_HASH,
   );
 
@@ -105,7 +105,7 @@
             kind: 'live' as const,
             event: store.snap?.event?.name ?? null,
             round: store.snap?.round?.name ?? null,
-            live: !!store.snap?.round?.boards.some((b) => boardState(b) === 'live'),
+            live: !!store.snap?.round?.boards.some((b) => b.tracked && boardState(b) === 'live'), // as EventSummary.live
           },
   );
 

@@ -62,13 +62,16 @@ describe('GET /api/archive', () => {
 });
 
 describe('GET /api/archive/:tourId/:roundId', () => {
-  it('serves the Round with Tracked boards only, cacheable, with an ETag', async () => {
+  it('serves the Round with every Board, revalidated (no-cache) by its ETag', async () => {
     const { app } = setup();
     const res = await request(app).get('/api/archive/abcdefgh/round001');
     expect(res.status).toBe(200);
-    expect(res.headers['cache-control']).toContain('max-age=300');
+    expect(res.headers['cache-control']).toBe('no-cache');
     expect(res.headers.etag).toBeTruthy();
-    expect(res.body.boards.map((b: Board) => b.id)).toEqual(['g1']);
+    expect(res.body.boards.map((b: Board) => [b.id, b.tracked])).toEqual([
+      ['g1', true],
+      ['g2', false],
+    ]);
     expect(
       (await request(app).get('/api/archive/abcdefgh/round001').set('If-None-Match', res.headers.etag)).status,
     ).toBe(304);
@@ -145,7 +148,7 @@ describe('GET /api/archive/:tourId/:roundId', () => {
     const app = express().use(archiveRouter({ store, state: site }));
     const res = await request(app).get('/api/archive/abcdefgh/round001');
     expect(res.body).toEqual(last);
-    expect(res.body.boards).toHaveLength(2);
+    expect(res.body.boards.map((b: Board) => b.tracked)).toEqual([true, true, false]);
     const list = (await request(app).get('/api/archive')).body;
     expect(list[0].rounds.map((r: { roundId: string }) => r.roundId)).toEqual(['round001']);
   });

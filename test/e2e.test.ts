@@ -169,7 +169,8 @@ describe('live analysis over SSE', () => {
       await vi.waitFor(() => expect(c.events.at(-1)?.type).toBe('queue'), WAIT);
       const snap = await freshSnapshot();
       expect(snap.event).toEqual({ tourId: 't', name: 'Event', link: 'x' });
-      expect(snap.round?.boards.map((b) => b.id)).toEqual(['gH77VTmz', 'at7GqSzo']); // Tracked, in Lichess order
+      expect(snap.round?.boards.filter((b) => b.tracked).map((b) => b.id)).toEqual(['gH77VTmz', 'at7GqSzo']); // in Lichess order
+      expect(snap.round?.boards.find((b) => b.id === 'qbPxmdQ2')?.tracked).toBe(false); // every Board is sent
       src.status('connected');
       replay();
       expect(readLog().filter((l) => l.startsWith('go'))).toEqual([]);
@@ -191,7 +192,10 @@ describe('live analysis over SSE', () => {
       expect(readLog(multiLog).filter((l) => l.startsWith('position startpos moves '))).toEqual(positions()); // paired
       const qb = srv.state.primaryState!.board('qbPxmdQ2')!;
       expect([qb.plies.length > 1, qb.tracked, qb.result]).toEqual([true, false, '0-1']); // recorded, not analysed
-      expect((await freshSnapshot()).round?.boards.some((b) => b.id === qb.id)).toBe(false);
+      expect((await freshSnapshot()).round?.boards.find((b) => b.id === qb.id)).toEqual(qb); // shown
+      expect(c.events.some((e) => e.type === 'ply' && e.boardId === qb.id)).toBe(true); // its moves arrive on SSE
+      expect(c.events.some((e) => e.type === 'result' && e.boardId === qb.id)).toBe(true);
+      expect(qb.plies.every((p) => p.eval === null)).toBe(true);
       expect(positions()).not.toContain(`position startpos moves ${latest(qb.id)}`);
 
       src.status('reconnecting');
@@ -276,8 +280,8 @@ describe('live analysis over SSE', () => {
         [b, TOUR_B],
       ] as const)
         await vi.waitFor(() => expect(rebuild(c.events)).toEqual(srv.state.snapshot(t)), WAIT);
-      expect(boardIds(rebuild(a.events))).toEqual(IDS.slice(0, 2));
-      expect(boardIds(rebuild(b.events))).toEqual(IDS_B.slice(0, 2));
+      expect(boardIds(rebuild(a.events))).toEqual(IDS); // every Board, the untracked one too
+      expect(boardIds(rebuild(b.events))).toEqual(IDS_B);
       // Boards only: the Queue (and a snapshot's copy of it) is site-wide
       const boards = (c: { events: SseEvent[] }) =>
         JSON.stringify(
@@ -320,7 +324,7 @@ describe('live analysis over SSE', () => {
       await vi.waitFor(() => expect(rebuild(b.events)?.stream).toBe('reconnecting'), WAIT);
       expect(rebuild(b.events)).toEqual(srv.state.snapshot(TOUR_B));
       expect(rebuild(b.events)?.events.map((e) => [e.tourId, e.primary])).toEqual([[TOUR_B, true]]);
-      expect(boardIds(rebuild(b.events))).toEqual(IDS_B.slice(0, 2));
+      expect(boardIds(rebuild(b.events))).toEqual(IDS_B);
       for (const c of [a, b, primary]) await c.close();
     },
     TEST_TIMEOUT,

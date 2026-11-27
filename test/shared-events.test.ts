@@ -45,4 +45,21 @@ describe('eventCards', () => {
     ]);
     expect(cards[0].href).toBe('#/e/bbbbbbbb/round');
   });
+  it('no Current Round: next or finished link to the Archive; no Rounds or not polled yet is idle', () => {
+    const next = { name: 'Round 4', startsAt: 9000 };
+    const cards = eventCards([
+      ev('aaaaaaaa', { next, finished: false }),
+      ev('bbbbbbbb', { next: null, finished: true }),
+      ev('cccccccc', { next: null, finished: false }),
+      ev('dddddddd', {}),
+      ev('eeeeeeee', { round, next, finished: false }), // a Current Round wins
+    ]);
+    expect(cards.map((c) => [c.state, c.href, c.next, c.polled])).toEqual([
+      ['next', '#/archive', next, true],
+      ['finished', '#/archive', null, true],
+      ['idle', '#/e/cccccccc/round', null, true],
+      ['idle', '#/e/dddddddd/round', null, false],
+      ['upcoming', '#/e/eeeeeeee/round', null, true],
+    ]);
+  });
 });

@@ -45,7 +45,6 @@ describe('applyEvent', () => {
     const i = idle();
     expect(applyEvent(null, { type: 'search', search })).toBeNull();
     expect(applyEvent(i, { type: 'ply', boardId: 'a', index: 0, ply: ply() })).toBe(i);
-    expect(applyEvent(i, { type: 'untrack', boardId: 'a' })).toBe(i);
     expect(applyEvent(i, { type: 'board', board: board('a', 1) })).toBe(i);
     expect(applyEvent(i, { type: 'result', boardId: 'a', result: '1-0' })).toBe(i);
   });
@@ -57,10 +56,13 @@ describe('applyEvent', () => {
     expect(ids(applyEvent(snap(), { type: 'board', board: board('z', 0) }))).toEqual(['z', 'a', 'c']);
   });
 
-  it('untrack removes a Board; an unknown id changes nothing', () => {
-    expect(ids(applyEvent(snap(), { type: 'untrack', boardId: 'a' }))).toEqual(['c']);
+  it('board replaces an untracked Board in place: same position, other Boards keep their identity', () => {
     const s = snap();
-    expect(applyEvent(s, { type: 'untrack', boardId: 'x' })).toBe(s);
+    const untracked = { ...board('a', 1, [ply(), ply('e2e4')]), tracked: false };
+    const next = applyEvent(s, { type: 'board', board: untracked });
+    expect(ids(next)).toEqual(['a', 'c']);
+    expect(next?.round?.boards[0]).toBe(untracked);
+    expect(next?.round?.boards[1]).toBe(s.round!.boards[1]);
   });
 
   it('ply appends at the end, replaces below it, ignores a gap or an unknown Board', () => {
@@ -104,7 +106,6 @@ describe('applyEvent', () => {
     const before = structuredClone(s);
     applyEvent(s, { type: 'ply', boardId: 'a', index: 2, ply: ply('e7e5') });
     applyEvent(s, { type: 'board', board: board('b', 2) });
-    applyEvent(s, { type: 'untrack', boardId: 'a' });
     applyEvent(s, { type: 'result', boardId: 'a', result: '0-1' });
     expect(s).toEqual(before);
   });

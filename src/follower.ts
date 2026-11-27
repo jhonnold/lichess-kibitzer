@@ -132,8 +132,8 @@ export class Follower {
     return (this.opts.now ?? Date.now)();
   }
 
-  /** Swap to the Round `rollover` picks (opening its file if it has one), or fill a zero-Board Round. Errors are
-   *  recorded, never thrown. */
+  /** Swap to the Round `rollover` picks (opening its file if it has one), or fill a zero-Board Round, then push the
+   *  Schedule to the Event's RoundState. Errors are recorded, never thrown. */
   private async apply(ev: EventInfo): Promise<void> {
     const { lichess, store } = this.opts;
     let error: string | null = null;
@@ -159,6 +159,10 @@ export class Follower {
       error = message(err);
     }
     const { next, swapAt } = rollover(ev.rounds, this.state?.round?.roundId ?? null, this.now);
+    this.state?.setSchedule({
+      next: next && { name: next.name, startsAt: next.startsAt ?? null },
+      finished: ev.rounds.length > 0 && ev.rounds.every((r) => r.finished),
+    });
     this.st = {
       next: next && { roundId: next.id, name: next.name, startsAt: next.startsAt ?? null },
       swapAt,
