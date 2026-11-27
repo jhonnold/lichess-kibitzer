@@ -41,7 +41,7 @@ Branches `feat/me-<n>-<slug>`; each green on the gate.
 7. `web-routes` — `route.ts` hashes, LiveStore/App per-Event connect, tourId through `navLinks`, `BoardStrip`, `BoardTile`, Overview links; `test/route.test.ts` (old links → Primary, new parse/build round-trip).
 8. `events-page` — Events landing + AppBar switcher + TabBar; `applyEvent` `events` case tests.
 9. `admin-events` — Admin Events section, StatusPanel per-Event + total tracked/utilisation.
-10. `demo-docs` — `scripts/demo.ts --events N` (second synthesized Event, distinct 8-char ids); AGENTS.md nav, `docs/deploy.md`, README URLs; glossary in `~/documents/lichess-kibitzer/multi-event/`.
+10. `demo-docs` — `scripts/demo.ts --events N` (second synthesized Event, distinct 8-char ids; the flag itself moved to PR 7, see As built); AGENTS.md nav, `docs/deploy.md`, README URLs; glossary in `~/documents/lichess-kibitzer/multi-event/`.
 
 Orchestration as v2.md (worktree per layer, planner general-purpose opus → scratchpad, implementer, code-review), `gh stack`.
 
@@ -62,3 +62,25 @@ Orchestration as v2.md (worktree per layer, planner general-purpose opus → scr
 ## Unresolved questions
 
 None.
+
+## As built
+
+How the stack differs from the plan above (source: the layer reviews).
+
+- **Demo `--events N`** landed in PR 7, not 10, so PRs 7–9 could be checked in a browser with two Events.
+- **Moved earlier:** `POST /event { link, topN? }` and the multi-Round `archiveIndex(metas, currents[])` in PR 3; the `applyEvent` `events` case and `Snapshot.events` in PR 6 (tsc needs the case once the variant exists).
+- **SSE:** an unknown `?tour=` gets 200 and an empty snapshot (EventSource never retries a non-200) and goes live once that Event is added. Only streams without `?tour=` rebind on a Primary change, with one snapshot. `events` frames go out only when the summaries change, once per `setTracked`. The Queue view is site-wide on every stream (positions are global).
+- **`EventSummary.live`** = a Tracked Board is live by the same rule as the app bar's LIVE pill, so a finished Round's card stops saying LIVE.
+- **`/status`** keeps the site fields at the top level and adds `primary`, total `tracked` and `events[]`.
+- **Routes:** `#/` with streaming params (e.g. `?chrome=0`) stays on the Primary's Viewer. Bare `#/` picks the Events list or the Viewer once per navigation (at the first snapshot after it), so adding an Event never pulls a Viewer off its Board. With no Board seen yet, the Board tab and `o` go to the Primary's first Tracked board.
+- **Metrics:** `kibitzer_lichess_stream_connected` counts open Round streams (one per Event); `kibitzer_follower_polls_total` and the last-success gauge carry an `event` label.
+- **Admin:** per-Event form state is merged on every refresh (`mergeForms`: only the Event acted on, an Event whose Round changed, and new Events follow the server); a poll that started before a refresh is dropped. Load estimate = Tracked boards × job time / 176 s (≈ 68% at 8 × 15 s, `docs/jobtime.md`).
+- **Shutdown:** `Site.stop()` makes later adds reject and Followers stop re-arming.
+
+Known gaps (not fixed):
+
+- One 429 pause in `src/lichess/api.ts` covers every Event's polls and Round fetches (the Round streams back off on their own).
+- `PUT /event/:tourId/tracked` validates ids against the Current Round, then applies after any queued Round swap; the swap's new Round then gets no Tracked boards (pre-existing race).
+- `kibitzer_follower_polls_total` keeps the series of a removed Event.
+- The load estimate counts finished Boards that are still Tracked.
+- A scheduler test ("fixes the Job outcome when the main copy ends…") failed once under load during PR 3 and never again in later runs.
