@@ -1,20 +1,7 @@
 import type { UciOption } from '$shared/engine-form';
-import { defaultTopN } from '$shared/events';
-import { DEFAULT_TOP_N } from '$shared/types';
-import type { DeadJob } from '$shared/queue';
-import type { AdminEventStatus, AdminStatus as ServerStatus } from '../../../src/routes/admin';
+import type { AdminStatus } from '../../../src/routes/admin';
 
-/** The Primary Event's block flattened onto the site fields: the shape Admin.svelte/StatusPanel read until the
- *  Admin page lists every Event. */
-export type AdminStatus = Omit<ServerStatus, 'events'> & {
-  event: AdminEventStatus['event'] | null;
-  topN: number;
-  round: AdminEventStatus['round'];
-  stream: AdminEventStatus['stream'];
-  follow: AdminEventStatus['follow'];
-  dead: DeadJob[]; // every Event's, by `at`
-  nextTopN: number; // the server's default for an Event added now
-};
+export type { AdminStatus, AdminEventStatus } from '../../../src/routes/admin';
 export type Probe = { name: string; options: UciOption[] };
 
 export class ApiError extends Error {
@@ -40,18 +27,4 @@ export async function adminApi<T = void>(method: string, path: string, body?: un
   return (res.status === 204 ? undefined : await res.json()) as T;
 }
 
-/** GET /status, with the Primary's block flattened (an Idle follow status and DEFAULT_TOP_N when there is none). */
-export async function getStatus(): Promise<AdminStatus> {
-  const { events, ...site } = await adminApi<ServerStatus>('GET', '/status');
-  const p = events.find((e) => e.primary);
-  return {
-    ...site,
-    event: p?.event ?? null,
-    topN: p?.topN ?? DEFAULT_TOP_N,
-    round: p?.round ?? null,
-    stream: p?.stream ?? null,
-    follow: p?.follow ?? { next: null, swapAt: null, polledAt: null, error: null },
-    dead: events.flatMap((e) => e.dead).sort((a, b) => a.at - b.at),
-    nextTopN: defaultTopN(events.length + 1),
-  };
-}
+export const getStatus = () => adminApi<AdminStatus>('GET', '/status');

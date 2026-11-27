@@ -40,3 +40,10 @@ export function jobTiming(samples: readonly JobSample[]): JobTiming {
     depth: spread(complete.map((s) => s.depth)),
   };
 }
+
+/** One new position per Board every 176 s (docs/jobtime.md: 8 Boards → one every 22 s). */
+export const POSITION_INTERVAL_MS = 176_000;
+
+/** Estimated share of engine time the current tier needs; null when the job time is unset. */
+export const estimatedLoad = (tracked: number, jobTimeMs: number | null): number | null =>
+  jobTimeMs === null ? null : (tracked * jobTimeMs) / POSITION_INTERVAL_MS;
