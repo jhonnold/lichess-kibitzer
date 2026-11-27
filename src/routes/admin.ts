@@ -204,7 +204,7 @@ export function adminRouter(deps: AdminDeps): Router {
     const known = new Set(round.boards.map((b) => b.id));
     if (!ids.every((id) => known.has(id)))
       return void res.status(400).json({ error: 'not a Board of the Current Round' });
-    scheduler.setTracked(ids as string[]).then(() => res.sendStatus(204), fail(res));
+    scheduler.setTracked(state.primary!, ids as string[]).then(() => res.sendStatus(204), fail(res));
   });
   for (const [path, method] of [
     ['requeue', 'requeueDead'],
