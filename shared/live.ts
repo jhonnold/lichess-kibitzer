@@ -1,5 +1,9 @@
 import type { Snapshot, SseEvent } from './types.js';
 
+/** The SSE URL for an Event; null = the Primary (the server's default). */
+export const eventsUrl = (tour: string | null): string =>
+  tour === null ? '/api/events' : `/api/events?tour=${encodeURIComponent(tour)}`;
+
 /**
  * A Viewer's copy of the site state, from the SSE stream. `snapshot` replaces it; the rest patch the Current Round's
  * Tracked boards. Pure: never mutates `s`; a patch that changes nothing (no snapshot yet, no Round, unknown Board,

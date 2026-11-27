@@ -3,10 +3,13 @@
  * from test/fixtures/lichess/round-stream.pgn. Never contacts lichess.org.
  *   npm run build && npm run demo -- [--port 18457] [--boards 10] [--top 8] [--job-time 800] [--interval 1500]
  *                                    [--data DIR] [--password demo] [--rounds 1] [--swap-in 20] [--poll 2000]
- *                                    [--crash-board N]
+ *                                    [--crash-board N] [--events 1]
  * One move per --interval ms, round-robin over Boards with moves left (0 = frozen at the initial state).
  * --rounds 0: an Event with no Rounds yet; 2: adds Round 2 (all Boards Upcoming, colours swapped), which the follower
  * swaps in --swap-in seconds after boot (its start is 10 min later); --poll is the follower's poll interval in ms.
+ * --events N: follows N Events (1-9): `demo` (tourId demoEvnt, Rounds demoRnd1/2, games demo0001..) and `demo2`..`demoN`
+ * (tourId demoEvn<k>, Rounds dem<k>Rnd1/2, games dem<k>0001.., players tagged `/k`). They share the --boards and move in
+ * lockstep; the first is the Primary. More can be added from Admin: link `demo3`..`demo9`. All ids are 8 chars.
  * --crash-board N: the fake engine crashes on Board N's position at boot (2..boards, not the Upcoming --top Board), so
  * that Job lands in the Dead-letter queue after 3 crashes. Boards sharing its base game and position dead-letter too.
  * Archived Rounds land in <data>/rounds/demoEvnt/demoRnd1.json (Event id 8 chars: the Archive route validates ids).
@@ -39,9 +42,10 @@ const { values: v } = parseArgs({
     'swap-in': { type: 'string', default: '20' },
     poll: { type: 'string', default: '2000' },
     'crash-board': { type: 'string' },
+    events: { type: 'string', default: '1' },
   },
 });
-const [port, count, top, jobTime, interval, rounds, swapIn, pollMs] = [
+const [port, count, top, jobTime, interval, rounds, swapIn, pollMs, events] = [
   v.port!,
   v.boards!,
   v.top!,
@@ -50,7 +54,12 @@ const [port, count, top, jobTime, interval, rounds, swapIn, pollMs] = [
   v.rounds!,
   v['swap-in']!,
   v.poll!,
+  v.events!,
 ].map(Number);
+if (!(events >= 1 && events <= 9)) {
+  console.error('--events must be 1..9');
+  process.exit(1);
+}
 const crashBoard = v['crash-board'] === undefined ? null : Number(v['crash-board']);
 if (crashBoard !== null && !(crashBoard >= 2 && crashBoard <= count && crashBoard !== top)) {
   console.error(`--crash-board must be a Board in 2..${count} other than the Upcoming Board ${top}`);
@@ -63,7 +72,8 @@ const FAKE = join(import.meta.dirname, '../test/fixtures/fake-uci.mjs');
 const fixture = new Map<string, GameUpdate>();
 for (const u of ReplaySource.fromFile('test/fixtures/lichess/round-stream.pgn').updates) fixture.set(u.gameId, u);
 const games = ['qbPxmdQ2', 'at7GqSzo', 'gH77VTmz'].map((id) => fixture.get(id)!);
-const suffix = (name: string, i: number) => (name.includes(',') ? name.replace(',', ` ${i},`) : `${name} ${i}`);
+const suffix = (name: string, i: number | string) =>
+  name.includes(',') ? name.replace(',', ` ${i},`) : `${name} ${i}`;
 
 // Moves released so far per Board. Board 1 is finished, Board `top` Upcoming, the rest Live.
 const base = (i: number) => games[(i - 1) % 3];
@@ -72,18 +82,30 @@ const shown = Array.from({ length: count }, (_, k) => {
   const full = base(i).uci.length;
   return i === 1 ? full : i === top ? 0 : Math.min(10 + 4 * i, full - 1);
 });
-const gameId = (i: number) => `demo${String(i).padStart(4, '0')}`;
+// Event k (1-based): `demo` / `demo<k>`. Ids stay 8 chars (the Archive route validates them); Event 1 keeps its old ids.
+const evKey = (k: number) => (k === 1 ? 'demo' : `dem${k}`);
+const tourOf = (k: number) => (k === 1 ? 'demoEvnt' : `demoEvn${k}`);
+const roundOf = (k: number, n: number) => (k === 1 ? `demoRnd${n}` : `dem${k}Rnd${n}`);
+const gameId = (i: number, k = 1) => `${evKey(k)}${String(i).padStart(4, '0')}`;
+const game2Id = (i: number, k: number) => `${k === 1 ? 'demo2' : `dm${k}`}_${String(i).padStart(4, '0')}`;
+/** `demo3` -> 3; `demo` -> 1. */
+const eventOfLink = (link: string) => (link === 'demo' ? 1 : Number(/^demo([2-9])$/.exec(link)?.[1] ?? NaN));
+/** `dem3Rnd2` -> { k: 3, n: 2 }. */
+const parseRound = (id: string) => {
+  const m = /^(?:demoRnd|dem([2-9])Rnd)([12])$/.exec(id);
+  return m ? { k: Number(m[1] ?? 1), n: Number(m[2]) } : null;
+};
 const result = (i: number) => (shown[i - 1] === base(i).uci.length ? base(i).result : '*');
 
-function update(i: number): GameUpdate {
+function update(i: number, ev = 1): GameUpdate {
   const g = base(i);
   const k = shown[i - 1];
   const r = result(i);
   return {
     ...g,
-    gameId: gameId(i),
-    white: { ...g.white, name: suffix(g.white.name, i) },
-    black: { ...g.black, name: suffix(g.black.name, i) },
+    gameId: gameId(i, ev),
+    white: { ...g.white, name: suffix(g.white.name, ev === 1 ? i : `${i}/${ev}`) },
+    black: { ...g.black, name: suffix(g.black.name, ev === 1 ? i : `${i}/${ev}`) },
     uci: g.uci.slice(0, k),
     san: g.san.slice(0, k),
     clocks: g.clocks.slice(0, k),
@@ -102,41 +124,44 @@ const board = (u: GameUpdate): Board => ({
   result: u.result,
 });
 const lichess = {
-  fetchEvent: async (): Promise<EventInfo> => ({
-    id: 'demoEvnt',
-    name: 'Demo Event',
-    rounds: [
-      { id: 'demoRnd1', name: 'Round 1', ongoing: true, finished: false },
-      { id: 'demoRnd2', name: 'Round 2', ongoing: false, finished: false, startsAt: startsAt2 },
-    ].slice(0, rounds),
-    defaultRoundId: 'demoRnd1',
-  }),
-  fetchRound: async (id: string): Promise<RoundInfo> => ({
-    id,
-    name: id === 'demoRnd2' ? 'Round 2' : 'Round 1',
-    tourId: 'demoEvnt',
-    boards: Array.from({ length: count }, (_, k): Board => {
-      const u = update(k + 1);
-      if (id === 'demoRnd1') return board(u);
-      return board({
-        ...u,
-        gameId: `demo2_${String(k + 1).padStart(4, '0')}`,
-        white: u.black,
-        black: u.white,
-        result: '*',
-      });
-    }),
-  }),
+  fetchEvent: async (link: string): Promise<EventInfo> => {
+    const k = eventOfLink(link);
+    if (!(k >= 1 && k <= 9)) throw new Error(`demo link must be demo or demo2..demo9, got ${link}`);
+    return {
+      id: tourOf(k),
+      name: k === 1 ? 'Demo Event' : `Demo Event ${k}`,
+      rounds: [
+        { id: roundOf(k, 1), name: 'Round 1', ongoing: true, finished: false },
+        { id: roundOf(k, 2), name: 'Round 2', ongoing: false, finished: false, startsAt: startsAt2 },
+      ].slice(0, rounds),
+      defaultRoundId: roundOf(k, 1),
+    };
+  },
+  fetchRound: async (id: string): Promise<RoundInfo> => {
+    const { k, n } = parseRound(id)!;
+    return {
+      id,
+      name: `Round ${n}`,
+      tourId: tourOf(k),
+      boards: Array.from({ length: count }, (_, j): Board => {
+        const u = update(j + 1, k);
+        if (n === 1) return board(u);
+        return board({ ...u, gameId: game2Id(j + 1, k), white: u.black, black: u.white, result: '*' });
+      }),
+    };
+  },
 };
 
-const handlers = new Set<SourceHandlers>();
+// Live Sources by handlers, with their Event; every release feeds all of them.
+const handlers = new Map<SourceHandlers, number>();
 const source = (roundId: string): Source => {
   let h: SourceHandlers;
-  if (roundId !== 'demoRnd1') return { start() {}, stop() {} }; // Round 2: no game has started
+  const r = parseRound(roundId);
+  if (r?.n !== 1) return { start() {}, stop() {} }; // Round 2: no game has started
   return {
     start(x) {
-      handlers.add((h = x));
-      for (let i = 1; i <= count; i++) x.game(update(i));
+      handlers.set((h = x), r.k);
+      for (let i = 1; i <= count; i++) x.game(update(i, r.k));
     },
     stop: () => void handlers.delete(h),
   };
@@ -152,7 +177,7 @@ function release(i?: number): void {
   }
   if (!(i >= 1 && i <= count) || shown[i - 1] >= base(i).uci.length) return;
   shown[i - 1]++;
-  for (const h of handlers) h.game(update(i));
+  for (const [h, k] of handlers) h.game(update(i, k));
 }
 
 const crash =
@@ -184,7 +209,7 @@ const running = await startServer({
 });
 const { scheduler, site } = running;
 await scheduler.setJobTime(jobTime);
-await site.add('demo', top);
+for (let k = 1; k <= events; k++) await site.add(k === 1 ? 'demo' : `demo${k}`, top);
 
 if (interval > 0) setInterval(release, interval);
 createInterface({ input: process.stdin }).on('line', (l) => release(l.trim() ? Number(l) : undefined));

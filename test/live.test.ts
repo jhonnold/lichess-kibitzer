@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyEvent } from '../shared/live.js';
+import { applyEvent, eventsUrl } from '../shared/live.js';
 import type { Board, Ply, SearchInfo, Snapshot } from '../shared/types.js';
 
 const ply = (uci?: string): Ply => ({ move: uci ? { uci, san: uci, clock: null } : null, at: null, eval: null });
@@ -107,5 +107,12 @@ describe('applyEvent', () => {
     applyEvent(s, { type: 'untrack', boardId: 'a' });
     applyEvent(s, { type: 'result', boardId: 'a', result: '0-1' });
     expect(s).toEqual(before);
+  });
+});
+
+describe('eventsUrl', () => {
+  it('no tour is the Primary, a tour is a query', () => {
+    expect(eventsUrl(null)).toBe('/api/events');
+    expect(eventsUrl('abcdefgh')).toBe('/api/events?tour=abcdefgh');
   });
 });

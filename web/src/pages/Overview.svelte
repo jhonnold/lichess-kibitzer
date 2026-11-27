@@ -13,8 +13,11 @@
     layout,
     query = '',
     ctx = null,
-  }: { store: SnapSource; layout: Layout; query?: string; ctx?: ArchiveCtx | null } = $props();
-  const href = $derived((n: number) => (ctx ? archiveHash(ctx.tourId, ctx.roundId, n) : boardHash(n)) + query);
+    tourId = null,
+  }: { store: SnapSource; layout: Layout; query?: string; ctx?: ArchiveCtx | null; tourId?: string | null } = $props();
+  const href = $derived(
+    (n: number) => (ctx ? archiveHash(ctx.tourId, ctx.roundId, n) : boardHash(n, undefined, tourId)) + query,
+  );
   const snap = $derived(store.snap);
   let now = $state(Date.now());
   onMount(() => {

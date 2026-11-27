@@ -140,12 +140,15 @@
   });
 
   const snap = $derived(store.snap);
-  const running = $derived(!!snap?.round); // an engine runs while there is a Current Round
+  const tracked = $derived(status?.round?.boards.filter((b) => b.tracked).length ?? 0);
+  // Admin is about the Primary (what `status` flattens), whichever Event the stream is on.
+  const running = $derived(!!status?.round); // an engine runs while there is a Current Round
 
   // A swap (or a new Event) changes the Current Round: re-read the follow status without a reload.
   // A derived string, not the ids read in the effect: every Snapshot is a new object and would re-run it (and
   // refresh() resets the Tracking form).
-  const roundKey = $derived(`${snap?.event?.tourId}/${snap?.round?.roundId}`);
+  const primary = $derived(snap?.events.find((e) => e.primary));
+  const roundKey = $derived(`${primary?.tourId}/${primary?.round?.roundId}`);
   $effect(() => {
     void roundKey;
     if (authed) untrack(() => run('status', async () => void (await refresh())));
@@ -220,17 +223,15 @@
           <div class="grid">
             <article>
               <h2>Event</h2>
-              {#if snap?.event}<a class="big" href={snap.event.link}>{snap.event.name}</a>{:else}<p class="big">
+              {#if status?.event}<a class="big" href={status.event.link}>{status.event.name}</a>{:else}<p class="big">
                   –
                 </p>{/if}
               <p>
-                Current Round <b>{snap?.round?.name ?? '–'}</b>
-                {#if snap?.round}· {snap.round.boards.length} Tracked {snap.round.boards.length === 1
-                    ? 'board'
-                    : 'boards'}{/if}
+                Current Round <b>{status?.round?.name ?? '–'}</b>
+                {#if status?.round}· {tracked} Tracked {tracked === 1 ? 'board' : 'boards'}{/if}
               </p>
             </article>
-            {#if status && snap?.event}
+            {#if status?.event}
               {@const { next, swapAt, error } = status.follow}
               <article>
                 <h2>Next Round</h2>
@@ -247,9 +248,9 @@
             <article>
               <h2>Connections</h2>
               <p class="dotrow">
-                <i class={snap?.stream === 'connected' ? 'ok' : snap?.stream === 'reconnecting' ? 'warn' : ''}
+                <i class={status?.stream === 'connected' ? 'ok' : status?.stream === 'reconnecting' ? 'warn' : ''}
                 ></i>Lichess stream
-                <b>{snap?.stream ?? '–'}</b>
+                <b>{status?.stream ?? '–'}</b>
               </p>
               <p class="dotrow">
                 <i class={store.connected ? 'ok' : 'warn'}></i>Server
@@ -287,7 +288,7 @@
               <b>Clear Event</b>
               <p class="muted small">Stops polling the Event and stops the engine.</p>
             </div>
-            <button class="dangerBtn" disabled={busy || !snap?.event} onclick={clear}>Clear Event</button>
+            <button class="dangerBtn" disabled={busy || !status?.event} onclick={clear}>Clear Event</button>
           </div>
         </section>
 
