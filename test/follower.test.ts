@@ -148,7 +148,7 @@ describe('Follower', () => {
 
   it('starts the next Round from the default tracked set', async () => {
     await follower.register(LINK, 2);
-    await sched.setTracked(['R1c']);
+    await sched.setTracked('T1', ['R1c']);
     t = follower.status.swapAt!;
     await follower.tick();
     expect(
@@ -209,12 +209,12 @@ describe('Follower', () => {
   });
 
   it('registering the same Event again changes nothing; clear then register reopens the Round file', async () => {
-    const stop = vi.spyOn(sched, 'stop');
+    const remove = vi.spyOn(sched, 'removeEvent');
     await follower.register(LINK, 2);
     await idle();
-    expect(stop).toHaveBeenCalledTimes(1); // first Event: nothing running, harmless
+    expect(remove).toHaveBeenCalledTimes(0); // first Event: nothing to remove
     await follower.register(LINK, 2);
-    expect(stop).toHaveBeenCalledTimes(1);
+    expect(remove).toHaveBeenCalledTimes(0);
     expect(complete('R1a')).toBe(true);
     const epoch = state().epoch('R1a');
     await follower.clear();
@@ -226,13 +226,13 @@ describe('Follower', () => {
   });
 
   it('serialises concurrent registrations: the last Event wins', async () => {
-    const stop = vi.spyOn(sched, 'stop');
+    const remove = vi.spyOn(sched, 'removeEvent');
     const a = follower.register(LINK, 2);
     const b = follower.register('other', 2);
     await Promise.all([a, b]);
     expect(site.primaryState?.event).toMatchObject({ tourId: 'T2', name: 'Event 2' });
     expect(roundId()).toBe('B1');
-    expect(stop).toHaveBeenCalledTimes(2);
+    expect(remove).toHaveBeenCalledTimes(1); // T1 removed for T2
   });
 
   it('rejects a bad link and a Lichess error without registering anything', async () => {

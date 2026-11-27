@@ -163,10 +163,7 @@ describe('live analysis over SSE', () => {
       }
 
       await admin('POST', '/clear');
-      await vi.waitFor(
-        () => expect(c.events.at(-1)).toMatchObject({ type: 'snapshot', snapshot: { event: null, round: null } }),
-        WAIT,
-      );
+      await vi.waitFor(() => expect(rebuild(c.events)).toMatchObject({ event: null, round: null }), WAIT);
       expect(srv.scheduler.engine).toBeNull();
       await c.close();
     },

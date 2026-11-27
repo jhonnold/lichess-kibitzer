@@ -6,9 +6,10 @@ import type * as T from '../shared/types.js';
 import { Engine, type SearchResult } from './engine/engine.js';
 import type { UciInfo } from './engine/uci-parser.js';
 import type { RoundInfo } from './lichess/api.js';
-import { lichessSource, type GameUpdate, type Source, type SourceFactory } from './lichess/stream.js';
+import type { SourceFactory } from './lichess/stream.js';
 import { evictions, jobDepth, jobDuration, jobNps, jobs } from './metrics.js';
-import { OpeningFallback, type OpeningFetch } from './opening.js';
+import { Feed } from './feed.js';
+import type { OpeningFetch } from './opening.js';
 import { pvToSan, toScore } from './pv.js';
 import type { RoundState } from './round-state.js';
 import type { SiteState } from './site-state.js';
@@ -121,31 +122,21 @@ const noLegalMoves = (b: Readonly<T.Board>): boolean => {
  */
 export class Scheduler {
   private readonly queue = new Queue();
-  private source: Source | null = null;
+  private readonly feeds = new Map<string, Feed>();
   private readonly copies: Record<T.EngineRole, Copy> = { main: newCopy(), multi: newCopy() };
   private run: Run | null = null;
   private loop: Promise<void> = Promise.resolve();
   private busy = false;
   private halting = false;
   private ops: Promise<unknown> = Promise.resolve();
-  private wanted = false; // a Round exists and stop() was not called: keep an engine running
+  private wanted = false; // some Event has a Round and stop() was not called: keep an engine running
   private samples: JobSample[] = []; // the last TIMING_WINDOW recorded Jobs; resets on boot, not on a Round swap
   private evicted: EvictedJob[] = []; // the last EVICTIONS_KEPT evictions, newest first; resets on boot
-  private readonly openings: OpeningFallback | null = null;
 
   constructor(
     private readonly site: SiteState,
     private readonly opts: SchedulerOpts,
-  ) {
-    if (opts.fetchOpening) {
-      this.openings = new OpeningFallback({ setOpening: (id, o) => this.ev?.setOpening(id, o) }, opts.fetchOpening);
-    }
-  }
-
-  /** The Event this Scheduler works on: the Primary (temporary: one Event). */
-  private get ev(): RoundState | null {
-    return this.site.primaryState;
-  }
+  ) {}
 
   /** The main copy. Null before the first Round, after stop() or after an exit. */
   get engine(): Engine | null {
@@ -184,19 +175,23 @@ export class Scheduler {
     return this.run && { ...this.run.job };
   }
 
-  /** Replace the Current Round (also the first one): drop the running Job, follow the new Round's source.
-   *  existing = that Round's file: continue it, never wipe it. */
-  startRound(r: RoundInfo, startsAt: number | null, existing: T.Round | null = null): Promise<void> {
+  /** Replace that Event's Current Round (also its first one): drop its running Job and Queue entries, follow the new
+   *  Round's source. Other Events are untouched. existing = that Round's file: continue it, never wipe it. */
+  startRound(tourId: string, r: RoundInfo, startsAt: number | null, existing: T.Round | null = null): Promise<void> {
     return this.serial(async () => {
-      this.detach();
-      await this.halt('drop');
-      this.queue.clear();
+      const rs = this.site.event(tourId);
+      if (!rs) return;
+      this.feeds.get(tourId)?.stop();
+      if (this.run?.job.tourId === tourId) await this.halt('drop');
+      if (this.site.event(tourId) !== rs) return; // removed during the halt
+      this.queue.removeEvent(tourId);
       this.publishQueue(); // before the new Round's snapshot, which carries the Queue
-      this.openings?.clear();
-      if (existing) this.ev!.openRound(existing);
-      else this.ev!.startRound(r, startsAt);
-      this.startSource(r.id);
-      this.enqueueTracked();
+      if (existing) rs.openRound(existing);
+      else rs.startRound(r, startsAt);
+      let feed = this.feeds.get(tourId);
+      if (feed?.state !== rs) this.feeds.set(tourId, (feed = this.newFeed(rs)));
+      feed.start(r.id);
+      this.enqueueTracked(rs);
       this.wake();
       this.wanted = true;
       for (const role of ROLES) {
@@ -204,6 +199,22 @@ export class Scheduler {
         this.copies[role].backoff = RESTART_MIN_MS;
         if (!this.copies[role].engine) await this.ensureEngine(role);
       }
+      this.kick();
+    });
+  }
+
+  /** The Event is being removed: stop its Feed, drop its Job and Queue entries, remove it from the site. Quit the
+   *  engines when no Event has a Round any more. */
+  removeEvent(tourId: string): Promise<void> {
+    return this.serial(async () => {
+      this.feeds.get(tourId)?.stop();
+      this.feeds.delete(tourId);
+      if (this.run?.job.tourId === tourId) await this.halt('drop');
+      this.queue.removeEvent(tourId);
+      this.site.removeEvent(tourId);
+      this.wanted = this.site.events.some((rs) => rs.round);
+      if (!this.wanted) await this.idleEngines();
+      this.publishQueue();
       this.kick();
     });
   }
@@ -216,30 +227,40 @@ export class Scheduler {
     });
   }
 
-  /** Exact tracked set. Untracked Boards leave the Queue; newly tracked ones are queued with their earlier plies. */
-  setTracked(boardIds: readonly string[]): Promise<void> {
+  /** That Event's exact tracked set. Untracked Boards leave the Queue; newly tracked ones are queued with their
+   *  earlier plies. */
+  setTracked(tourId: string, boardIds: readonly string[]): Promise<void> {
     return this.serial(async () => {
-      const boards = this.ev!.round?.boards ?? [];
+      const rs = this.site.event(tourId);
+      if (!rs) return;
+      const boards = rs.round?.boards ?? [];
       const before = new Set(boards.filter((b) => b.tracked).map((b) => b.id));
-      this.ev!.setTracked(boardIds);
+      rs.setTracked(boardIds);
       for (const b of boards) {
         if (before.has(b.id) && !b.tracked) this.queue.removeBoard(b.id);
-        else if (!before.has(b.id) && b.tracked) this.enqueue(b);
+        else if (!before.has(b.id) && b.tracked) this.enqueue(rs, b);
       }
       this.persistDead();
       this.wake();
     });
   }
 
-  /** Boot: if there is a Current Round, rebuild the Queue from its plies and follow its source again. */
+  /** Boot: follow every Event that has a Current Round: rebuild its Queue entries from its plies and follow its
+   *  source again. */
   resume(): Promise<void> {
     return this.serial(async () => {
-      const ev = this.ev;
-      const round = ev?.round;
-      if (!ev || !round) return;
-      this.startSource(round.roundId);
-      this.queue.restoreDead(ev.dead, ev.event.tourId); // before enqueueTracked: dead positions are not queued again
-      this.enqueueTracked();
+      let any = false;
+      for (const rs of this.site.events) {
+        if (!rs.round) continue;
+        any = true;
+        this.feeds.get(rs.event.tourId)?.stop();
+        const feed = this.newFeed(rs);
+        this.feeds.set(rs.event.tourId, feed);
+        feed.start(rs.round.roundId);
+        this.queue.restoreDead(rs.dead, rs.event.tourId); // before enqueueTracked: dead positions are not queued again
+        this.enqueueTracked(rs);
+      }
+      if (!any) return;
       this.wake();
       this.wanted = true;
       for (const role of ROLES) await this.ensureEngine(role);
@@ -293,21 +314,27 @@ export class Scheduler {
     });
   }
 
-  /** Shutdown / Event cleared: drop the Job, stop the source, quit the engine, clear the Queue. */
+  /** Shutdown: drop the Job, stop every source, quit the engines, clear the Queue. */
   stop(): Promise<void> {
     return this.serial(async () => {
       this.wanted = false;
-      for (const role of ROLES) {
-        this.cancelPendingRestart(role);
-        Object.assign(this.copies[role], { backoff: RESTART_MIN_MS, launchFailed: false });
-      }
-      this.detach();
+      for (const feed of this.feeds.values()) feed.stop();
+      this.feeds.clear();
       await this.halt('drop');
-      await this.quitEngines();
+      await this.idleEngines();
       this.queue.clear();
       this.publishQueue();
-      this.site.setSearch(null, null);
     });
+  }
+
+  /** Inside serial only, after halt() and with no Round wanted: no restarts pending, engines quit, no search. */
+  private async idleEngines(): Promise<void> {
+    for (const role of ROLES) {
+      this.cancelPendingRestart(role);
+      Object.assign(this.copies[role], { backoff: RESTART_MIN_MS, launchFailed: false });
+    }
+    await this.quitEngines();
+    this.site.setSearch(null, null);
   }
 
   private serial(op: () => Promise<void>): Promise<void> {
@@ -324,67 +351,60 @@ export class Scheduler {
     return (this.opts.now ?? Date.now)();
   }
 
-  private detach(): void {
-    this.source?.stop();
-    this.source = null;
-  }
-
-  private startSource(roundId: string): void {
-    const src = (this.opts.source ?? lichessSource)(roundId);
-    this.source = src;
-    // Stream handler exceptions are swallowed as network errors (and the update lost): never throw from these.
-    src.start({
-      game: (u) => this.source === src && this.onGame(u),
-      status: (s) => this.source === src && this.ev?.setStream(s),
+  private newFeed(rs: RoundState): Feed {
+    return new Feed(rs, {
+      source: this.opts.source,
+      now: () => this.now,
+      fetchOpening: this.opts.fetchOpening,
+      onMoves: (tourId, id, kept, before) => this.onMoves(tourId, id, kept, before),
     });
   }
 
-  private enqueueTracked(): void {
-    for (const b of this.ev!.round?.boards ?? []) if (b.tracked) this.enqueue(b);
+  private enqueueTracked(rs: RoundState): void {
+    for (const b of rs.round?.boards ?? []) if (b.tracked) this.enqueue(rs, b);
   }
 
-  private onGame(u: GameUpdate): void {
-    const moves = u.uci.map((uci, i) => ({ uci, san: u.san[i], clock: u.clocks[i] }));
-    const before = this.ev!.board(u.gameId)?.plies.length ?? 0;
-    const kept = this.ev!.syncMoves(u.gameId, moves, this.now);
-    if (kept === null) return;
-    this.ev!.setResult(u.gameId, u.result);
-    this.ev!.setOpening(u.gameId, u.opening);
-    const b = this.ev!.board(u.gameId)!;
-    if (b.tracked && !u.opening) this.openings?.seen(b.id, u.uci);
-    if (b.tracked) {
+  private onMoves(tourId: string, boardId: string, kept: number, before: number): void {
+    const rs = this.site.event(tourId);
+    if (!rs) return;
+    const b = rs.board(boardId);
+    if (b?.tracked) {
       // A correction that does not shorten the game: forget the replaced plies first, else setLatest sees no change.
       if (kept + 1 < before && kept + 1 < b.plies.length)
-        this.queue.setLatest(this.ev!.event.tourId, b.id, b.board, kept, this.now, true);
-      this.enqueue(b);
+        this.queue.setLatest(tourId, b.id, b.board, kept, this.now, true);
+      this.enqueue(rs, b);
       this.persistDead(); // a correction that shortened the game dropped its dead plies
     }
     this.wake();
   }
 
-  /** Persist the Dead-letter queue when it differs from the saved one. */
+  /** Persist each Event's Dead-letter queue when it differs from the saved one. */
   private persistDead(): void {
     const now = this.queue.dead();
-    const ev = this.ev;
-    if (!ev) return;
-    const saved = ev.dead;
-    if (now.length === saved.length && now.every((d, i) => d.boardId === saved[i].boardId && d.ply === saved[i].ply)) {
-      return;
+    for (const rs of this.site.events) {
+      const mine = now.filter((d) => d.tourId === rs.event.tourId);
+      const saved = rs.dead;
+      if (
+        mine.length === saved.length &&
+        mine.every((d, i) => d.boardId === saved[i].boardId && d.ply === saved[i].ply)
+      )
+        continue;
+      rs.setDead(mine);
     }
-    ev.setDead(now);
   }
 
   /** Idempotent: latest ply → current tier, earlier plies without a Complete eval → backfill. */
-  private enqueue(b: Readonly<T.Board>): void {
+  private enqueue(rs: RoundState, b: Readonly<T.Board>): void {
+    const tourId = rs.event.tourId;
     const latest = b.plies.length - 1;
     const done = noLegalMoves(b) || b.plies[latest].eval?.kind === 'complete';
-    this.queue.setLatest(this.ev!.event.tourId, b.id, b.board, latest, this.now, done);
+    this.queue.setLatest(tourId, b.id, b.board, latest, this.now, done);
     const running = this.run?.job; // already out of the Queue
     const missing: number[] = [];
     for (let i = 0; i < latest; i++) {
       if (b.plies[i].eval?.kind !== 'complete' && !(running?.boardId === b.id && running.ply === i)) missing.push(i);
     }
-    this.queue.addBackfill(this.ev!.event.tourId, b.id, missing, this.now);
+    this.queue.addBackfill(tourId, b.id, missing, this.now);
   }
 
   /** After every Queue change: publish it, then evict the running Job if the Queue says so, or start the loop. */
@@ -435,7 +455,10 @@ export class Scheduler {
 
   private async runJob(engine: Engine, multi: Engine | null, job: Job, ms: number): Promise<void> {
     const { boardId, ply } = job;
-    const moves = this.ev!.board(boardId)!
+    const rs = this.site.event(job.tourId);
+    if (!rs) return void jobs.inc({ tier: job.tier, outcome: 'dropped' });
+    const moves = rs
+      .board(boardId)!
       .plies.slice(1, ply + 1)
       .map((p) => p.move!.uci);
     const chess = new Chess();
@@ -443,7 +466,7 @@ export class Scheduler {
     const slice = Math.min(MIN_LIVE_SLICE_MS, ms);
     const run: Run = {
       job,
-      epoch: this.ev!.epoch(boardId),
+      epoch: rs.epoch(boardId),
       fen: chess.fen(),
       engine: engine.name,
       main: { lines: [], nps: null },
@@ -467,8 +490,10 @@ export class Scheduler {
     try {
       r = await engine.search(moves, { movetime: ms });
     } catch {
-      const stop = run.stop; // decided when the main copy ended: not by a stop sent while waiting for the multi copy
+      // The Event may have been removed meanwhile: then nothing of this Job is recorded or requeued.
+      const ended = run.stop; // decided when the main copy ended: not by a stop sent while waiting for the multi copy
       await settled();
+      const stop = this.site.event(job.tourId) === rs ? ended : 'drop';
       cancelSlice();
       // The search rejected: the engine died. A Job we quit the engine under (restart) is not its crash.
       this.run = null;
@@ -487,12 +512,13 @@ export class Scheduler {
       this.publishQueue();
       return;
     }
-    const { stop, evicted } = run; // as for a crash: the Job's outcome is the main copy's
+    const { stop: ended, evicted } = run; // as for a crash: the Job's outcome is the main copy's
     const mr = await settled();
     cancelSlice();
     this.run = null;
     this.copies.main.backoff = RESTART_MIN_MS;
     if (mr) this.copies.multi.backoff = RESTART_MIN_MS;
+    const stop = this.site.event(job.tourId) === rs ? ended : 'drop'; // the Event may be gone: drop the result
     if (stop === 'drop') return void jobs.inc({ tier: job.tier, outcome: 'dropped' });
     if (stop === 'restart') jobs.inc({ tier: job.tier, outcome: 'interrupted' });
     else {
@@ -502,19 +528,27 @@ export class Scheduler {
       if (e) {
         this.recordJob(job, this.now - run.startedAt, e, run);
         // A short eviction (stale) must not replace a deeper Provisional eval of the same ply.
-        const prev = this.ev!.board(boardId)?.plies[ply]?.eval;
-        if (e.kind === 'complete' || !prev || prev.depth <= e.depth) this.ev!.setEval(boardId, ply, e, run.epoch);
+        const prev = rs.board(boardId)?.plies[ply]?.eval;
+        if (e.kind === 'complete' || !prev || prev.depth <= e.depth) rs.setEval(boardId, ply, e, run.epoch);
       }
       if (evicted) {
-        const depth = this.ev!.board(boardId)?.plies[ply]?.eval?.depth ?? null; // what the ply kept
-        this.evicted.unshift({ boardId, board: job.board, ply, reason: evicted, depth, at: this.now });
+        const depth = rs.board(boardId)?.plies[ply]?.eval?.depth ?? null; // what the ply kept
+        this.evicted.unshift({
+          tourId: job.tourId,
+          boardId,
+          board: job.board,
+          ply,
+          reason: evicted,
+          depth,
+          at: this.now,
+        });
         this.evicted.length = Math.min(this.evicted.length, EVICTIONS_KEPT);
       }
     }
     // Evicted for another live position: a full search later, from the top of backfill.
     if (stop === 'preempt' && evicted === 'live') this.queue.evict(job, this.now);
     // Stopped, or a correction bumped the epoch (eval refused): search it again if the ply still exists.
-    else if (stop || run.epoch !== this.ev!.epoch(boardId)) this.queue.requeue(job, this.now);
+    else if (stop || run.epoch !== rs.epoch(boardId)) this.queue.requeue(job, this.now);
   }
 
   /** Duration and the Admin timing samples are the Job's (main copy's depth); depth and nps also per copy. */

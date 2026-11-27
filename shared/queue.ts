@@ -30,6 +30,7 @@ export type Eviction = 'stale' | 'live' | 'backfill';
 
 /** A Job that was evicted, for the Admin status page. depth = the eval it kept (null: none). */
 export interface EvictedJob {
+  tourId: string;
   boardId: string;
   board: number;
   ply: number;

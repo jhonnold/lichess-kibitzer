@@ -221,7 +221,7 @@ describe('admin routes', () => {
     expect((await tracked([1])).status).toBe(400);
     expect((await tracked(['b', 'zz'])).status).toBe(400); // not a Board of the Current Round
     expect((await tracked(['b'])).status).toBe(204);
-    expect(scheduler.setTracked.mock.calls).toEqual([[['b']]]);
+    expect(scheduler.setTracked.mock.calls).toEqual([['t', ['b']]]);
   });
 
   it('requeues and discards Dead-letter queue entries', async () => {
