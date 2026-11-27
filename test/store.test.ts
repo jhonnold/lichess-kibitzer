@@ -23,8 +23,8 @@ describe('dataStore', () => {
   const event = { tourId: 'T', name: 'Event', link: 'https://lichess.org/broadcast/x/T' };
   const dead = { tourId: 'T', boardId: 'G', board: 1, ply: 3, at: 7 };
   const state: PersistedState = {
-    version: 3,
-    settings: { engine: null, jobTimeMs: 5000 },
+    version: 4,
+    settings: { engine: null, passesMs: [1000, 10_000, 100_000] }, // what a version 2 or 3 job time becomes
     primary: 'T',
     events: [{ event, topN: 6, current: { tourId: 'T', roundId: 'R' }, dead: [dead] }],
   };
@@ -72,13 +72,14 @@ describe('dataStore', () => {
     expect(await writes('state')).toEqual([ok + 1, err + 1]);
   });
 
-  it('discards a version 1 file and rejects an unknown version or a malformed v3', async () => {
+  it('discards a version 1 file and rejects an unknown version or a malformed v4', async () => {
     const path = join(dir, 'state.json');
     const s = dataStore(path);
     writeFileSync(path, JSON.stringify(data));
     expect(await s.load()).toBeNull();
     for (const bad of [
-      { ...state, version: 4 },
+      { ...state, version: 5 },
+      { ...state, settings: { engine: null, passesMs: 3 } },
       { ...state, events: {} },
       { ...state, primary: 3 },
       { ...state, settings: null },
@@ -100,11 +101,20 @@ describe('dataStore', () => {
     const path = join(dir, 'state.json');
     writeFileSync(path, JSON.stringify(v2({ event: null }, { current: null, dead: [] })));
     expect(await dataStore(path).load()).toEqual({
-      version: 3,
-      settings: { engine: null, jobTimeMs: 5000 },
+      version: 4,
+      settings: { engine: null, passesMs: [1000, 10_000, 100_000] },
       primary: null,
       events: [],
     });
+  });
+
+  it('migrates a version 3 job time to the default Passes; an unset one stays unset', async () => {
+    const path = join(dir, 'state.json');
+    const v3 = (jobTimeMs: number | null) => ({ ...state, version: 3, settings: { engine: null, jobTimeMs } });
+    writeFileSync(path, JSON.stringify(v3(15_000)));
+    expect(await dataStore(path).load()).toEqual(state);
+    writeFileSync(path, JSON.stringify(v3(null)));
+    expect((await dataStore(path).load())?.settings).toEqual({ engine: null, passesMs: null });
   });
 
   it('migrates a pre-copies engine config on load, from version 2 and version 3', async () => {

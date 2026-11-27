@@ -33,7 +33,7 @@ export class SiteState extends EventEmitter<SiteEvents> {
   ) {
     super();
     this.setMaxListeners(0); // one listener per SSE client; default cap 10 would warn
-    this.#settings = init.state?.settings ?? { engine: null, jobTimeMs: T.DEFAULT_JOB_TIME_MS };
+    this.#settings = init.state?.settings ?? { engine: null, passesMs: [...T.DEFAULT_PASSES_MS] };
     this.#primary = init.state?.primary ?? null;
     for (const entry of init.state?.events ?? []) {
       this.#events.set(entry.event.tourId, this.#make(entry, init.rounds?.get(entry.event.tourId) ?? null));
@@ -165,8 +165,8 @@ export class SiteState extends EventEmitter<SiteEvents> {
     this.#saveState();
   }
 
-  setJobTime(jobTimeMs: number | null): void {
-    this.#settings = { ...this.#settings, jobTimeMs };
+  setPasses(passesMs: T.PassesMs | null): void {
+    this.#settings = { ...this.#settings, passesMs };
     this.#saveState();
   }
 
@@ -218,7 +218,7 @@ export class SiteState extends EventEmitter<SiteEvents> {
 
   #saveState(): void {
     const state: T.PersistedState = {
-      version: 3,
+      version: 4,
       settings: this.#settings,
       primary: this.primary,
       events: this.events.map((rs) => rs.persisted()),

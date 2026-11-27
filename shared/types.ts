@@ -36,7 +36,8 @@ export interface Move {
   clock: number | null; // ms left for the mover after this move, from [%clk]
 }
 
-/** complete: ran its full job time (or ended early on a forced mate); provisional: the Job was interrupted. */
+/** complete: ran its full job time (or ended early on a forced mate), or an interrupted deepening search that got deeper
+ *  than the eval it replaced; provisional: the Job was interrupted. */
 export type EvalKind = 'complete' | 'provisional';
 
 /** One MultiPV line. White POV. `move` = UCI of san[0] (arrows: from = move.slice(0, 2), to = slice(2, 4)). */
@@ -55,7 +56,8 @@ export interface MultiLines {
 
 /** The main copy's search: score White POV (= lines[0].score); bestmove UCI; lines = its line (MultiPV 1), may be
  *  empty. multi: the multi copy's Lines of the same Job; null = it gave none (down, crashed). Absent in evals recorded
- *  before the second copy, whose `lines` held every MultiPV line: read the Lines with multiOf. */
+ *  before the second copy, whose `lines` held every MultiPV line: read the Lines with multiOf. ms: how long it searched
+ *  (the Pass's time; an interrupted deepening search: its elapsed time); absent in evals recorded before Passes. */
 export interface Eval {
   score: Score;
   depth: number;
@@ -63,6 +65,7 @@ export interface Eval {
   bestmove: string | null;
   lines: PvLine[];
   multi?: MultiLines | null;
+  ms?: number;
 }
 
 /** plies[0] = start position (move null, at null). at = arrival ms epoch; null = start or already played when first seen. */
@@ -102,8 +105,12 @@ export interface RegisteredEvent {
 }
 
 export const DEFAULT_TOP_N = 8;
-/** Job time of a fresh state file (existing state keeps its value). Chosen in docs/jobtime.md. */
-export const DEFAULT_JOB_TIME_MS = 15_000;
+
+/** Search time of each Pass, ms: [0] right away, [1] in free time, [2] only while no Event is live. A null slot is
+ *  skipped; non-null values are strictly ascending. */
+export type PassesMs = [number, number | null, number | null];
+/** Passes of a fresh state file (and of a state file that had a job time). See docs/jobtime.md. */
+export const DEFAULT_PASSES_MS: PassesMs = [1000, 10_000, 100_000];
 
 /** Running Job's output so far: the main copy's (depth, nps, lines) and the multi copy's (null: not searching). Transient. */
 export interface SearchInfo {
@@ -116,6 +123,8 @@ export interface SearchInfo {
   multi: (MultiLines & { nps: number | null }) | null;
   startedAt: number; // ms epoch
   tier: Tier; // of the running Job
+  pass: number; // of the running Job
+  ms: number; // its search time
 }
 
 /** Queue as Viewers need it: current-tier Jobs in run order (position = index + 1), backfill count, and the latest
@@ -161,7 +170,7 @@ export type SseEvent =
 /** Site-wide settings of the state file (not per Event). */
 export interface SiteSettings {
   engine: EngineConfig | null; // null = Admin page defaults
-  jobTimeMs: number | null; // null = unset: Queue idles
+  passesMs: PassesMs | null; // null = unset: Queue idles
 }
 
 /** One registered Event as persisted: its own topN, Current Round's file and Dead-letter queue. */
@@ -174,7 +183,7 @@ export interface PersistedEvent {
 
 /** data/state.json. events in registration order; primary = the tourId of the Primary Event (null when none). */
 export interface PersistedState {
-  version: 3;
+  version: 4;
   settings: SiteSettings;
   primary: string | null;
   events: PersistedEvent[];

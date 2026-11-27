@@ -2,9 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { SiteState } from '../src/site-state.js';
 import type { RoundInfo } from '../src/lichess/api.js';
 import type { DataStore } from '../src/store.js';
-import { DEFAULT_JOB_TIME_MS } from '../shared/types.js';
+import { DEFAULT_PASSES_MS } from '../shared/types.js';
 import type * as T from '../shared/types.js';
 import { engineConfig } from '../shared/engine-config.js';
+
+/** A single Pass of `ms` (null: unset, the Queue idles). */
+const one = (ms: number | null): T.PassesMs | null => (ms === null ? null : [ms, null, null]);
 
 const ev = (n: number): T.RegisteredEvent => ({
   tourId: `T${n}`,
@@ -38,8 +41,8 @@ const search: T.SearchInfo = {
 const queue: T.QueueView = { current: [], backfill: 3, deferred: [] };
 
 const persisted = (primary: string | null, ...ns: number[]): T.PersistedState => ({
-  version: 3,
-  settings: { engine: null, jobTimeMs: 5000 },
+  version: 4,
+  settings: { engine: null, passesMs: [5000, null, null] },
   primary,
   events: ns.map((n) => ({
     event: ev(n),
@@ -100,22 +103,22 @@ describe('SiteState', () => {
     expect((await SiteState.load(store({ ...state, primary: 'gone' }))).primary).toBe('T1');
   });
 
-  it('defaults the job time on a fresh state only; a persisted null stays unset', () => {
-    expect(setup().site.settings).toEqual({ engine: null, jobTimeMs: DEFAULT_JOB_TIME_MS });
-    const state = { ...persisted(null), settings: { engine: null, jobTimeMs: null } };
-    expect(setup(state).site.settings.jobTimeMs).toBeNull();
+  it('defaults the Passes on a fresh state only; a persisted null stays unset', () => {
+    expect(setup().site.settings).toEqual({ engine: null, passesMs: DEFAULT_PASSES_MS });
+    const state = { ...persisted(null), settings: { engine: null, passesMs: null } };
+    expect(setup(state).site.settings.passesMs).toBeNull();
   });
 
   it('persists Idle as no Events; addEvent makes the first Event Primary and saves it', async () => {
     const { site, states, primaries } = setup();
     expect(site.primary).toBeNull();
     expect(site.primaryState).toBeNull();
-    site.setJobTime(9000);
+    site.setPasses(one(9000));
     site.setEngine(engineConfig('p'));
     await site.saved();
     expect(states.at(-1)).toEqual({
-      version: 3,
-      settings: { engine: engineConfig('p'), jobTimeMs: 9000 },
+      version: 4,
+      settings: { engine: engineConfig('p'), passesMs: [9000, null, null] },
       primary: null,
       events: [],
     });
@@ -172,11 +175,11 @@ describe('SiteState', () => {
     const b = site.addEvent(ev(2), 6);
     a.setTopN(7);
     b.startRound(info('T2'), null);
-    site.setJobTime(1234);
+    site.setPasses(one(1234));
     await site.saved();
     expect(states.at(-1)).toEqual({
-      version: 3,
-      settings: { engine: null, jobTimeMs: 1234 },
+      version: 4,
+      settings: { engine: null, passesMs: [1234, null, null] },
       primary: 'T1',
       events: [
         { event: ev(1), topN: 7, current: null, dead: [] },

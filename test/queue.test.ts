@@ -147,7 +147,7 @@ describe('Queue', () => {
     q.setLatest(T, 'c', 3, 2, 2);
     expect(q.evict(running, 3)).toBe(true);
     expect(q.current().map((j) => j.boardId)).toEqual(['c']);
-    expect(q.deferred()).toEqual([{ tourId: T, boardId: 'b', board: 2, ply: 9, tier: 'backfill', since: 3 }]);
+    expect(q.deferred()).toEqual([{ tourId: T, boardId: 'b', board: 2, pass: 0, ply: 9, tier: 'backfill', since: 3 }]);
     expect(q.position('b', 9)).toBe(2);
     expect(q.requeue(q.next()!, 4)).toBe(true); // c back; b still waits in backfill
     q.next();
@@ -387,5 +387,68 @@ describe('Queue', () => {
     const [view] = q.current() as Job[];
     view.since = 99;
     expect(q.current()[0].since).toBe(0);
+  });
+
+  it('orders by Pass first; next(maxPass) holds back the higher Passes', () => {
+    const q = new Queue();
+    q.setLatest(T, 'a', 1, 5, 0, false, 1); // a deepening Job of the latest ply
+    q.addBackfill(T, 'a', [3, 2], 1, (ply) => (ply === 3 ? 2 : 0));
+    q.setLatest(T, 'b', 2, 9, 2);
+    expect(q.passCounts()).toEqual([2, 1, 1]);
+    expect(q.current().map((j) => j.boardId)).toEqual(['b']); // Pass 0 only
+    expect(q.backfillCount()).toBe(1);
+    expect([q.next(1), q.next(1), q.next(1)].map((j) => `${j?.boardId}${j?.ply}:${j?.pass}`)).toEqual([
+      'b9:0',
+      'a2:0',
+      'a5:1',
+    ]);
+    expect(q.next(1)).toBeNull();
+    expect(q.next()).toMatchObject({ boardId: 'a', ply: 3, pass: 2 });
+  });
+
+  it('evicts a deepening Job for a lower Pass, or when its Pass may no longer run', () => {
+    const q = new Queue();
+    q.setLatest(T, 'a', 1, 5, 0, false, 2);
+    const running = q.next()!;
+    expect(q.preempt(running, 0, Infinity, 2)).toBeNull();
+    expect(q.preempt(running, 0, Infinity, 1)).toBe('upgrade'); // an Event went live
+    q.addBackfill(T, 'a', [3], 1, () => 2);
+    expect(q.preempt(running, 0, Infinity, 2)).toBeNull(); // same Pass waits: keep going
+    q.addBackfill(T, 'a', [2], 1, () => 1);
+    expect(q.preempt(running, 0, Infinity, 2)).toBe('upgrade');
+    q.setLatest(T, 'a', 1, 6, 2);
+    expect(q.preempt(running, 0, Infinity, 2)).toBe('stale');
+  });
+
+  it('a Pass 0 Job is not evicted by a waiting deepening Job', () => {
+    const q = new Queue();
+    q.setLatest(T, 'a', 1, 5, 0);
+    q.setLatest(T, 'b', 2, 9, 1, false, 1);
+    const running = q.next()!;
+    expect(running.boardId).toBe('a');
+    expect(q.preempt(running, 5000, 3000, 2)).toBeNull();
+  });
+
+  it('repass moves waiting Jobs to their new Pass, keeps their place, and drops the finished ones', () => {
+    const q = new Queue();
+    q.setLatest(T, 'a', 1, 5, 0, false, 1);
+    q.addBackfill(T, 'a', [3, 2], 1, () => 1);
+    kill(q, 'x', 3, 1);
+    q.repass((j) => (j.ply === 2 ? null : 2));
+    expect(q.passCounts()).toEqual([0, 0, 2]);
+    expect(q.next()).toMatchObject({ ply: 5, pass: 2, since: 0, tier: 'current' });
+    expect(q.next()).toMatchObject({ ply: 3, pass: 2 });
+    expect(q.dead()).toHaveLength(1);
+  });
+
+  it("requeue keeps a Job's Pass; a dead entry comes back at Pass 0", () => {
+    const q = new Queue();
+    q.setLatest(T, 'a', 1, 5, 0);
+    const job = q.next()!;
+    expect(q.requeue({ ...job, pass: 1 }, 1)).toBe(true);
+    expect(q.next()).toMatchObject({ ply: 5, pass: 1, tier: 'current' });
+    kill(q, 'b', 2, 4);
+    expect(q.requeueDead('b', 4, 9)).toBe(true);
+    expect(q.next()).toMatchObject({ boardId: 'b', pass: 0 });
   });
 });

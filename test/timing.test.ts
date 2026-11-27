@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { estimatedLoad, jobTiming, percentile, spread, type JobSample } from '../shared/timing.js';
+import { estimatedLoad, jobTiming, passTimings, percentile, spread, type JobSample } from '../shared/timing.js';
 
 describe('percentile', () => {
   it('is null for no values and the value for one', () => {
@@ -43,5 +43,23 @@ describe('estimatedLoad', () => {
     expect(estimatedLoad(16, 15000)).toBeCloseTo(1.36, 2);
     expect(estimatedLoad(0, 15000)).toBe(0);
     expect(estimatedLoad(8, null)).toBeNull();
+  });
+});
+
+describe('passTimings', () => {
+  it('is one jobTiming per Pass, up to the highest Pass sampled', () => {
+    const samples: JobSample[] = [
+      { ms: 1000, depth: 20, kind: 'complete', pass: 0 },
+      { ms: 10_000, depth: 26, kind: 'complete', pass: 2 },
+      { ms: 300, depth: 15, kind: 'provisional', pass: 2 },
+    ];
+    expect(passTimings([])).toEqual([]);
+    const t = passTimings(samples);
+    expect(t.map((x) => [x.jobs, x.provisional])).toEqual([
+      [1, 0],
+      [0, 0],
+      [1, 1],
+    ]);
+    expect(t[2].depth).toEqual({ p50: 26, p95: 26 });
   });
 });

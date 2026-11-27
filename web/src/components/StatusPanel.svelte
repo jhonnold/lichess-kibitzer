@@ -2,7 +2,7 @@
   import type { DeadJob, EvictedJob, Eviction } from '$shared/queue';
   import type { Snapshot } from '$shared/types';
   import type { AdminStatus } from '$lib/admin-api';
-  import { boardIndex, formatJobTime } from '$shared/admin-form';
+  import { boardIndex, formatJobTime, formatPasses } from '$shared/admin-form';
   import { formatLine } from '$lib/format';
 
   type Props = {
@@ -32,6 +32,7 @@
     stale: 'its Board moved on',
     live: 'another live position waited',
     backfill: 'a live position waited',
+    upgrade: 'a shorter Pass waited, or an Event went live',
   };
   const search = $derived(
     status.running && snap?.search?.boardId === status.running.boardId && snap.search.ply === status.running.ply
@@ -44,18 +45,17 @@
     return san ? ` (${formatLine(d.ply - 1, [san])})` : '';
   };
   const sec = (ms: number) => (ms / 1000).toFixed(1);
-  const t = $derived(status.timing);
+  const timings = $derived(status.timing.map((t, k) => ({ t, k })).filter(({ t }) => t.jobs + t.provisional > 0));
   const elapsed = $derived(search ? now - search.startedAt : null);
+  const jobMs = $derived(status.running ? (status.passesMs?.[status.running.pass] ?? null) : null);
   // One string: Svelte drops the space at the start of an {#if} block ("4.0 sof 15 s").
   const runLabel = $derived(
     [
       `depth ${search?.depth ?? '–'}${search?.multi ? ` (Lines ${search.multi.depth})` : ''}`,
-      `${elapsed === null ? '–' : `${sec(elapsed)} s`}${status.jobTimeMs ? ` of ${status.jobTimeMs / 1000} s` : ''}`,
+      `${elapsed === null ? '–' : `${sec(elapsed)} s`}${jobMs ? ` of ${jobMs / 1000} s` : ''}`,
     ].join(' · '),
   );
-  const progress = $derived(
-    elapsed === null || !status.jobTimeMs ? null : Math.min(100, (100 * elapsed) / status.jobTimeMs),
-  );
+  const progress = $derived(elapsed === null || !jobMs ? null : Math.min(100, (100 * elapsed) / jobMs));
 </script>
 
 <!-- Cards in the Admin status grid (the parent lays them out). Depth and elapsed time come from the stream's Event
@@ -79,6 +79,7 @@
     <div class="run">
       <span class="big"><i class="busy"></i>Board {boardNo(status.running.boardId)} · ply {status.running.ply}</span>
       <span class="chip">{status.running.tier}</span>
+      <span class="chip">Pass {status.running.pass + 1}</span>
       <span class="muted">
         {runLabel}
       </span>
@@ -104,6 +105,9 @@
       Current tier <b>{queued.length ? `${queued.length} ${queued.length === 1 ? 'Job' : 'Jobs'}` : 'empty'}</b>
     </span>
     <span>Backfill <b>{snap?.queue.backfill ?? status.queue.backfill}</b> positions</span>
+    {#each status.passCounts.slice(1) as n, k (k)}
+      <span>Pass {k + 2} <b>{n}</b> waiting</span>
+    {/each}
   </div>
   {#if queued.length}
     <ol>
@@ -132,14 +136,22 @@
 
 <article>
   <h2>Timing</h2>
-  {#if t.jobs === 0 || !t.ms || !t.depth}
-    <p>No Jobs yet</p>
-    <p class="muted">Job time {formatJobTime(status.jobTimeMs)}</p>
+  {#each timings as { t, k } (k)}
+    <p>
+      Pass {k + 1}
+      {#if t.ms && t.depth}
+        · time p50 <b>{sec(t.ms.p50)} s</b> · p95 <b>{sec(t.ms.p95)} s</b> · depth p50 <b>{t.depth.p50}</b> · p95
+        <b>{t.depth.p95}</b>
+      {/if}
+    </p>
+    <p class="muted">
+      Set {status.passesMs?.[k] ? formatJobTime(status.passesMs[k]) : 'off'} · over {t.jobs} Jobs ({t.provisional} stopped
+      early)
+    </p>
   {:else}
-    <p>Job time p50 <b>{sec(t.ms.p50)} s</b> · p95 <b>{sec(t.ms.p95)} s</b></p>
-    <p>Depth p50 <b>{t.depth.p50}</b> · p95 <b>{t.depth.p95}</b></p>
-    <p class="muted">Set {formatJobTime(status.jobTimeMs)} · over {t.jobs} Jobs ({t.provisional} Provisional)</p>
-  {/if}
+    <p>No Jobs yet</p>
+    <p class="muted">Passes {formatPasses(status.passesMs)}</p>
+  {/each}
 </article>
 
 <article class:alert={dead.length > 0}>

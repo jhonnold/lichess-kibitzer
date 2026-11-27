@@ -164,7 +164,7 @@ describe('live analysis over SSE', () => {
       expect(srv.state.snapshot()).toMatchObject({ event: null, round: null });
       expect([srv.scheduler.engine, existsSync(logFile)]).toEqual([null, false]); // Idle: no engine process ever spawned
 
-      await admin('PUT', '/jobtime', { ms: null }); // job time unset: the Queue idles
+      await admin('PUT', '/passes', { ms: null }); // job time unset: the Queue idles
       await track();
       await vi.waitFor(() => expect(c.events.at(-1)?.type).toBe('queue'), WAIT);
       const snap = await freshSnapshot();
@@ -174,7 +174,7 @@ describe('live analysis over SSE', () => {
       replay();
       expect(readLog().filter((l) => l.startsWith('go'))).toEqual([]);
 
-      await admin('PUT', '/jobtime', { ms: 5 });
+      await admin('PUT', '/passes', { ms: [5, null, null] });
       await vi.waitFor(() => expect(positions().length).toBeGreaterThanOrEqual(2), WAIT);
       const latest = (id: string) => src.updates.findLast((u) => u.gameId === id)!.uci.join(' ');
       expect(new Set(positions().slice(0, 2))).toEqual(
@@ -217,7 +217,7 @@ describe('live analysis over SSE', () => {
   it(
     'a restart resumes the Current Round and finishes its evals',
     async () => {
-      await admin('PUT', '/jobtime', { ms: 5 });
+      await admin('PUT', '/passes', { ms: [5, null, null] });
       await track();
       replay();
       await vi.waitFor(
@@ -253,7 +253,7 @@ describe('live analysis over SSE', () => {
     'two Events over SSE: each stream sees only its Boards; the Archive hides both Current Rounds',
     async () => {
       const url = `http://127.0.0.1:${srv.port}/api/events`;
-      await admin('PUT', '/jobtime', { ms: 5 });
+      await admin('PUT', '/passes', { ms: [5, null, null] });
       await admin('POST', '/event', { link: 'A', topN: 2 });
       await admin('POST', '/event', { link: 'B', topN: 2 });
       const a = await sse(`${url}?tour=${TOUR_A}`);

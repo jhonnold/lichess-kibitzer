@@ -61,5 +61,5 @@ your shell or pass them inline.
 
 - [Deploying](./docs/deploy.md) — systemd unit, environment, Caddy, updates
 - [AGENTS.md](./AGENTS.md) — commands, conventions, code map
-- [Plan](./docs/plans/live-analysis.md), [v2 plan](./docs/plans/v2.md), [multi-Event plan](./docs/plans/multi-event.md) (each with an *As built* section)
-- [Default job time](./docs/jobtime.md)
+- [Plan](./docs/plans/live-analysis.md), [v2 plan](./docs/plans/v2.md), [multi-Event plan](./docs/plans/multi-event.md), [search Passes plan](./docs/plans/search-passes.md) (each with an *As built* section)
+- [Default job time and Passes](./docs/jobtime.md)

@@ -15,6 +15,10 @@ import { followerPolls } from '../src/metrics.js';
 import { val } from './helpers/metric.js';
 import { ReplaySource } from './helpers/replay-source.js';
 import { engineConfig } from '../shared/engine-config.js';
+import type * as T from '../shared/types.js';
+
+/** A single Pass of `ms` (null: unset, the Queue idles). */
+const one = (ms: number | null): T.PassesMs | null => (ms === null ? null : [ms, null, null]);
 
 const FAKE = fileURLToPath(new URL('./fixtures/fake-uci.mjs', import.meta.url));
 const T0 = 1_700_000_000_000;
@@ -119,7 +123,7 @@ beforeEach(async () => {
     return cancels.at(-1)!;
   });
   site = new SiteState(store);
-  site.setJobTime(15);
+  site.setPasses(one(15));
   ({ sc: sched, h: hub } = build(site));
 });
 afterEach(async () => {

@@ -172,6 +172,8 @@ export function ordinal(n: number): string {
 }
 
 export type JobState = 'queued' | 'searching' | 'done' | 'none';
+/** 1000 → '1', 6420 → '6.4'. */
+const secs = (ms: number) => String(Math.round(ms / 100) / 10);
 export interface StatusLine {
   state: JobState;
   text: string;
@@ -181,8 +183,15 @@ export interface StatusLine {
 export function statusLine(board: Board, ply: number, search: SearchInfo | null, queue: QueueView): StatusLine {
   const latest = board.plies.length - 1;
   const e = board.plies[ply]?.eval ?? null;
-  if (e?.kind === 'complete') return { state: 'done', text: `Done · depth ${e.depth}` };
-  if (search?.boardId === board.id && search.ply === ply) {
+  const here = search?.boardId === board.id && search.ply === ply;
+  if (here && search.pass > 0 && e) {
+    const text = `Deepening · depth ${Math.max(e.depth, search.depth)}`;
+    return { state: 'searching', text: `${text} · ${secs(search.ms)} s` };
+  }
+  if (e?.kind === 'complete') {
+    return { state: 'done', text: `Done · depth ${e.depth}${e.ms ? ` · ${secs(e.ms)} s` : ''}` };
+  }
+  if (here) {
     const what = search.tier === 'backfill' ? 'Backfill' : 'Searching';
     return { state: 'searching', text: search.depth ? `${what} · depth ${search.depth}` : what };
   }

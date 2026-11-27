@@ -8,7 +8,7 @@ import { LichessError, type RoundInfo } from '../../src/lichess/api.js';
 import { SiteState } from '../../src/site-state.js';
 import type { EngineState } from '../../src/scheduler.js';
 import type { JobTiming } from '../../shared/timing.js';
-import { DEFAULT_JOB_TIME_MS, type EngineRole } from '../../shared/types.js';
+import { DEFAULT_PASSES_MS, type EngineRole } from '../../shared/types.js';
 import { engineConfig } from '../../shared/engine-config.js';
 
 const FAKE = fileURLToPath(new URL('../fixtures/fake-uci.mjs', import.meta.url));
@@ -36,7 +36,7 @@ function setup(adminPassword = 'pw') {
   const scheduler = {
     engine: null as Engine | null,
     running: null,
-    setJobTime: vi.fn(async () => {}),
+    setPasses: vi.fn(async () => {}),
     setTracked: vi.fn(async () => {}),
     setEngine: vi.fn(async () => {}),
     requeueDead: vi.fn(async (_boardId: string, ply: number) => ply === 1),
@@ -44,7 +44,8 @@ function setup(adminPassword = 'pw') {
     engines: [] as Engine[],
     copyState: (): EngineState => 'up',
     copyRestarts: (role: EngineRole) => (role === 'main' ? 2 : 1),
-    timing: { jobs: 0, provisional: 0, ms: null, depth: null } as JobTiming,
+    timing: [] as JobTiming[],
+    passCounts: [] as number[],
     evictions: [],
   };
   const status: FollowStatus = { next: null, swapAt: null, polledAt: 5, error: null };
@@ -105,7 +106,7 @@ describe('admin auth', () => {
       ['put', '/event/t/topn', { n: 3 }],
       ['put', '/event/t/tracked', { boardIds: [] }],
       ['put', '/primary', { tourId: 't' }],
-      ['put', '/jobtime', { ms: 50 }],
+      ['put', '/passes', { ms: [50, null, null] }],
       ['post', '/dead/requeue', { boardId: 'a', ply: 1 }],
       ['post', '/dead/discard', { boardId: 'a', ply: 1 }],
     ];
@@ -262,15 +263,27 @@ describe('admin routes', () => {
     expect(state.events).toHaveLength(1);
   });
 
-  it('validates the job time', async () => {
+  it('validates the Passes', async () => {
     const { agent, scheduler } = setup();
     await login(agent);
-    for (const ms of [-1, 0, 'x', undefined, 1e300]) {
-      expect((await agent.put('/api/admin/jobtime').send({ ms })).status).toBe(400);
+    for (const ms of [
+      50,
+      'x',
+      undefined,
+      [50, null],
+      [0, null, null],
+      [-1, null, null],
+      [1e300, null, null],
+      [null, 50, null],
+      [50, 50, null],
+      [50, null, 40],
+      [50, 1.5, null],
+    ]) {
+      expect((await agent.put('/api/admin/passes').send({ ms })).status).toBe(400);
     }
-    await agent.put('/api/admin/jobtime').send({ ms: 50 });
-    await agent.put('/api/admin/jobtime').send({ ms: null });
-    expect(scheduler.setJobTime.mock.calls).toEqual([[50], [null]]);
+    await agent.put('/api/admin/passes').send({ ms: [50, null, 900] });
+    await agent.put('/api/admin/passes').send({ ms: null });
+    expect(scheduler.setPasses.mock.calls).toEqual([[[50, null, 900]], [null]]);
   });
 
   it('requeues and discards Dead-letter queue entries', async () => {
@@ -300,7 +313,7 @@ describe('admin routes', () => {
   it('reports the Scheduler timing in the status', async () => {
     const { agent, scheduler } = setup();
     await login(agent);
-    scheduler.timing = { jobs: 3, provisional: 1, ms: { p50: 800, p95: 900 }, depth: { p50: 20, p95: 22 } };
+    scheduler.timing = [{ jobs: 3, provisional: 1, ms: { p50: 800, p95: 900 }, depth: { p50: 20, p95: 22 } }];
     expect((await agent.get('/api/admin/status')).body.timing).toEqual(scheduler.timing);
   });
 
@@ -311,10 +324,11 @@ describe('admin routes', () => {
       engine: defaultEngine,
       engineRunning: false,
       copies: { main: { state: 'up', restarts: 2 }, multi: { state: 'up', restarts: 1 } },
-      timing: { jobs: 0, provisional: 0, ms: null, depth: null },
-      jobTimeMs: DEFAULT_JOB_TIME_MS,
+      timing: [],
+      passesMs: DEFAULT_PASSES_MS,
       running: null,
       queue: { current: [], backfill: 0, deferred: [] },
+      passCounts: [],
       evictions: [],
       tracked: 0,
       primary: null,
