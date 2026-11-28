@@ -34,7 +34,7 @@
     stale: 'its Board moved on',
     live: 'another live position waited',
     backfill: 'a live position waited',
-    upgrade: 'a shorter Pass waited, or an Event went live',
+    upgrade: 'a shorter Pass waited, an Event went live, or its Pass was turned off',
   };
   const search = $derived(
     status.running && snap?.search?.boardId === status.running.boardId && snap.search.ply === status.running.ply

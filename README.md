@@ -4,7 +4,9 @@ Full-screen live engine analysis of a Lichess broadcast. An Admin registers one 
 Round, Tracks the top N Boards of each Round, and one UCI engine (default Berserk) works through a Queue of Jobs
 (newest positions first, Backfill for the rest). Viewers get ticking clocks, eval bar and graph, MultiPV lines with
 engine arrows, move marks, accuracy and the opening name, streamed over SSE. A Cursor steps through the game and
-branches into own moves; an overview shows every Tracked Board; finished Rounds stay in the Archive.
+branches into own moves; an overview shows every Board, Tracked ones first. Adding an Event imports its past Rounds
+(every Board, no analysis) into the Archive, where finished Rounds stay. An Admin can ask for deep analysis of any
+Board, live or archived: one long search per position, run only while no Event is live.
 
 ## Viewer URLs
 
@@ -13,7 +15,7 @@ branches into own moves; an overview shows every Tracked Board; finished Rounds 
 | `#/` | The Events page when several Events are followed, else the Primary Event's lowest-numbered Tracked Board |
 | `#/e/<tourId>` | That Event's lowest-numbered Tracked Board |
 | `#/e/<tourId>/board/n[/ply]` | Board n of that Event; `ply` opens with the Cursor on that ply |
-| `#/e/<tourId>/round` | Overview of that Event's Tracked Boards |
+| `#/e/<tourId>/round` | Overview of that Event's Current Round: Tracked Boards, then the others |
 | `#/board/n[/ply]`, `#/round` | The same for the Primary Event (old links keep working) |
 | `#/archive` | Archived Rounds |
 | `#/archive/T/R[/board/n[/ply]]` | Archived Round R of Event T: overview, or a Board (and ply) |
@@ -61,5 +63,5 @@ your shell or pass them inline.
 
 - [Deploying](./docs/deploy.md) — systemd unit, environment, Caddy, updates
 - [AGENTS.md](./AGENTS.md) — commands, conventions, code map
-- [Plan](./docs/plans/live-analysis.md), [v2 plan](./docs/plans/v2.md), [multi-Event plan](./docs/plans/multi-event.md), [search Passes plan](./docs/plans/search-passes.md) (each with an *As built* section)
+- [Plan](./docs/plans/live-analysis.md), [v2 plan](./docs/plans/v2.md), [multi-Event plan](./docs/plans/multi-event.md), [search Passes plan](./docs/plans/search-passes.md), [deep analysis plan](./docs/plans/deep-analysis.md) (each with an *As built* section)
 - [Default job time and Passes](./docs/jobtime.md)
