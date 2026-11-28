@@ -92,12 +92,14 @@ the Admin cookie; with no `ADMIN_PASSWORD` it always answers 401.
   waiting per Pass (`0`, `1`, `2`), deepening Jobs included
 - `kibitzer_dead_letter_queue_size`: Jobs in the Dead-letter queue (every Event's)
 - `kibitzer_engine_state{role,state}`: per engine copy (`role` `main` or `multi`), 1 for the current state (`up`,
-  `restarting`, or `idle` with no Round), 0 for the others. `kibitzer_engine_up{role}`: 1 while up (0 both while
+  `restarting`, or `idle` with no Round and no deep request), 0 for the others. `kibitzer_engine_up{role}`: 1 while up (0 both while
   restarting and when idle); `kibitzer_engine_restarts_total{role}`: restarts since boot
 - `kibitzer_jobs_total{tier,pass,outcome}`: one outcome per Job run. `recorded` (an Eval, evicted Provisional ones
   included), `empty` (the search gave no scored line), `discarded` (a stopped deepening Job that got no deeper than
-  the eval it would replace), `dropped` (a Round swap, an untrack or a stop),
-  `interrupted` (engine restart), `crashed` (the engine died; requeued) or `dead_lettered` (its last crash)
+  the eval it would replace; a deep Job evicted, or its eval refused as stale), `dropped` (a Round swap, an untrack
+  or a stop; a deep Job also when its request no longer wants it, or given up after its last crash),
+  `interrupted` (engine restart; a deep Job also when halted and requeued), `crashed` (the engine died; requeued) or
+  `dead_lettered` (its last crash; never a deep Job). Deep analysis Jobs are `tier="backfill"`, `pass="2"`
 - `kibitzer_job_duration_seconds`, `kibitzer_job_depth` and `kibitzer_job_nps` (histograms, `tier`, `pass` and
   `kind` labels; depth and nps also `role`): Jobs that recorded an Eval; `kind` is `complete` when it ran its full
   time; nps is the copy's last report

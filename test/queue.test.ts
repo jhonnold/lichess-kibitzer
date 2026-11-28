@@ -451,4 +451,88 @@ describe('Queue', () => {
     expect(q.requeueDead('b', 4, 9)).toBe(true);
     expect(q.next()).toMatchObject({ boardId: 'b', pass: 0 });
   });
+
+  describe('deep map', () => {
+    const tag = (j: Job | null) => j && `${j.boardId}${j.ply}${j.deep ? 'd' : ''}`;
+    const deep = (q: Queue, boardId: string, plies: number[], since = 0) =>
+      q.addDeep(T, 'R0', boardId, 9, plies, since);
+
+    it('runs deep Jobs after every regular one, FIFO by request, plies ascending, only up to maxPass', () => {
+      const q = new Queue();
+      deep(q, 'x', [2, 0, 1]);
+      deep(q, 'y', [0]);
+      q.setLatest(T, 'a', 1, 5, 0, false, 1);
+      expect(q.passCounts()).toEqual([0, 1, 4]);
+      expect(q.next(1)).toMatchObject({ boardId: 'a', pass: 1 });
+      expect(q.next(1)).toBeNull(); // the deep Pass is gated
+      expect(q.deep()).toHaveLength(4);
+      const order = [q.next(2), q.next(2), q.next(2), q.next(2), q.next(2)].map(tag);
+      expect(order).toEqual(['x0d', 'x1d', 'x2d', 'y0d', null]);
+      deep(q, 'x', [0]);
+      expect(q.next()).toMatchObject({ tourId: T, roundId: 'R0', boardId: 'x', board: 9, deep: true, pass: 2 });
+    });
+
+    it('a repeat request restarts the Board at the back', () => {
+      const q = new Queue();
+      deep(q, 'x', [0, 1]);
+      deep(q, 'y', [0]);
+      deep(q, 'x', [3]);
+      expect(q.deep().map(tag)).toEqual(['y0d', 'x3d']);
+    });
+
+    it('evicts a running deep Job (upgrade) when a regular Job may run, or when the deep Pass is gated', () => {
+      const q = new Queue();
+      deep(q, 'x', [0, 1]);
+      const running = q.next(2)!;
+      expect(q.preempt(running, 0, Infinity, 2)).toBeNull(); // other deep Jobs wait: keep going
+      expect(q.preempt(running, 0, Infinity, 1)).toBe('upgrade'); // an Event went live
+      q.setLatest(T, 'a', 1, 5, 0, false, 1);
+      expect(q.preempt(running, 0, Infinity, 2)).toBe('upgrade');
+      q.next();
+      expect(q.preempt(running, 0, Infinity, 2)).toBeNull();
+    });
+
+    it('requeues a stopped deep Job at the front, once', () => {
+      const q = new Queue();
+      deep(q, 'x', [0, 1]);
+      deep(q, 'y', [0]);
+      const job = q.next()!;
+      expect(q.requeueDeep(job)).toBe(true);
+      expect(q.requeueDeep(job)).toBe(false);
+      expect(q.deep().map(tag)).toEqual(['x0d', 'x1d', 'y0d']);
+    });
+
+    it('requeues a crashed deep Job at the front, and gives it up on the last crash, never dead-lettered', () => {
+      const q = new Queue();
+      deep(q, 'x', [0, 1]);
+      for (let i = 1; i < MAX_CRASHES; i++) expect(q.crashedDeep(q.next()!)).toBe(true);
+      expect(q.crashedDeep(q.next()!)).toBe(false);
+      expect(q.dead()).toEqual([]);
+      expect(q.deep().map(tag)).toEqual(['x1d']);
+      deep(q, 'x', [0]); // a new request counts afresh
+      expect(q.crashedDeep(q.next()!)).toBe(true);
+    });
+
+    it('cancelDeep drops only that Board', () => {
+      const q = new Queue();
+      deep(q, 'x', [0, 1]);
+      deep(q, 'y', [0]);
+      q.cancelDeep('x');
+      expect(q.deep().map(tag)).toEqual(['y0d']);
+    });
+
+    it('is untouched by setLatest, removeBoard, removeEvent, clear and repass; the same key may be in both maps', () => {
+      const q = new Queue();
+      deep(q, 'a', [0, 1, 2]);
+      q.setLatest(T, 'a', 1, 1, 0);
+      q.setLatest(T, 'a', 1, 0, 1); // a correction past the deep plies
+      q.repass(() => null);
+      q.removeBoard('a');
+      q.removeEvent(T);
+      q.clear();
+      expect(q.deep().map(tag)).toEqual(['a0d', 'a1d', 'a2d']);
+      q.setLatest(T, 'a', 1, 0, 2);
+      expect([q.next(), q.next()].map(tag)).toEqual(['a0', 'a0d']);
+    });
+  });
 });

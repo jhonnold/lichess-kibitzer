@@ -41,7 +41,8 @@ const search: T.SearchInfo = {
 const queue: T.QueueView = { current: [], backfill: 3, deferred: [] };
 
 const persisted = (primary: string | null, ...ns: number[]): T.PersistedState => ({
-  version: 4,
+  version: 5,
+  deep: [],
   settings: { engine: null, passesMs: [5000, null, null] },
   primary,
   events: ns.map((n) => ({
@@ -117,7 +118,8 @@ describe('SiteState', () => {
     site.setEngine(engineConfig('p'));
     await site.saved();
     expect(states.at(-1)).toEqual({
-      version: 4,
+      version: 5,
+      deep: [],
       settings: { engine: engineConfig('p'), passesMs: [9000, null, null] },
       primary: null,
       events: [],
@@ -178,7 +180,8 @@ describe('SiteState', () => {
     site.setPasses(one(1234));
     await site.saved();
     expect(states.at(-1)).toEqual({
-      version: 4,
+      version: 5,
+      deep: [],
       settings: { engine: null, passesMs: [1234, null, null] },
       primary: 'T1',
       events: [

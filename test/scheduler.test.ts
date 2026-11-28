@@ -9,7 +9,9 @@ import type { RoundInfo } from '../src/lichess/api.js';
 import type { GameUpdate } from '../src/lichess/stream.js';
 import type { RoundState } from '../src/round-state.js';
 import { SiteState } from '../src/site-state.js';
-import { MAX_CRASHES, MIN_LIVE_SLICE_MS } from '../shared/queue.js';
+import { dataStore, type DataStore } from '../src/store.js';
+import { DEEP_PASS } from '../shared/passes.js';
+import { MAX_CRASHES, MIN_LIVE_SLICE_MS, type Job } from '../shared/queue.js';
 import { RESTART_MIN_MS, Scheduler } from '../src/scheduler.js';
 import { val } from './helpers/metric.js';
 import { ReplaySource } from './helpers/replay-source.js';
@@ -31,7 +33,8 @@ const FOOLS = ['f2f3', 'e7e5', 'g2g4', 'd8h4'];
 const EVENT_T1: T.RegisteredEvent = { tourId: 'T1', name: 'E', link: 'https://lichess.org/broadcast/x/T1' };
 const EVENT_T2: T.RegisteredEvent = { tourId: 'T2', name: 'E2', link: 'https://lichess.org/broadcast/y/T2' };
 const persisted = (dead: T.DeadJob[]): T.PersistedState => ({
-  version: 4,
+  version: 5,
+  deep: [],
   settings: { engine: null, passesMs: null },
   primary: 'T1',
   events: [{ event: EVENT_T1, topN: 1, current: null, dead }],
@@ -80,10 +83,17 @@ function setup(
     launchMulti?: (real: () => Promise<Engine>) => Promise<Engine>;
     init?: { state: T.PersistedState | null; rounds?: ReadonlyMap<string, T.Round> };
     fetchOpening?: (uci: readonly string[]) => Promise<string | null>;
+    store?: DataStore; // default: one that saves nothing and has no Round files
   } = {},
 ) {
   site = new SiteState(
-    { load: async () => null, save: async () => {}, loadRound: async () => null, saveRound: async () => {} },
+    opts.store ?? {
+      load: async () => null,
+      save: async () => {},
+      loadRound: async () => null,
+      saveRound: async () => {},
+      listRounds: async () => [],
+    },
     opts.init,
   );
   state = site.event('T1') ?? site.addEvent(EVENT_T1, opts.topN ?? 3);
@@ -860,7 +870,8 @@ describe('Scheduler', () => {
       };
       const dead = [{ tourId: 'T2', boardId: 'b1', board: 1, ply: 1, at: 5 }];
       const init: T.PersistedState = {
-        version: 4,
+        version: 5,
+        deep: [],
         settings: { engine: null, passesMs: null },
         primary: 'T1',
         events: [
@@ -1117,5 +1128,377 @@ describe('Scheduler Passes', () => {
     expect(sched.evictions[0]).toMatchObject({ boardId: 'g1', ply: 1, reason: 'upgrade' });
     expect(evalOf('g1', 1)).toMatchObject({ kind: 'complete', ms: 5 });
     expect(sched.passCounts).toEqual([]);
+  });
+});
+
+describe('Scheduler deep analysis', () => {
+  let store: DataStore;
+  const ply = (u: string | null, e: T.Eval | null): T.Ply => ({
+    move: u && { uci: u, san: u, clock: null },
+    at: null,
+    eval: e,
+  });
+  /** A finished, untracked Board with every ply's eval `e`. */
+  const board = (id: string, uci: string[], o: Partial<T.Board> = {}, e: T.Eval | null = null): T.Board => ({
+    id,
+    board: 1,
+    white: { name: 'W' },
+    black: { name: 'B' },
+    result: '1-0',
+    tracked: false,
+    opening: null,
+    clocks: { white: null, black: null },
+    plies: [ply(null, e), ...uci.map((u) => ply(u, e))],
+    ...o,
+  });
+  const round = (tourId: string, roundId: string, boards: T.Board[]): T.Round => ({
+    tourId,
+    roundId,
+    name: roundId,
+    eventName: 'E',
+    startsAt: null,
+    boards,
+  });
+  /** The evals' ms of that Board in its Round file (null: no eval), once every write is done. */
+  const fileMs = async (tourId: string, roundId: string, boardId: string) => {
+    await site.saved();
+    const r = await store.loadRound(tourId, roundId);
+    return r!.boards.find((b) => b.id === boardId)!.plies.map((p) => (p.eval?.kind === 'complete' ? p.eval.ms : null));
+  };
+  const deepQueue = () => (sched as unknown as { queue: { deep(): Job[] } }).queue.deep();
+  const regularIdle = () => sched.running === null && !sched.passCounts[0] && !sched.passCounts[1];
+  const settled = () => poll(() => sched.deep.length === 0 && sched.running === null, 5000);
+  const deepSearch = (id: string, ply: number) => searching(id, ply) && site.snapshot().search?.pass === DEEP_PASS;
+
+  beforeEach(() => {
+    store = dataStore(join(dir, 'data', 'state.json'));
+  });
+
+  it('fills every ply of an archived Board of no Event and writes its Round file; engines run only meanwhile', async () => {
+    const recorded = await outcomes('recorded', '2');
+    await store.saveRound(round('T9', 'R0', [board('z1', E4), board('z2', FOOLS, { board: 2, result: '0-1' })]));
+    setup({ store, passesMs: [5, 10, 20] });
+    expect(await sched.requestDeep('T9', 'R0', 'nope')).toBe('unknown board');
+    expect(await sched.requestDeep('T9', 'R9', 'z1')).toBe('unknown board');
+    expect(sched.copyState('main')).toBeNull();
+    expect(await sched.requestDeep('T9', 'R0', 'z1')).toBe('ok');
+    expect(sched.copyState('main')).toBe('up');
+    expect(sched.deep).toEqual([{ tourId: 'T9', roundId: 'R0', boardId: 'z1', board: 1, left: 4, total: 4 }]);
+    await settled();
+    expect(await fileMs('T9', 'R0', 'z1')).toEqual([20, 20, 20, 20]);
+    expect((await outcomes('recorded', '2')) - recorded).toBe(4);
+    expect(sched.timing[DEEP_PASS].jobs).toBe(4);
+    await poll(() => sched.copyState('main') === null); // nothing left
+    expect(await sched.requestDeep('T9', 'R0', 'z2')).toBe('ok');
+    expect(sched.deep[0]).toMatchObject({ left: 4, total: 4 }); // the final mate position is not searched
+    await settled();
+    expect(await fileMs('T9', 'R0', 'z2')).toEqual([20, 20, 20, 20, null]);
+    expect(await fileMs('T9', 'R0', 'z1')).toEqual([20, 20, 20, 20]);
+  });
+
+  it('refuses a request while the deep Pass is off', async () => {
+    await store.saveRound(round('T1', 'R0', [board('z1', E4)]));
+    setup({ store, passesMs: [5, 10, null] });
+    expect(await sched.requestDeep('T1', 'R0', 'z1')).toBe('pass 3 off');
+    expect(sched.deep).toEqual([]);
+  });
+
+  it('deepens a finished Tracked Board of the Current Round, over its Pass 1 and 2 evals', async () => {
+    setup({ store, topN: 1, passesMs: [5, 10, 20] });
+    await sched.startRound('T1', roundInfo('R1', ['g1']), null);
+    src.push(upd('g1', E4, '1-0'));
+    await poll(() => regularIdle() && [1, 2, 3].every((p) => evalOf('g1', p)?.ms === 10));
+    expect(evalOf('g1', 0)?.ms).toBe(5);
+    const sent: number[] = [];
+    site.on('event', (_t, e) => e.type === 'ply' && e.ply.eval?.ms === 20 && sent.push(e.index));
+    expect(await sched.requestDeep('T1', 'R1', 'g1')).toBe('ok');
+    await settled();
+    expect([0, 1, 2, 3].map((p) => evalOf('g1', p))).toEqual(
+      Array(4).fill(expect.objectContaining({ kind: 'complete', ms: 20 })),
+    );
+    expect(sent).toEqual([0, 1, 2, 3]);
+    expect(await fileMs('T1', 'R1', 'g1')).toEqual([20, 20, 20, 20]);
+    expect(sched.passCounts).toEqual([]);
+  });
+
+  it('replaces an eval that searched longer than the deep Pass', async () => {
+    const long: T.Eval = { score: { cp: 1 }, depth: 40, kind: 'complete', bestmove: null, lines: [], ms: 1e6 };
+    const r1 = round('T1', 'R1', [board('g1', E4, { tracked: true }, long)]);
+    const init = {
+      ...persisted([]),
+      events: [{ event: EVENT_T1, topN: 1, current: { tourId: 'T1', roundId: 'R1' }, dead: [] }],
+    };
+    setup({ store, passesMs: [5, 10, 20], init: { state: init, rounds: new Map([['T1', r1]]) } });
+    await sched.resume();
+    expect(await sched.requestDeep('T1', 'R1', 'g1')).toBe('ok');
+    await settled();
+    expect([0, 1, 2, 3].map((p) => [evalOf('g1', p)?.ms, evalOf('g1', p)?.depth])).toEqual(Array(4).fill([20, 3]));
+  });
+
+  it('holds deep Jobs while a Tracked Board is live, gives way when one goes live, and resumes after', async () => {
+    const upgrade = await val(evictions, { reason: 'upgrade' });
+    await store.saveRound(round('T1', 'R0', [board('z1', E4)]));
+    setup({ store, topN: 1, passesMs: [5, 10, 5000] });
+    await sched.startRound('T1', roundInfo('R1', ['g1']), null);
+    await poll(regularIdle);
+    expect(await sched.requestDeep('T1', 'R0', 'z1')).toBe('ok');
+    await until(() => deepSearch('z1', 0));
+    src.push(upd('g1', ['e2e4'])); // g1 is live
+    await poll(() => sched.evictions[0]?.boardId === 'z1');
+    expect(sched.evictions[0]).toMatchObject({ boardId: 'z1', ply: 0, reason: 'upgrade', depth: null });
+    expect((await val(evictions, { reason: 'upgrade' })) - upgrade).toBe(1);
+    await poll(() => regularIdle() && complete('g1', 1));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(sched.running).toBeNull(); // held
+    expect(deepQueue().map((j) => j.ply)).toEqual([0, 1, 2, 3]);
+    expect(sched.deep[0].left).toBe(4);
+    src.push(upd('g1', ['e2e4'], '1-0')); // over: nothing is live
+    await until(() => deepSearch('z1', 0));
+  });
+
+  it('a Round swap of its Event while a deep Job of an archived Round runs loses no ply', async () => {
+    await store.saveRound(round('T1', 'R0', [board('z1', E4)]));
+    setup({ store, topN: 1, passesMs: [5, 10, 5000] });
+    expect(await sched.requestDeep('T1', 'R0', 'z1')).toBe('ok');
+    await until(() => deepSearch('z1', 0));
+    await sched.setPasses([5, 10, 20]); // from the next Job
+    await sched.startRound('T1', roundInfo('R1', ['g1']), null); // its Pass 0 Job evicts the deep one
+    await settled();
+    expect(await fileMs('T1', 'R0', 'z1')).toEqual([20, 20, 20, 20]);
+    expect(complete('g1', 0)).toBe(true);
+  });
+
+  it('a Round swap moves the deep Jobs of the replaced Round to its Round file, losing nothing', async () => {
+    setup({ store, topN: 1, passesMs: [5, 10, 5000] });
+    await sched.startRound('T1', roundInfo('R1', ['g1']), null);
+    src.push(upd('g1', E4, '1-0'));
+    await poll(regularIdle);
+    expect(await sched.requestDeep('T1', 'R1', 'g1')).toBe('ok');
+    await until(() => deepSearch('g1', 0));
+    await sched.engine!.stop(); // ply 0 ends early, recorded in the Current Round
+    await until(() => deepSearch('g1', 1));
+    expect(evalOf('g1', 0)?.ms).toBe(5000);
+    await sched.setPasses([5, 10, 20]);
+    await sched.startRound('T1', roundInfo('R2', ['h1']), null); // halts ply 1: requeued
+    expect(sched.deep[0]).toMatchObject({ roundId: 'R1', left: 3 });
+    await settled();
+    expect(await fileMs('T1', 'R1', 'g1')).toEqual([5000, 20, 20, 20]);
+    expect(state.round!.roundId).toBe('R2');
+  });
+
+  it('a Round under deep analysis that becomes current again opens with its deep evals and goes on there', async () => {
+    const r1 = round('T1', 'R1', [board('g1', E4, { tracked: true })]);
+    await store.saveRound(r1);
+    setup({ store, topN: 1, passesMs: [5, 10, 5000] });
+    expect(await sched.requestDeep('T1', 'R1', 'g1')).toBe('ok');
+    await until(() => deepSearch('g1', 0));
+    await sched.engine!.stop();
+    await until(() => deepSearch('g1', 1));
+    await sched.setPasses([5, 10, 20]);
+    await sched.startRound('T1', roundInfo('R1', ['g1']), null, r1); // r1 is stale: the held copy is opened
+    expect(evalOf('g1', 0)?.ms).toBe(5000);
+    await settled();
+    expect([0, 1, 2, 3].map((p) => evalOf('g1', p)?.ms)).toEqual([5000, 20, 20, 20]);
+    expect(await fileMs('T1', 'R1', 'g1')).toEqual([5000, 20, 20, 20]);
+  });
+
+  it('removing the Event keeps its deep requests, and the engines while they last', async () => {
+    setup({ store, topN: 1, passesMs: [5, 10, 5000] });
+    await sched.startRound('T1', roundInfo('R1', ['g1']), null);
+    src.push(upd('g1', E4, '1-0'));
+    await poll(regularIdle);
+    expect(await sched.requestDeep('T1', 'R1', 'g1')).toBe('ok');
+    await until(() => deepSearch('g1', 0));
+    await sched.setPasses([5, 10, 20]);
+    await sched.removeEvent('T1'); // halts ply 0: its Round goes to the Archive
+    expect(site.event('T1')).toBeUndefined();
+    expect(sched.deep).toMatchObject([{ boardId: 'g1', left: 4 }]);
+    expect(sched.copyState('main')).toBe('up');
+    await settled();
+    expect(await fileMs('T1', 'R1', 'g1')).toEqual([20, 20, 20, 20]);
+    await poll(() => sched.copyState('main') === null);
+  });
+
+  it('a restart resumes each request where it was', async () => {
+    await store.saveRound(round('T1', 'R0', [board('z1', E4)]));
+    setup({ store, passesMs: [5, 10, 5000] });
+    expect(await sched.requestDeep('T1', 'R0', 'z1')).toBe('ok');
+    await until(() => deepSearch('z1', 0));
+    await sched.engine!.stop(); // ply 0 ends early
+    await until(() => deepSearch('z1', 1));
+    await sched.stop();
+    await site.saved();
+    setup({ store, passesMs: [5, 10, 20], init: { state: await store.load() } });
+    expect(sched.deep).toEqual([{ tourId: 'T1', roundId: 'R0', boardId: 'z1', board: 1, left: 3, total: 4 }]);
+    await sched.resume();
+    await settled();
+    expect(await fileMs('T1', 'R0', 'z1')).toEqual([5000, 20, 20, 20]);
+  });
+
+  it('drops a restored request whose Round file is gone, and clamps the plies of another to its Board', async () => {
+    await store.saveRound(round('T1', 'R0', [board('z1', E4)]));
+    const req = (boardId: string, roundId: string, left: number[]) => ({
+      tourId: 'T1',
+      roundId,
+      boardId,
+      board: 1,
+      at: 1,
+      left,
+      total: 4,
+    });
+    const init = { ...persisted([]), deep: [req('z1', 'R0', [2, 3, 9]), req('q1', 'R8', [0])] };
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    setup({ store, passesMs: [5, 10, 20], init: { state: init } });
+    await sched.resume();
+    expect(sched.deep).toMatchObject([{ boardId: 'z1', left: 2 }]);
+    await settled();
+    expect(await fileMs('T1', 'R0', 'z1')).toEqual([null, null, 20, 20]);
+  });
+
+  it('cancel stops the running deep Job and drops the rest; the engines quit with nothing left', async () => {
+    await store.saveRound(round('T1', 'R0', [board('z1', E4)]));
+    setup({ store, passesMs: [5, 10, 5000] });
+    expect(await sched.requestDeep('T1', 'R0', 'z1')).toBe('ok');
+    await until(() => deepSearch('z1', 0));
+    expect(await sched.cancelDeep('z1')).toBe(true);
+    expect([sched.running, sched.deep, deepQueue()]).toEqual([null, [], []]);
+    expect(sched.copyState('main')).toBeNull();
+    expect(await sched.cancelDeep('z1')).toBe(false);
+    expect(await fileMs('T1', 'R0', 'z1')).toEqual([null, null, null, null]);
+  });
+
+  it('a repeat request restarts the Board', async () => {
+    await store.saveRound(round('T1', 'R0', [board('z1', E4)]));
+    setup({ store, passesMs: [5, 10, 5000] });
+    expect(await sched.requestDeep('T1', 'R0', 'z1')).toBe('ok');
+    await until(() => deepSearch('z1', 0));
+    await sched.engine!.stop();
+    await until(() => deepSearch('z1', 1));
+    t = 2000;
+    expect(await sched.requestDeep('T1', 'R0', 'z1')).toBe('ok');
+    expect(sched.deep).toMatchObject([{ left: 4, total: 4 }]);
+    expect(site.deep[0].at).toBe(2000);
+    await until(() => deepSearch('z1', 0));
+  });
+
+  it('gives up a ply that crashes the engine MAX_CRASHES times, never dead-lettered, and goes on', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await store.saveRound(round('T1', 'R0', [board('z1', E4)]));
+    setup({ store, passesMs: [5, 10, 20], engineArgs: ['--crash-on', 'e2e4'] });
+    expect(await sched.requestDeep('T1', 'R0', 'z1')).toBe('ok');
+    await settled();
+    expect(await fileMs('T1', 'R0', 'z1')).toEqual([20, null, 20, 20]);
+    expect(state.dead).toEqual([]);
+    expect(positions().filter((p) => p === 'position startpos moves e2e4')).toHaveLength(MAX_CRASHES);
+  });
+
+  describe('review fixes', () => {
+    /** `store`, with the read of Round R0 number `nth` (1-based) held until `open()`, or failing per `fail`. */
+    function gated(nth: number, fail: (n: number) => boolean = () => false) {
+      const real = store;
+      let open!: () => void;
+      const gate = new Promise<void>((r) => (open = r));
+      let reached!: () => void;
+      const reading = new Promise<void>((r) => (reached = r));
+      const g = { reads: 0, open: () => open(), reading };
+      store = {
+        ...real,
+        async loadRound(tourId, roundId) {
+          if (roundId === 'R0' && ++g.reads >= nth) {
+            if (g.reads === nth) {
+              reached();
+              await gate;
+            }
+            if (fail(g.reads)) throw new Error('EIO');
+          }
+          return real.loadRound(tourId, roundId);
+        },
+      };
+      return g;
+    }
+
+    it('a live position that appears while a deep Job reads its Round file runs first', async () => {
+      await store.saveRound(round('T1', 'R0', [board('z1', E4)]));
+      const g = gated(2); // 1: requestDeep's check
+      setup({ store, topN: 1, passesMs: [5, 10, 5000] });
+      await sched.startRound('T1', roundInfo('R1', ['g1']), null);
+      await poll(regularIdle);
+      expect(await sched.requestDeep('T1', 'R0', 'z1')).toBe('ok');
+      await g.reading;
+      src.push(upd('g1', ['e2e4'])); // live: its wake finds no Run to preempt
+      g.open();
+      await until(() => complete('g1', 1), 1500); // not after a 5000 ms deep search
+      expect(sched.deep[0].left).toBe(4);
+    });
+
+    it('a deep Pass turned off while a deep Job reads its Round file holds it', async () => {
+      await store.saveRound(round('T1', 'R0', [board('z1', E4)]));
+      const g = gated(2);
+      setup({ store, passesMs: [5, 10, 20] });
+      expect(await sched.requestDeep('T1', 'R0', 'z1')).toBe('ok');
+      await g.reading;
+      await sched.setPasses([5, 10, null]);
+      g.open();
+      await poll(() => !(sched as unknown as { busy: boolean }).busy);
+      expect(sched.running).toBeNull();
+      expect(sched.deep[0].left).toBe(4);
+      expect(await fileMs('T1', 'R0', 'z1')).toEqual([null, null, null, null]);
+    });
+
+    it('a release while a deep Job reads its Round file keeps the request', async () => {
+      await store.saveRound(round('T1', 'R0', [board('z1', E4)]));
+      const g = gated(2);
+      setup({ store, passesMs: [5, 10, 20] });
+      expect(await sched.requestDeep('T1', 'R0', 'z1')).toBe('ok');
+      await g.reading;
+      const released = site.release('T1', 'R0'); // the Follower's, outside the Scheduler
+      g.open();
+      await released;
+      await settled();
+      expect(await fileMs('T1', 'R0', 'z1')).toEqual([20, 20, 20, 20]);
+    });
+
+    it('retries a Round file read that failed, and ends the request after MAX_CRASHES failures', async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      await store.saveRound(round('T1', 'R0', [board('z1', E4)]));
+      let g = gated(2, (n) => n === 2); // fails once
+      setup({ store, passesMs: [5, 10, 20] });
+      g.open();
+      expect(await sched.requestDeep('T1', 'R0', 'z1')).toBe('ok');
+      await settled();
+      expect(await fileMs('T1', 'R0', 'z1')).toEqual([20, 20, 20, 20]);
+      await sched.stop();
+      store = dataStore(join(dir, 'data', 'state.json'));
+      g = gated(2, (n) => n >= 2); // fails for good
+      setup({ store, passesMs: [5, 10, 20] });
+      g.open();
+      expect(await sched.requestDeep('T1', 'R0', 'z1')).toBe('ok');
+      await settled();
+      expect(g.reads).toBe(1 + MAX_CRASHES);
+    });
+
+    it('drops malformed plies of a restored request instead of searching them forever', async () => {
+      await store.saveRound(round('T1', 'R0', [board('z1', E4)]));
+      const req = { tourId: 'T1', roundId: 'R0', boardId: 'z1', board: 1, at: 1, total: 4 };
+      const left = [-1, 1.5, 'x', 2] as unknown as number[];
+      setup({ store, passesMs: [5, 10, 20], init: { state: { ...persisted([]), deep: [{ ...req, left }] } } });
+      await sched.resume();
+      expect(sched.deep).toMatchObject([{ left: 1 }]);
+      await settled();
+      expect(await fileMs('T1', 'R0', 'z1')).toEqual([null, null, 20, null]);
+    });
+
+    it("a deep Job running on a Tracked ply does not keep that ply's regular Job out of the Queue", async () => {
+      setup({ store, topN: 1, passesMs: [5, null, 5000] });
+      await sched.startRound('T1', roundInfo('R1', ['g1']), null);
+      src.push(upd('g1', E4, '1-0'));
+      await poll(regularIdle);
+      expect(await sched.requestDeep('T1', 'R1', 'g1')).toBe('ok');
+      await until(() => deepSearch('g1', 0));
+      await sched.engine!.stop();
+      await until(() => deepSearch('g1', 1));
+      await sched.setPasses([5, 10, 5000]); // ply 1 now has a Pass 1 to reach, while its deep Job runs
+      await poll(() => evalOf('g1', 1)?.ms === 10, 1500);
+    });
   });
 });

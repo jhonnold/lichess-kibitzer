@@ -64,25 +64,42 @@ async function readJson(path: string): Promise<unknown | null> {
   }
 }
 
-/** A version 4 state file, or null when malformed. */
-function parseV4(data: Record<string, unknown>): PersistedState | null {
-  if (!isObj(data.settings) || (data.settings.passesMs !== null && !Array.isArray(data.settings.passesMs))) return null;
-  return parseEvents(data);
+/** A version 5 state file, or null when malformed. */
+function parseV5(data: Record<string, unknown>): PersistedState | null {
+  const deep = data.deep;
+  const num = (x: unknown) => typeof x === 'number' && Number.isFinite(x);
+  const ok = (d: unknown) =>
+    isObj(d) &&
+    typeof d.tourId === 'string' &&
+    typeof d.roundId === 'string' &&
+    typeof d.boardId === 'string' &&
+    [d.board, d.at, d.total].every(num) &&
+    Array.isArray(d.left) &&
+    d.left.every((p) => Number.isInteger(p) && (p as number) >= 0);
+  if (!Array.isArray(deep) || !deep.every(ok)) return null;
+  return parseV4(data) && (data as unknown as PersistedState);
 }
 
-/** Version 3 settings (a job time) as version 4: a set job time becomes the default Passes, unset stays unset. */
+/** A version 4 state file as version 5 (no deep requests), or null when malformed. */
+function parseV4(data: Record<string, unknown>): PersistedState | null {
+  if (!isObj(data.settings) || (data.settings.passesMs !== null && !Array.isArray(data.settings.passesMs))) return null;
+  const state = parseEvents(data);
+  return state && { ...state, version: 5, deep: [] };
+}
+
+/** Version 3 settings (a job time) as version 4 and later: a set job time becomes the default Passes, unset stays unset. */
 function passesOf(settings: Record<string, unknown>): SiteSettings {
   const { jobTimeMs, ...rest } = settings;
   return { ...(rest as Omit<SiteSettings, 'passesMs'>), passesMs: jobTimeMs === null ? null : [...DEFAULT_PASSES_MS] };
 }
 
-/** A version 3 state file as version 4, or null when malformed. */
+/** A version 3 state file as version 5, or null when malformed. */
 function parseV3(data: Record<string, unknown>): PersistedState | null {
   const state = parseEvents(data);
-  return state && { ...state, version: 4, settings: passesOf(data.settings as Record<string, unknown>) };
+  return state && { ...state, version: 5, settings: passesOf(data.settings as Record<string, unknown>), deep: [] };
 }
 
-/** The events and primary of a version 3 or 4 state file (cast as version 4), or null when malformed. */
+/** The events and primary of a version 3, 4 or 5 state file (cast as version 5), or null when malformed. */
 function parseEvents(data: Record<string, unknown>): PersistedState | null {
   if (!isObj(data.settings) || !Array.isArray(data.events)) return null;
   if (data.primary !== null && typeof data.primary !== 'string') return null;
@@ -94,7 +111,7 @@ function parseEvents(data: Record<string, unknown>): PersistedState | null {
   return data as unknown as PersistedState;
 }
 
-/** A version 2 state file as version 4, or null when malformed. An Event becomes the one entry and the Primary; Idle
+/** A version 2 state file as version 5, or null when malformed. An Event becomes the one entry and the Primary; Idle
  *  becomes no entries, and its topN is dropped (the in-memory default applies to the next Event). */
 function parseV2(data: Record<string, unknown>): PersistedState | null {
   if (!isObj(data.settings) || !Array.isArray(data.dead)) return null;
@@ -115,11 +132,11 @@ function parseV2(data: Record<string, unknown>): PersistedState | null {
         },
       ]
     : [];
-  return { version: 4, settings: passesOf(site), primary: event?.tourId ?? null, events };
+  return { version: 5, settings: passesOf(site), primary: event?.tourId ?? null, events, deep: [] };
 }
 
 export interface DataStore {
-  load(): Promise<PersistedState | null>; // always version 4 (2 and 3 migrated); null: missing, or version 1 (discarded, logged once)
+  load(): Promise<PersistedState | null>; // always version 5 (2, 3 and 4 migrated); null: missing, or version 1 (discarded, logged once)
   save(s: PersistedState): Promise<void>;
   loadRound(tourId: string, roundId: string): Promise<Round | null>; // null: missing
   saveRound(r: Round): Promise<void>; // coalesced per file
@@ -164,7 +181,9 @@ export function dataStore(file = process.env.DATA_FILE || DEFAULT_DATA_FILE): Da
         console.warn(`${file}: version 1 state discarded`);
         return null;
       }
-      const parse = isObj(data) ? { 4: parseV4, 3: parseV3, 2: parseV2 }[data.version as number] : undefined;
+      const parse = isObj(data)
+        ? { 5: parseV5, 4: parseV4, 3: parseV3, 2: parseV2 }[data.version as number]
+        : undefined;
       const state = parse?.(data as Record<string, unknown>) ?? null;
       if (!state) throw new Error(`${file}: not a lichess-kibitzer state file`);
       const engine = state.settings.engine && migrateEngine(state.settings.engine); // pre-copies configs

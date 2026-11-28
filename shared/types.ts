@@ -184,12 +184,27 @@ export interface PersistedEvent {
   dead: DeadJob[]; // Dead-letter queue (of the Current Round)
 }
 
-/** data/state.json. events in registration order; primary = the tourId of the Primary Event (null when none). */
+/** An Admin's deep analysis of one Board (of any Round: current, concluded or archived): the deep Pass on every ply
+ *  in `left`. left: plies still to search, ascending (at the request: 0..latest, minus a final position with no legal
+ *  moves); total: how many it started with; at: when it was requested (ms epoch). Ends when left is empty. */
+export interface DeepRequest {
+  tourId: string;
+  roundId: string;
+  boardId: string;
+  board: number;
+  at: number;
+  left: number[];
+  total: number;
+}
+
+/** data/state.json. events in registration order; primary = the tourId of the Primary Event (null when none); deep =
+ *  deep analysis requests, oldest first (they outlive their Event). */
 export interface PersistedState {
-  version: 4;
+  version: 5;
   settings: SiteSettings;
   primary: string | null;
   events: PersistedEvent[];
+  deep: DeepRequest[];
 }
 
 /** data/rounds/<tourId>/<roundId>.json. The Archive = every such file except the Current Round's. */

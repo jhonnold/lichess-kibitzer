@@ -1,7 +1,11 @@
+import { DEEP_PASS } from './passes.js';
+
 export type Tier = 'current' | 'backfill';
 
 /** One search of one position of a Tracked board. since: current tier = waiting since; backfill = entered backfill.
- *  pass: which Pass (search time) it is for (shared/passes.ts); one Job per position at a time. */
+ *  pass: which Pass (search time) it is for (shared/passes.ts); one Job per position at a time. deep: a deep analysis
+ *  Job (tier backfill, pass DEEP_PASS, since = its request's `at`) of any Board of Round `roundId`, archived too; it
+ *  lives in the deep map, apart from every rule of the regular Jobs, and may share its key with a regular Job. */
 export interface Job {
   tourId: string; // the owning Event (Lichess tour id); Board ids are globally unique, so Queue keys stay boardId:ply
   boardId: string;
@@ -10,6 +14,8 @@ export interface Job {
   tier: Tier;
   pass: number;
   since: number;
+  deep?: true;
+  roundId?: string; // deep Jobs only
 }
 
 /** A Job that crashed the engine MAX_CRASHES times. at = when it went dead. */
@@ -54,8 +60,11 @@ function compare(a: Job, b: Job): number {
 }
 
 /**
- * Two-tier queue of Jobs, ordered by Pass first. Pure: no timers or I/O; the caller passes `now` (ms).
- * The scheduler owns the running Job: next() removes it, and the caller hands it back via requeue or crashed.
+ * Two-tier queue of Jobs, ordered by Pass first, plus a separate FIFO deep map (deep analysis requests) that only runs
+ * when no regular Job may. Pure: no timers or I/O; the caller passes `now` (ms). The scheduler owns the running Job:
+ * next() removes it, and the caller hands it back via requeue or crashed (a deep Job: requeueDeep or crashedDeep).
+ * Nothing but the deep methods touches the deep map: not setLatest, removeBoard, removeEvent, clear, repass or the
+ * Dead-letter queue.
  */
 export class Queue {
   private readonly jobs = new Map<string, Job>();
@@ -63,6 +72,8 @@ export class Queue {
   private readonly crashes = new Map<string, number>();
   private readonly deadJobs = new Map<string, DeadJob>();
   private readonly discarded = new Set<string>(); // discarded from the Dead-letter queue: not queued again this Round
+  private deepJobs: Job[] = []; // deep analysis: FIFO by request, plies ascending within one; front = next
+  private readonly deepCrashes = new Map<string, number>();
 
   /** Board's latest ply (the Board belongs to Event tourId). Supersedes its waiting current Job (→ backfill).
    *  done = record only, enqueue nothing; else its Job is for `pass`. */
@@ -106,18 +117,20 @@ export class Queue {
     }
   }
 
-  /** Remove and return the next Job of Pass ≤ maxPass: lower Pass first, then current tier, then backfill; null when
-   *  none. */
+  /** Remove and return the next Job of Pass ≤ maxPass: lower Pass first, then current tier, then backfill; then, only
+   *  while maxPass allows the deep Pass and no regular Job may run, the next deep Job; null when none. */
   next(maxPass = Infinity): Job | null {
     const job = this.ordered().find((j) => j.pass <= maxPass);
-    if (!job) return null;
+    if (!job) return maxPass >= DEEP_PASS ? (this.deepJobs.shift() ?? null) : null;
     this.jobs.delete(key(job.boardId, job.ply));
     return job;
   }
 
   /** Whether to stop the running Job now, and why; null = let it run. elapsedMs = how long it has run; Jobs above maxPass
-   *  may not run. */
+   *  may not run. A deep Job gives way (upgrade) to any regular Job that may run. */
   preempt(running: Job, elapsedMs: number, sliceMs: number, maxPass = Infinity): Eviction | null {
+    if (running.deep)
+      return running.pass > maxPass || [...this.jobs.values()].some((j) => j.pass <= maxPass) ? 'upgrade' : null;
     if (running.tier === 'current' && this.latest.get(running.boardId)?.ply !== running.ply) return 'stale';
     const waiting = [...this.jobs.values()].filter((j) => j.pass <= maxPass);
     if (running.pass > 0)
@@ -159,6 +172,63 @@ export class Queue {
     return 'dead';
   }
 
+  /** Deep analysis of a Board of Round roundId: a deep Job per distinct ply (ascending), behind every other request. Replaces
+   *  that Board's waiting deep Jobs and crash counts (a repeat request restarts it). */
+  addDeep(
+    tourId: string,
+    roundId: string,
+    boardId: string,
+    board: number,
+    plies: readonly number[],
+    since: number,
+  ): void {
+    this.cancelDeep(boardId);
+    for (const ply of [...new Set(plies)].sort((a, b) => a - b)) {
+      this.deepJobs.push({
+        tourId,
+        roundId,
+        boardId,
+        board,
+        ply,
+        tier: 'backfill',
+        pass: DEEP_PASS,
+        since,
+        deep: true,
+      });
+    }
+  }
+
+  /** Put a deep Job back at the front of the deep map (its search was stopped or refused). false = already queued. */
+  requeueDeep(job: Job): boolean {
+    if (this.deepJobs.some((j) => j.boardId === job.boardId && j.ply === job.ply)) return false;
+    this.deepJobs.unshift({ ...job });
+    return true;
+  }
+
+  /** The running deep Job crashed the engine: true = requeued at the front; false = its MAX_CRASHES-th crash, given up
+   *  (never to the Dead-letter queue). */
+  crashedDeep(job: Job): boolean {
+    const k = key(job.boardId, job.ply);
+    const n = (this.deepCrashes.get(k) ?? 0) + 1;
+    if (n >= MAX_CRASHES) {
+      this.deepCrashes.delete(k);
+      return false;
+    }
+    this.deepCrashes.set(k, n);
+    return this.requeueDeep(job);
+  }
+
+  /** Drop a Board's deep Jobs and their crash counts. */
+  cancelDeep(boardId: string): void {
+    this.deepJobs = this.deepJobs.filter((j) => j.boardId !== boardId);
+    for (const k of [...this.deepCrashes.keys()]) if (k.startsWith(`${boardId}:`)) this.deepCrashes.delete(k);
+  }
+
+  /** Waiting deep Jobs, in pick order (copies). */
+  deep(): Job[] {
+    return this.deepJobs.map((j) => ({ ...j }));
+  }
+
   /** Drop every Job, crash count and Dead-letter queue entry of a Board, and forget its latest ply. */
   removeBoard(boardId: string): void {
     const own = (k: string) => k.startsWith(`${boardId}:`);
@@ -179,7 +249,7 @@ export class Queue {
     for (const boardId of boardIds) this.removeBoard(boardId);
   }
 
-  /** Empty everything, Dead-letter queue included (Round swap). */
+  /** Empty everything but the deep map, Dead-letter queue included (Round swap). */
   clear(): void {
     this.jobs.clear();
     this.latest.clear();
@@ -239,10 +309,11 @@ export class Queue {
     return [...this.jobs.values()].filter((j) => j.pass === 0 && j.tier === 'backfill').length;
   }
 
-  /** Waiting Jobs per Pass: index = Pass, up to the highest Pass queued. */
+  /** Waiting Jobs per Pass, deep Jobs included: index = Pass, up to the highest Pass queued. */
   passCounts(): number[] {
     const n: number[] = [];
     for (const j of this.jobs.values()) n[j.pass] = (n[j.pass] ?? 0) + 1;
+    if (this.deepJobs.length) n[DEEP_PASS] = (n[DEEP_PASS] ?? 0) + this.deepJobs.length;
     return Array.from(n, (x) => x ?? 0);
   }
 

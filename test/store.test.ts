@@ -23,7 +23,8 @@ describe('dataStore', () => {
   const event = { tourId: 'T', name: 'Event', link: 'https://lichess.org/broadcast/x/T' };
   const dead = { tourId: 'T', boardId: 'G', board: 1, ply: 3, at: 7 };
   const state: PersistedState = {
-    version: 4,
+    version: 5,
+    deep: [],
     settings: { engine: null, passesMs: [1000, 10_000, 100_000] }, // what a version 2 or 3 job time becomes
     primary: 'T',
     events: [{ event, topN: 6, current: { tourId: 'T', roundId: 'R' }, dead: [dead] }],
@@ -78,7 +79,7 @@ describe('dataStore', () => {
     writeFileSync(path, JSON.stringify(data));
     expect(await s.load()).toBeNull();
     for (const bad of [
-      { ...state, version: 5 },
+      { ...state, version: 6 },
       { ...state, settings: { engine: null, passesMs: 3 } },
       { ...state, events: {} },
       { ...state, primary: 3 },
@@ -101,11 +102,36 @@ describe('dataStore', () => {
     const path = join(dir, 'state.json');
     writeFileSync(path, JSON.stringify(v2({ event: null }, { current: null, dead: [] })));
     expect(await dataStore(path).load()).toEqual({
-      version: 4,
+      version: 5,
+      deep: [],
       settings: { engine: null, passesMs: [1000, 10_000, 100_000] },
       primary: null,
       events: [],
     });
+  });
+
+  it('round-trips version 5 deep requests, and migrates version 4 to no deep requests', async () => {
+    const path = join(dir, 'state.json');
+    const s = dataStore(path);
+    const deep = [{ tourId: 'T', roundId: 'R0', boardId: 'G', board: 2, at: 5, left: [3, 4], total: 9 }];
+    await s.save({ ...state, deep });
+    expect(await s.load()).toEqual({ ...state, deep });
+    const v4: Record<string, unknown> = { ...state, version: 4 };
+    delete v4.deep;
+    writeFileSync(path, JSON.stringify(v4));
+    expect(await s.load()).toEqual(state);
+    for (const bad of [
+      { ...state, deep: null },
+      { ...state, deep: [{ ...deep[0], left: null }] },
+      { ...state, deep: [{ ...deep[0], left: [-1] }] },
+      { ...state, deep: [{ ...deep[0], left: [1.5] }] },
+      { ...state, deep: [{ ...deep[0], board: '2' }] },
+      { ...state, deep: [{ ...deep[0], total: undefined }] },
+      { ...v4, version: 5 },
+    ]) {
+      writeFileSync(path, JSON.stringify(bad));
+      await expect(s.load()).rejects.toThrow(/not a lichess-kibitzer state file/);
+    }
   });
 
   it('migrates a version 3 job time to the default Passes; an unset one stays unset', async () => {

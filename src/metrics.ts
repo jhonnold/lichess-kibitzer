@@ -86,7 +86,7 @@ export const deadLetterSize = new Gauge({
 /** `role`: the engine copy, main (MultiPV 1) or multi (MultiPV N). */
 export const engineUp = new Gauge({
   name: 'kibitzer_engine_up',
-  help: '1 while the engine copy is up, 0 while restarting or without a Round, by role (main, multi)',
+  help: '1 while the engine copy is up, 0 while restarting or idle (no Round, no deep request), by role (main, multi)',
   labelNames: ['role'],
   registers: [register],
   collect() {
@@ -94,10 +94,10 @@ export const engineUp = new Gauge({
     if (src) for (const role of ROLES) this.set({ role }, src.scheduler.copyState(role) === 'up' ? 1 : 0);
   },
 });
-/** `idle`: no engine wanted (no Round, or stopped). Every state is exported, the current one as 1. */
+/** `idle`: no engine wanted (no Round and no deep request, or stopped). Every state is exported, the current one as 1. */
 export const engineState = new Gauge({
   name: 'kibitzer_engine_state',
-  help: '1 for the engine copy state: up, restarting, or idle (no Round), by role (main, multi)',
+  help: '1 for the engine copy state: up, restarting, or idle (no Round, no deep request), by role (main, multi)',
   labelNames: ['role', 'state'],
   registers: [register],
   collect() {
@@ -110,8 +110,10 @@ export const engineState = new Gauge({
   },
 });
 /** One outcome per Job run: recorded (an Eval, evicted Provisional ones included), empty (no scored line), discarded
- *  (an interrupted deepening Job no deeper than the eval it would replace), dropped, interrupted (engine restart),
- *  crashed (requeued) or dead_lettered (its last crash). `pass`: the Job's Pass (0, 1, 2). */
+ *  (an interrupted deepening Job no deeper than the eval it would replace; a deep Job evicted, or its eval refused as
+ *  stale), dropped (a deep Job: also no longer wanted, or given up after its last crash), interrupted (engine restart;
+ *  a deep Job: also halted and requeued), crashed (requeued) or dead_lettered (its last crash; never a deep Job).
+ *  `pass`: the Job's Pass (0, 1, 2); deep Jobs are tier backfill, pass 2. */
 export const jobs = new Counter({
   name: 'kibitzer_jobs_total',
   help: 'Jobs run, by tier, pass and outcome (recorded, empty, discarded, dropped, interrupted, crashed, dead_lettered)',
