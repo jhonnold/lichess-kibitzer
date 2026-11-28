@@ -1,4 +1,5 @@
 import * as T from '../shared/types.js';
+import type { EvalTarget } from './archive-rounds.js';
 import type { RoundInfo } from './lichess/api.js';
 import type { DataStore } from './store.js';
 
@@ -35,7 +36,7 @@ export interface Schedule {
 
 /** One Event's in-memory state: its Current Round (every Board), Dead-letter queue, stream status and the Follower's
  *  Schedule. Events go to the host for every Board; persisted parts are saved (via the host) on every change. */
-export class RoundState {
+export class RoundState implements EvalTarget {
   readonly event: T.RegisteredEvent;
   #topN: number;
   #round: T.Round | null;

@@ -28,7 +28,8 @@ const info = (n = 10, result: T.Result = '*'): RoundInfo => ({
 const event: T.RegisteredEvent = { tourId: 'T1', name: 'Event', link: 'https://lichess.org/broadcast/x/T1' };
 
 const persisted = (site: Partial<T.SiteSettings>, entry: Partial<T.PersistedEvent> = {}): T.PersistedState => ({
-  version: 4,
+  version: 5,
+  deep: [],
   settings: { engine: null, passesMs: [5000, null, null], ...site },
   primary: event.tourId,
   events: [{ event, topN: 8, current: null, dead: [], ...entry }],

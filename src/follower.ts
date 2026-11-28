@@ -143,6 +143,7 @@ export class Follower {
       const { current } = rollover(ev.rounds, cur, this.now);
       if (current && current.id !== cur) {
         const info = await lichess.fetchRound(current.id);
+        await this.site.release(info.tourId, info.id); // under deep analysis: ArchiveRounds flushes it and lets go
         await this.site.saved(); // writes are coalesced: the file read below must include the last one
         const existing = await store.loadRound(info.tourId, info.id);
         await this.scheduler.startRound(info.tourId, info, current.startsAt ?? null, existing);

@@ -1,11 +1,12 @@
 import { Chess } from 'chess.js';
 import { copyOptions } from '../shared/engine-config.js';
-import { maxPass, nextPass } from '../shared/passes.js';
-import { MIN_LIVE_SLICE_MS, Queue, type EvictedJob, type Eviction, type Job } from '../shared/queue.js';
+import { DEEP_PASS, maxPass, nextPass } from '../shared/passes.js';
+import { MAX_CRASHES, MIN_LIVE_SLICE_MS, Queue, type EvictedJob, type Eviction, type Job } from '../shared/queue.js';
 import { passTimings, type JobSample, type JobTiming } from '../shared/timing.js';
 import type * as T from '../shared/types.js';
 import { boardState } from '../shared/viewer.js';
 import { Engine, type SearchResult } from './engine/engine.js';
+import type { EvalTarget } from './archive-rounds.js';
 import type { UciInfo } from './engine/uci-parser.js';
 import type { RoundInfo } from './lichess/api.js';
 import type { SourceFactory } from './lichess/stream.js';
@@ -24,6 +25,18 @@ export const TIMING_WINDOW = 200;
 export const EVICTIONS_KEPT = 10;
 export type EngineState = 'up' | 'restarting' | null;
 export const ROLES: readonly T.EngineRole[] = ['main', 'multi'];
+
+/** requestDeep: ok, the Board is in neither its Event's Current Round nor a Round file, or the deep Pass is off. */
+export type DeepResult = 'ok' | 'unknown board' | 'pass 3 off';
+/** A deep request and its progress: left of total plies still to search. */
+export interface DeepProgress {
+  tourId: string;
+  roundId: string;
+  boardId: string;
+  board: number;
+  left: number;
+  total: number;
+}
 
 /** One copy of the engine binary: its process (null: down or not wanted) and its own restart backoff. */
 interface Copy {
@@ -121,8 +134,10 @@ const noLegalMoves = (b: Readonly<T.Board>): boolean => {
  * Drives the Current Round: every Board's moves are recorded from the source; Tracked boards get Jobs from the Queue,
  * run one at a time as `go movetime` searches on both copies at once. Each position is searched once per Pass
  * (shared/passes.ts): Pass 0 first, Pass 1 in the free time; the deep Pass is never queued automatically. The main copy decides the Job's outcome; the
- * multi copy only adds Lines, and the Queue runs without it while it is down. Public methods are serialised; the search loop and the
- * source/engine handlers run outside that and stay synchronous apart from the single `engine.search` await.
+ * multi copy only adds Lines, and the Queue runs without it while it is down. The deep Pass runs on an Admin's request
+ * (requestDeep), on any Board of any Round, archived ones via ArchiveRounds, while nothing else may run. Public methods
+ * are serialised; the search loop and the source/engine handlers run outside that and stay synchronous apart from the
+ * single `engine.search` await (and, for a deep Job, the read of its Round file before it).
  */
 export class Scheduler {
   private readonly queue = new Queue();
@@ -133,7 +148,8 @@ export class Scheduler {
   private busy = false;
   private halting = false;
   private ops: Promise<unknown> = Promise.resolve();
-  private wanted = false; // some Event has a Round and stop() was not called: keep an engine running
+  private wanted = false; // some Event has a Round or a deep request is pending, and stop() was not called: keep engines running
+  private opening: Job | null = null; // a deep Job taken from the Queue, while its Round file is read before its search
   private samples: JobSample[] = []; // the last TIMING_WINDOW recorded Jobs of each Pass; resets on boot, not on a Round swap
   private evicted: EvictedJob[] = []; // the last EVICTIONS_KEPT evictions, newest first; resets on boot
 
@@ -184,14 +200,32 @@ export class Scheduler {
     return this.run && { ...this.run.job };
   }
 
+  /** The deep requests, oldest first, with their progress. */
+  get deep(): DeepProgress[] {
+    return this.site.deep.map(({ tourId, roundId, boardId, board, left, total }) => ({
+      tourId,
+      roundId,
+      boardId,
+      board,
+      left: left.length,
+      total,
+    }));
+  }
+
   /** Replace that Event's Current Round (also its first one): drop its running Job and Queue entries, follow the new
-   *  Round's source. Other Events are untouched. existing = that Round's file: continue it, never wipe it. */
+   *  Round's source. Other Events are untouched. existing = that Round's file: continue it, never wipe it; when
+   *  ArchiveRounds holds the Round (deep analysis), its copy is newer and opened instead. A deep Job is halted (and
+   *  requeued) only when its Round is the one replaced or the one opened; its deep Jobs are kept. */
   startRound(tourId: string, r: RoundInfo, startsAt: number | null, existing: T.Round | null = null): Promise<void> {
     return this.serial(async () => {
       const rs = this.site.event(tourId);
       if (!rs) return;
       this.feeds.get(tourId)?.stop();
-      if (this.run?.job.tourId === tourId) await this.halt('drop');
+      const job = this.run?.job ?? this.opening;
+      const affected = (j: Job) =>
+        j.tourId === tourId && (!j.deep || j.roundId === rs.round?.roundId || j.roundId === r.id);
+      if (job && affected(job)) await this.halt('drop');
+      existing = (await this.site.release(tourId, r.id)) ?? existing;
       if (this.site.event(tourId) !== rs) return; // removed during the halt
       this.queue.removeEvent(tourId);
       this.publishQueue(); // before the new Round's snapshot, which carries the Queue
@@ -202,26 +236,24 @@ export class Scheduler {
       feed.start(r.id);
       this.enqueueTracked(rs);
       this.wake();
-      this.wanted = true;
-      for (const role of ROLES) {
-        this.cancelPendingRestart(role);
-        this.copies[role].backoff = RESTART_MIN_MS;
-        if (!this.copies[role].engine) await this.ensureEngine(role);
-      }
+      await this.wantEngines();
       this.kick();
     });
   }
 
-  /** The Event is being removed: stop its Feed, drop its Job and Queue entries, remove it from the site. Quit the
-   *  engines when no Event has a Round any more. */
+  /** The Event is being removed: stop its Feed, drop its Job and Queue entries, remove it from the site. Its deep
+   *  requests stay (a deep Job of its Current Round is halted and requeued: the Round goes to the Archive). Quit the
+   *  engines when no Event has a Round and no deep request is left. */
   removeEvent(tourId: string): Promise<void> {
     return this.serial(async () => {
       this.feeds.get(tourId)?.stop();
       this.feeds.delete(tourId);
-      if (this.run?.job.tourId === tourId) await this.halt('drop');
+      const job = this.run?.job ?? this.opening;
+      const current = this.site.event(tourId)?.round?.roundId;
+      if (job?.tourId === tourId && (!job.deep || job.roundId === current)) await this.halt('drop');
       this.queue.removeEvent(tourId);
       this.site.removeEvent(tourId);
-      this.wanted = this.site.events.some((rs) => rs.round);
+      this.wanted = this.someWork;
       if (!this.wanted) await this.idleEngines();
       this.publishQueue();
       this.kick();
@@ -261,7 +293,7 @@ export class Scheduler {
   }
 
   /** Boot: follow every Event that has a Current Round: rebuild its Queue entries from its plies and follow its
-   *  source again. */
+   *  source again. Queue every deep request again. */
   resume(): Promise<void> {
     return this.serial(async () => {
       let any = false;
@@ -275,7 +307,7 @@ export class Scheduler {
         this.queue.restoreDead(rs.dead, rs.event.tourId); // before enqueueTracked: dead positions are not queued again
         this.enqueueTracked(rs);
       }
-      if (!any) return;
+      if (!(await this.restoreDeep()) && !any) return;
       this.wake();
       this.wanted = true;
       for (const role of ROLES) await this.ensureEngine(role);
@@ -310,6 +342,37 @@ export class Scheduler {
     });
   }
 
+  /** Admin: deep analysis of a Board of any Round (its Event's Current Round, or a Round file): the deep Pass on each
+   *  of its plies so far, run only while no regular Job may (nothing live, nothing else waiting). A repeat request
+   *  restarts it. Later, a deep Pass turned off holds its Jobs (maxPass). */
+  requestDeep(tourId: string, roundId: string, boardId: string): Promise<DeepResult> {
+    return this.serialValue(async () => {
+      if (this.site.settings.passesMs?.[DEEP_PASS] == null) return 'pass 3 off';
+      const b = await this.deepBoard(tourId, roundId, boardId);
+      if (!b) return 'unknown board';
+      const latest = b.plies.length - 1;
+      const left = b.plies.map((_, i) => i).filter((i) => i < latest || !noLegalMoves(b));
+      await this.haltDeep(boardId); // its old request's Job
+      this.queue.addDeep(tourId, roundId, boardId, b.board, left, this.now);
+      this.site.setDeep({ tourId, roundId, boardId, board: b.board, at: this.now, left, total: left.length });
+      await this.wantEngines();
+      this.wake();
+      return 'ok';
+    });
+  }
+
+  /** Admin: stop a Board's deep analysis, its running search too. Quit the engines when nothing is left. False: none. */
+  cancelDeep(boardId: string): Promise<boolean> {
+    return this.serialValue(async () => {
+      await this.haltDeep(boardId);
+      this.queue.cancelDeep(boardId);
+      const had = this.site.cancelDeep(boardId);
+      await this.idleIfDone();
+      this.wake();
+      return had;
+    });
+  }
+
   /** Admin: put a Dead-letter queue entry back with a fresh crash count. false = not in the Dead-letter queue. */
   requeueDead(boardId: string, ply: number): Promise<boolean> {
     return this.serialValue(async () => {
@@ -340,6 +403,36 @@ export class Scheduler {
       this.queue.clear();
       this.publishQueue();
     });
+  }
+
+  /** Inside serial only: engines wanted from now; launch the copies that are down (a pending relaunch starts now). */
+  private async wantEngines(): Promise<void> {
+    this.wanted = true;
+    for (const role of ROLES) {
+      this.cancelPendingRestart(role);
+      this.copies[role].backoff = RESTART_MIN_MS;
+      if (!this.copies[role].engine) await this.ensureEngine(role);
+    }
+  }
+
+  /** Boot: queue each persisted deep request again, its plies clamped to its Board's; a request whose Round file or
+   *  Board is gone is dropped. true = some request is left. */
+  private async restoreDeep(): Promise<boolean> {
+    for (const req of [...this.site.deep]) {
+      const b = await this.deepBoard(req.tourId, req.roundId, req.boardId).catch((err: unknown) => {
+        console.error(`scheduler: deep ${req.boardId}:`, err);
+        return undefined;
+      });
+      if (!b) {
+        console.warn(`scheduler: deep request for ${req.boardId} dropped: its Board is gone`);
+        this.site.cancelDeep(req.boardId);
+        continue;
+      }
+      for (const ply of req.left) if (ply >= b.plies.length) this.site.deepDone(req.boardId, ply);
+      const left = this.site.deepRequest(req.boardId)?.left ?? [];
+      if (left.length) this.queue.addDeep(req.tourId, req.roundId, req.boardId, req.board, left, req.at);
+    }
+    return this.site.deep.length > 0;
   }
 
   /** Inside serial only, after halt() and with no Round wanted: no restarts pending, engines quit, no search. */
@@ -474,7 +567,9 @@ export class Scheduler {
         if (this.halting || !engine || passes === null) return;
         const job = this.queue.next(this.maxPass);
         if (!job) return;
-        await this.runJob(engine, this.copies.multi.engine, job, passes[job.pass] ?? passes[0]);
+        const ms = passes[job.pass] ?? passes[0];
+        if (job.deep) await this.runDeep(engine, job, ms);
+        else await this.runJob(engine, this.copies.multi.engine, job, ms);
         this.site.setSearch(null, null);
       }
     } catch (err) {
@@ -485,21 +580,28 @@ export class Scheduler {
     }
   }
 
-  private async runJob(engine: Engine, multi: Engine | null, job: Job, ms: number): Promise<void> {
-    const { boardId, ply } = job;
-    const rs = this.site.event(job.tourId);
-    const labels = { tier: job.tier, pass: String(job.pass) };
-    if (!rs) return void jobs.inc({ ...labels, outcome: 'dropped' });
-    const moves = rs
-      .board(boardId)!
-      .plies.slice(1, ply + 1)
-      .map((p) => p.move!.uci);
+  /** Search the Job's position (`moves`) on both copies, as the Run in this.run until it ends. r null: the main copy's
+   *  search rejected (the engine died). ended/evicted: as decided when the main copy ended. */
+  private async search(
+    engine: Engine,
+    multi: Engine | null,
+    job: Job,
+    ms: number,
+    moves: string[],
+    epoch: number,
+  ): Promise<{
+    run: Run;
+    r: SearchResult | null;
+    mr: SearchResult | null;
+    ended: Run['stop'];
+    evicted: Eviction | null;
+  }> {
     const chess = new Chess();
     for (const m of moves) play(chess, m);
     const slice = Math.min(MIN_LIVE_SLICE_MS, ms);
     const run: Run = {
       job,
-      epoch: rs.epoch(boardId),
+      epoch,
       fen: chess.fen(),
       ms,
       engine: engine.name,
@@ -524,13 +626,35 @@ export class Scheduler {
     try {
       r = await engine.search(moves, { movetime: ms });
     } catch {
-      // The Event may have been removed meanwhile: then nothing of this Job is recorded or requeued.
       const ended = run.stop; // decided when the main copy ended: not by a stop sent while waiting for the multi copy
       await settled();
-      const stop = this.site.event(job.tourId) === rs ? ended : 'drop';
       cancelSlice();
-      // The search rejected: the engine died. A Job we quit the engine under (restart) is not its crash.
       this.run = null;
+      return { run, r: null, mr: null, ended, evicted: run.evicted };
+    }
+    const { stop: ended, evicted } = run; // as for a crash: the Job's outcome is the main copy's
+    const mr = await settled();
+    cancelSlice();
+    this.run = null;
+    this.copies.main.backoff = RESTART_MIN_MS;
+    if (mr) this.copies.multi.backoff = RESTART_MIN_MS;
+    return { run, r, mr, ended, evicted };
+  }
+
+  private async runJob(engine: Engine, multi: Engine | null, job: Job, ms: number): Promise<void> {
+    const { boardId, ply } = job;
+    const rs = this.site.event(job.tourId);
+    const labels = { tier: job.tier, pass: String(job.pass) };
+    if (!rs) return void jobs.inc({ ...labels, outcome: 'dropped' });
+    const moves = rs
+      .board(boardId)!
+      .plies.slice(1, ply + 1)
+      .map((p) => p.move!.uci);
+    const { run, r, mr, ended, evicted } = await this.search(engine, multi, job, ms, moves, rs.epoch(boardId));
+    // The Event may have been removed meanwhile: then nothing of this Job is recorded or requeued.
+    const stop = this.site.event(job.tourId) === rs ? ended : 'drop';
+    if (!r) {
+      // The search rejected: the engine died. A Job we quit the engine under (restart) is not its crash.
       if (stop === 'restart') {
         this.queue.requeue(job, this.now);
         jobs.inc({ ...labels, outcome: 'interrupted' });
@@ -546,13 +670,6 @@ export class Scheduler {
       this.publishQueue();
       return;
     }
-    const { stop: ended, evicted } = run; // as for a crash: the Job's outcome is the main copy's
-    const mr = await settled();
-    cancelSlice();
-    this.run = null;
-    this.copies.main.backoff = RESTART_MIN_MS;
-    if (mr) this.copies.multi.backoff = RESTART_MIN_MS;
-    const stop = this.site.event(job.tourId) === rs ? ended : 'drop'; // the Event may be gone: drop the result
     if (stop === 'drop') return void jobs.inc({ ...labels, outcome: 'dropped' });
     let recorded = false;
     if (stop === 'restart') jobs.inc({ ...labels, outcome: 'interrupted' });
@@ -582,19 +699,7 @@ export class Scheduler {
             : prev.depth <= record.depth);
         if (replaces) rs.setEval(boardId, ply, record, run.epoch);
       }
-      if (evicted) {
-        const depth = rs.board(boardId)?.plies[ply]?.eval?.depth ?? null; // what the ply kept
-        this.evicted.unshift({
-          tourId: job.tourId,
-          boardId,
-          board: job.board,
-          ply,
-          reason: evicted,
-          depth,
-          at: this.now,
-        });
-        this.evicted.length = Math.min(this.evicted.length, EVICTIONS_KEPT);
-      }
+      if (evicted) this.noteEviction(job, evicted, rs.board(boardId)?.plies[ply]?.eval?.depth ?? null); // what it kept
     }
     // Evicted for another live position: a full search later, from the top of backfill.
     if (stop === 'preempt' && evicted === 'live') this.queue.evict(job, this.now);
@@ -604,6 +709,141 @@ export class Scheduler {
       const pass = nextPass(rs.board(boardId)?.plies[ply]?.eval, ply, this.site.settings.passesMs);
       if (pass !== null) this.queue.requeue({ ...job, pass }, this.now);
     }
+  }
+
+  /**
+   * A deep Job. Its target is looked up again at every step, never kept: its Round may become an Event's Current Round,
+   * or stop being one, while it waits or runs (the epoch of the target it started on then refuses its eval). Read first
+   * when ArchiveRounds does not hold its Round. Any stop (eviction, halt, restart) or refusal puts it back at the front
+   * of the deep map while its request still wants the ply; a Complete eval always replaces the ply's eval (forced: no
+   * keep-the-longer rule). Never the Dead-letter queue, the evict path or a next Pass.
+   */
+  private async runDeep(engine: Engine, job: Job, ms: number): Promise<void> {
+    const { boardId, ply } = job;
+    const labels = { tier: job.tier, pass: String(job.pass) };
+    if (!this.deepTarget(job)) {
+      this.opening = job;
+      await this.site.archive
+        .open(job.tourId, job.roundId!)
+        .catch((err: unknown) => console.error(`scheduler: deep ${boardId}:`, err));
+      this.opening = null;
+    }
+    if (this.halting || this.copies.main.engine !== engine) return void this.requeueDeep(job);
+    if (!this.wants(job)) return void jobs.inc({ ...labels, outcome: 'dropped' }); // cancelled while its Round was read
+    const target = this.deepTarget(job);
+    const b = target?.board(boardId);
+    if (!target || !b || ply >= b.plies.length) {
+      // Its Round file or Board is gone: the request ends. Or a correction took the ply away: that ply is done.
+      console.warn(`scheduler: deep ${boardId}:${ply} dropped: ${b ? 'no such ply' : 'its Board is gone'}`);
+      if (b) this.site.deepDone(boardId, ply);
+      else {
+        this.queue.cancelDeep(boardId);
+        this.site.cancelDeep(boardId);
+      }
+      jobs.inc({ ...labels, outcome: 'dropped' });
+      return this.idleWhenDone();
+    }
+    const moves = b.plies.slice(1, ply + 1).map((p) => p.move!.uci);
+    const multi = this.copies.multi.engine;
+    const { run, r, mr, ended, evicted } = await this.search(engine, multi, job, ms, moves, target.epoch(boardId));
+    if (!r) {
+      // The engine died. A Job we stopped (halt, restart) is not its crash; nor is one no longer wanted.
+      if (ended === 'drop' || ended === 'restart' || !this.wants(job))
+        return void jobs.inc({ ...labels, outcome: this.requeueDeep(job) ? 'interrupted' : 'dropped' });
+      if (this.queue.crashedDeep(job)) return void jobs.inc({ ...labels, outcome: 'crashed' });
+      console.warn(`scheduler: deep ${boardId}:${ply} given up after ${MAX_CRASHES} crashes`);
+      this.site.deepDone(boardId, ply);
+      jobs.inc({ ...labels, outcome: 'dropped' });
+      return this.idleWhenDone();
+    }
+    if (ended) {
+      // Evicted (upgrade), halted or restarted: discarded, searched again in full.
+      const back = this.requeueDeep(job);
+      if (ended === 'preempt' && evicted) {
+        evictions.inc({ reason: evicted });
+        this.noteEviction(job, evicted, this.deepTarget(job)?.board(boardId)?.plies[ply]?.eval?.depth ?? null);
+        return void jobs.inc({ ...labels, outcome: 'discarded' });
+      }
+      return void jobs.inc({ ...labels, outcome: back ? 'interrupted' : 'dropped' });
+    }
+    const e = toEval(r, ply, run.fen, 'complete', mr);
+    if (!e) {
+      jobs.inc({ ...labels, outcome: 'empty' });
+      this.site.deepDone(boardId, ply); // an empty search is not searched again
+      return this.idleWhenDone();
+    }
+    const record = { ...e, ms: run.ms };
+    if (!this.deepTarget(job)?.setEval(boardId, ply, record, run.epoch)) {
+      this.requeueDeep(job); // stale: a correction, or its Round moved between an Event and the Archive
+      return void jobs.inc({ ...labels, outcome: 'discarded' });
+    }
+    jobs.inc({ ...labels, outcome: 'recorded' });
+    this.recordJob(job, this.now - run.startedAt, 'complete', record, run);
+    this.site.deepDone(boardId, ply);
+    this.idleWhenDone();
+  }
+
+  /** Where a deep Job's eval goes now: its Event's RoundState while its Round is current, else ArchiveRounds while it
+   *  holds the Round; null: neither (the Round file is not read yet). */
+  private deepTarget(job: Pick<Job, 'tourId' | 'roundId'>): EvalTarget | null {
+    const rs = this.site.event(job.tourId);
+    if (rs?.round && rs.round.roundId === job.roundId) return rs;
+    return this.site.archive.round(job.tourId, job.roundId!) ? this.site.archive : null;
+  }
+
+  /** That Board as its deep Jobs would see it now: in its Event's Current Round, else in its Round file. */
+  private async deepBoard(tourId: string, roundId: string, boardId: string): Promise<Readonly<T.Board> | undefined> {
+    const rs = this.site.event(tourId);
+    if (rs?.round?.roundId === roundId) return rs.board(boardId);
+    return (await this.site.archive.open(tourId, roundId))?.boards.find((b) => b.id === boardId);
+  }
+
+  /** The Board's deep request still wants the Job's ply (not cancelled or done). */
+  private wants(job: Job): boolean {
+    const req = this.site.deepRequest(job.boardId);
+    return !!req && req.roundId === job.roundId && req.left.includes(job.ply);
+  }
+
+  /** Back to the front of the deep map, while still wanted. */
+  private requeueDeep(job: Job): boolean {
+    return this.wants(job) && this.queue.requeueDeep(job);
+  }
+
+  /** Stop that Board's deep Job if it runs (or its Round is being read): it is requeued while still wanted. */
+  private async haltDeep(boardId: string): Promise<void> {
+    const job = this.run?.job ?? this.opening;
+    if (job?.deep && job.boardId === boardId) await this.halt('drop');
+  }
+
+  /** From the search loop, after a deep request may have ended: quit the engines once nothing is left. */
+  private idleWhenDone(): void {
+    if (!this.someWork) void this.serial(() => this.idleIfDone());
+  }
+
+  /** Inside serial only: with no Round and no deep request left, quit the engines (as when the last Event goes). */
+  private async idleIfDone(): Promise<void> {
+    if (!this.wanted || this.someWork) return;
+    this.wanted = false;
+    await this.halt('drop');
+    await this.idleEngines();
+  }
+
+  /** Some Event has a Round, or a deep request is pending: keep the engines running. */
+  private get someWork(): boolean {
+    return this.site.events.some((rs) => rs.round) || this.site.deep.length > 0;
+  }
+
+  private noteEviction(job: Job, reason: Eviction, depth: number | null): void {
+    this.evicted.unshift({
+      tourId: job.tourId,
+      boardId: job.boardId,
+      board: job.board,
+      ply: job.ply,
+      reason,
+      depth,
+      at: this.now,
+    });
+    this.evicted.length = Math.min(this.evicted.length, EVICTIONS_KEPT);
   }
 
   /** Duration and the Admin timing samples are the Job's (main copy's depth); depth and nps also per copy. kind: whether

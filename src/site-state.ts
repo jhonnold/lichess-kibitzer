@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import * as T from '../shared/types.js';
+import { ArchiveRounds } from './archive-rounds.js';
 import { RoundState, type RoundHost } from './round-state.js';
 import type { DataStore } from './store.js';
 import { boardState } from '../shared/viewer.js';
@@ -12,9 +13,9 @@ export type SiteEvents = {
 
 export const EMPTY_QUEUE: T.QueueView = { current: [], backfill: 0, deferred: [] };
 
-/** In-memory site state: the site settings, one RoundState per registered Event, the Primary, and the transient
- *  search/queue. The only emitter: RoundState events arrive tagged with their Event. Persisted parts are saved on
- *  every change. */
+/** In-memory site state: the site settings, one RoundState per registered Event, the Primary, the deep analysis
+ *  requests and the archived Rounds they work on, and the transient search/queue. The only emitter: RoundState events
+ *  arrive tagged with their Event. Persisted parts are saved on every change. */
 export class SiteState extends EventEmitter<SiteEvents> {
   #settings: T.SiteSettings;
   #primary: string | null;
@@ -26,6 +27,9 @@ export class SiteState extends EventEmitter<SiteEvents> {
   #seq = 0; // epochs are never reused, across Rounds, Events and re-adds
   #stateSaving: Promise<void> = Promise.resolve();
   #lastEvents = ''; // the summaries last emitted, as JSON
+  #deep: T.DeepRequest[]; // oldest first; one per Board
+  /** The archived Rounds under deep analysis (the Current Rounds are their RoundStates'). */
+  readonly archive: ArchiveRounds;
 
   constructor(
     private readonly store: DataStore,
@@ -35,6 +39,14 @@ export class SiteState extends EventEmitter<SiteEvents> {
     this.setMaxListeners(0); // one listener per SSE client; default cap 10 would warn
     this.#settings = init.state?.settings ?? { engine: null, passesMs: [...T.DEFAULT_PASSES_MS] };
     this.#primary = init.state?.primary ?? null;
+    this.#deep = init.state?.deep ?? [];
+    this.archive = new ArchiveRounds(store, {
+      nextEpoch: () => ++this.#seq,
+      saved: () => this.saved(),
+      wanted: (tourId, roundId) =>
+        this.#deep.some((d) => d.tourId === tourId && d.roundId === roundId) &&
+        !this.currents.some((c) => c.tourId === tourId && c.roundId === roundId),
+    });
     for (const entry of init.state?.events ?? []) {
       this.#events.set(entry.event.tourId, this.#make(entry, init.rounds?.get(entry.event.tourId) ?? null));
     }
@@ -81,6 +93,13 @@ export class SiteState extends EventEmitter<SiteEvents> {
   }
   get search(): T.SearchInfo | null {
     return this.#search;
+  }
+  /** Deep analysis requests, oldest first. Don't mutate. */
+  get deep(): readonly Readonly<T.DeepRequest>[] {
+    return this.#deep;
+  }
+  deepRequest(boardId: string): Readonly<T.DeepRequest> | undefined {
+    return this.#deep.find((d) => d.boardId === boardId);
   }
 
   /** That Event's Snapshot; an unknown or null tourId gives the empty one. */
@@ -133,7 +152,7 @@ export class SiteState extends EventEmitter<SiteEvents> {
     return rs;
   }
 
-  /** Drops the Event and its Dead-letter queue (its Round files stay: Archive). False: unknown. */
+  /** Drops the Event and its Dead-letter queue (its Round files and deep requests stay: Archive). False: unknown. */
   removeEvent(tourId: string): boolean {
     const rs = this.#events.get(tourId);
     if (!rs) return false;
@@ -171,6 +190,39 @@ export class SiteState extends EventEmitter<SiteEvents> {
     this.#saveState();
   }
 
+  /** Add a deep request, or replace that Board's (to the back: a repeat request restarts it). */
+  setDeep(req: T.DeepRequest): void {
+    this.#deep = [...this.#deep.filter((d) => d.boardId !== req.boardId), req];
+    this.#saveState();
+  }
+
+  /** That Board's deep ply is done (searched, or given up): out of `left`; the request ends with its last ply. */
+  deepDone(boardId: string, ply: number): void {
+    const req = this.deepRequest(boardId);
+    if (!req?.left.includes(ply)) return;
+    const left = req.left.filter((p) => p !== ply);
+    if (!left.length) return void this.cancelDeep(boardId);
+    this.#deep = this.#deep.map((d) => (d === req ? { ...d, left } : d));
+    this.#saveState();
+  }
+
+  /** End that Board's deep request; its Round is let go by ArchiveRounds when no other request wants it. False: none. */
+  cancelDeep(boardId: string): boolean {
+    const req = this.deepRequest(boardId);
+    if (!req) return false;
+    this.#deep = this.#deep.filter((d) => d !== req);
+    if (!this.#deep.some((d) => d.tourId === req.tourId && d.roundId === req.roundId))
+      this.archive.drop(req.tourId, req.roundId);
+    this.#saveState();
+    return true;
+  }
+
+  /** A Round is about to become its Event's Current Round: ArchiveRounds flushes and lets go of it. Its held copy
+   *  (newer than its file), or null. */
+  release(tourId: string, roundId: string): Promise<T.Round | null> {
+    return this.archive.release(tourId, roundId);
+  }
+
   /** The running Job's search (null: none) and the Event that Job belongs to. */
   setSearch(search: T.SearchInfo | null, tourId: string | null): void {
     this.#search = search;
@@ -183,9 +235,9 @@ export class SiteState extends EventEmitter<SiteEvents> {
     this.emit('event', null, { type: 'queue', queue });
   }
 
-  /** Resolves when every state + Round save requested so far has been written (tests, shutdown). */
+  /** Resolves when every state + Round save requested so far has been written (tests, shutdown), ArchiveRounds' too. */
   async saved(): Promise<void> {
-    await Promise.all([this.#stateSaving, this.#retired, ...this.events.map((rs) => rs.saved())]);
+    await Promise.all([this.#stateSaving, this.#retired, this.archive.saved(), ...this.events.map((rs) => rs.saved())]);
   }
 
   #make(entry: T.PersistedEvent, round: T.Round | null): RoundState {
@@ -219,10 +271,11 @@ export class SiteState extends EventEmitter<SiteEvents> {
 
   #saveState(): void {
     const state: T.PersistedState = {
-      version: 4,
+      version: 5,
       settings: this.#settings,
       primary: this.primary,
       events: this.events.map((rs) => rs.persisted()),
+      deep: this.#deep,
     };
     this.#stateSaving = this.store.save(state).catch((err: unknown) => console.error('site-state: save failed', err));
   }
