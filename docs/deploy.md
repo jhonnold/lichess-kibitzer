@@ -115,7 +115,7 @@ the Admin cookie; with no `ADMIN_PASSWORD` it always answers 401.
 - Deprecated, to be removed: `kibitzer_lichess_rate_limited_total{source}` (`stream` or `api`) and
   `kibitzer_opening_lookups_total`; use `kibitzer_lichess_requests_total` and the reconnect `reason`
 - `kibitzer_evictions_total{reason}`: running Jobs stopped early (`stale`, `live`, `backfill`, `upgrade`: a
-  deepening Job gave way to a lower Pass, or an Event went live during a top-Pass Job)
+  deepening Job gave way to a lower Pass, an Event went live during a deep Job, or its Pass was turned off)
 - `kibitzer_following`: the number of registered Events. `kibitzer_follower_polls_total{event,outcome}`: Event polls
   (every 60 s) per Event (its tourId), `ok` or `error` (the Event fetch or the Round swap failed); series of removed
   Events stay. `kibitzer_follower_last_success_timestamp_seconds{event}`: when that Event was last fetched, no sample

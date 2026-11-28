@@ -28,7 +28,7 @@
 <main>
   <div class="wrap">
     <h1>Archive</h1>
-    <p class="lede">Finished Rounds, with their analysis as it stood when the next Round took over.</p>
+    <p class="lede">Finished Rounds: every Board, with the analysis it got live and any deep analysis since.</p>
     {#if error}
       <p class="note">{error}</p>
     {:else if !events}

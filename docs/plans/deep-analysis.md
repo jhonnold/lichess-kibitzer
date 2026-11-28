@@ -113,7 +113,7 @@ Branches are `feat/da-<n>-<slug>`, and each one passes the gate.
    - Extend `e2e.test.ts`: import a finished Event → Archive lists every Round and Board → POST deep → plies fill → Archive GET shows them.
 6. `docs`: AGENTS.md nav (import, ArchiveRounds, deep), README, `docs/deploy.md` (gauge, routes), the plan's "As built" section, and the glossary in `~/documents`.
 
-Orchestration as in multi-event: one layer at a time, implementer then review, `gh stack`.
+Orchestration: one layer at a time, an implementer subagent, then review; `gh stack`.
 
 ## Verification
 
@@ -134,3 +134,32 @@ Orchestration as in multi-event: one layer at a time, implementer then review, `
 ## Unresolved questions
 
 None.
+
+## As built
+
+How the stack differs from the plan above (source: the layer reports and reviews).
+
+- **Rollover of a new Event** only looks after the last finished Round: current = the last due Round after it, else none until the next one is due. A Round stuck unfinished before a finished one is never made current; the import picks it up once it finishes.
+- **Import** checks for existing files with `listRounds` (it also counts a save still being written). The first error ends that pass, goes to the follow status, and the next poll retries. Every Event already followed imports its earlier Rounds on its first poll after deploy.
+- **Every Board shown:** `addBoards` also emits a `board` frame. The Viewer banner stays, reworded, for a Board number the Round lacks. `EventSummary` gains `next` and `finished` (pushed by the Follower), so an Event with no Current Round reads "Next: …" or "Finished". The AppBar LIVE pill counts Tracked Boards only.
+- **Deep core:**
+  - Deep Jobs are `tier: 'backfill'`, `pass: 2` in metrics; there is no new tier label.
+  - `runDeep` is its own method, sharing `search()` with `runJob`. There is no `force` flag on `setEval`: the keep-the-longer rule lives only in the Scheduler.
+  - `startRound` also releases ArchiveRounds and opens its held copy, and it halts a deep Job of the Round being opened.
+  - After the Round file read, a deep Job re-checks `preempt` and the Pass 3 time. A Round released during the read is requeued, not cancelled.
+  - A failed read counts as a crash of that ply; after 3, the request ends.
+  - `parseV5` rejects a malformed request (non-integer or negative plies).
+- **Deep API and UI:**
+  - `/status` has `deep[]` plus `deepHeld` (`live` with the Event, `pass 3 off`, or `busy`).
+  - The deep state is read from `search.pass === DEEP_PASS`; there is no `SearchInfo.deep`.
+  - ArchiveStore merges `queue.deep` and the running deep search into an archived Round (`withDeep`), and refetches every 15 s while `deepInRound`.
+  - The archive route awaits `archive.saved()` before reading.
+  - New `--deep` colour token.
+
+Known gaps (not fixed):
+
+- An archived Round's live depth and Lines show only while the stream is bound to the request's Event, because SSE nulls other Events' searches. Otherwise the pill reads `Deep · k/n` without depth.
+- StatusPanel labels archived Rounds `Round <roundId>`, because requests carry no Round name.
+- "Past Rounds in the Archive →" shows even when the Archive has nothing for that Event. The Archive has no per-Event filter.
+- An Event followed through its last Round keeps that Round as current, so its card never reads "Finished".
+- Import errors share `status.error` with polls, so the error flips while a retry keeps failing.

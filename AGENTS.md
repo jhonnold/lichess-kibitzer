@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Lichess Kibitzer: full-screen live engine analysis of Lichess broadcast Events (several followed at once, one is the Primary Event), each followed Round by Round: the top N Boards of each Event's Round are Tracked, two copies of one UCI engine (main: MultiPV 1, the eval, accuracy and marks; multi: MultiPV N, the Lines) work through one shared Queue of Jobs together, each position searched in up to three Passes (e.g. 1 s right away, 10 s in free time, 100 s only while no Event is live), Viewers step a Cursor through the game, and finished Rounds stay in an Archive. Plan: [docs/plans/live-analysis.md](./docs/plans/live-analysis.md). v2 plan: [docs/plans/v2.md](./docs/plans/v2.md). Multi-Event plan: [docs/plans/multi-event.md](./docs/plans/multi-event.md). Search Passes plan: [docs/plans/search-passes.md](./docs/plans/search-passes.md).
+Lichess Kibitzer: full-screen live engine analysis of Lichess broadcast Events (several followed at once, one is the Primary Event), each followed Round by Round: the top N Boards of each Event's Round are Tracked, two copies of one UCI engine (main: MultiPV 1, the eval, accuracy and marks; multi: MultiPV N, the Lines) work through one shared Queue of Jobs together, each position of a Tracked Board searched in up to two automatic Passes (e.g. 1 s right away, 10 s in free time), Viewers step a Cursor through the game, and finished Rounds stay in an Archive. Every Board is recorded and shown; Tracked only means analysed automatically. Adding an Event imports its past Rounds (no analysis), and an Admin can request deep analysis (Pass 3, e.g. 100 s per position, only while no Event is live) of any Board, live or archived. Plan: [docs/plans/live-analysis.md](./docs/plans/live-analysis.md). v2 plan: [docs/plans/v2.md](./docs/plans/v2.md). Multi-Event plan: [docs/plans/multi-event.md](./docs/plans/multi-event.md). Search Passes plan: [docs/plans/search-passes.md](./docs/plans/search-passes.md). Deep analysis plan: [docs/plans/deep-analysis.md](./docs/plans/deep-analysis.md).
 
 ## Commands
 
@@ -63,7 +63,9 @@ Gate before commit: `npm run lint && npm run check && npm test && npm run build`
 | Engine config (per-copy Threads/Hash/MultiPV, legacy migration, launch order) | `shared/engine-config.ts` |
 | Event following (one Follower per Event: poll, Round rollover) | `src/follower.ts`, `shared/rollover.ts` |
 | Event cards, default topN (8 ÷ Events) | `shared/events.ts` |
-| Search Passes (next Pass of a position, top-Pass gate, validation; Queue orders by Pass) | `shared/passes.ts`, `shared/queue.ts`, `src/scheduler.ts` |
+| Search Passes (next automatic Pass of a position, deep-Pass gate, validation; Queue orders by Pass) | `shared/passes.ts`, `shared/queue.ts`, `src/scheduler.ts` |
+| Past Round import (Round PGN, import chain, rollover of a new Event) | `src/follower.ts`, `src/round-import.ts`, `src/lichess/api.ts` (`fetchRoundPgn`), `src/lichess/stream.ts` (`parsePgn`), `shared/rollover.ts` |
+| Deep analysis (requests, deep Queue map, archived Rounds held in memory, routes, Viewer button, Archive refetch) | `src/scheduler.ts` (`requestDeep`, `runDeep`), `shared/queue.ts`, `src/archive-rounds.ts`, `src/site-state.ts`, `src/routes/admin.ts`, `web/src/lib/admin.svelte.ts`, `shared/archive.ts` (`deepInRound`, `withDeep`) |
 | Job time benchmark and the default Passes | `scripts/bench-jobtime.mjs`, `docs/jobtime.md` |
 | Demo server (`npm run demo`; fake engine, synthesized Round, `--events N` for several; flags in file header) | `scripts/demo.ts` |
 | Hash router (routes, `#/e/<tourId>/…` forms, deep links to a move, streaming layout params) | `shared/route.ts` |
