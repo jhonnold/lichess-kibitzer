@@ -1391,4 +1391,114 @@ describe('Scheduler deep analysis', () => {
     expect(state.dead).toEqual([]);
     expect(positions().filter((p) => p === 'position startpos moves e2e4')).toHaveLength(MAX_CRASHES);
   });
+
+  describe('review fixes', () => {
+    /** `store`, with the read of Round R0 number `nth` (1-based) held until `open()`, or failing per `fail`. */
+    function gated(nth: number, fail: (n: number) => boolean = () => false) {
+      const real = store;
+      let open!: () => void;
+      const gate = new Promise<void>((r) => (open = r));
+      let reached!: () => void;
+      const reading = new Promise<void>((r) => (reached = r));
+      const g = { reads: 0, open: () => open(), reading };
+      store = {
+        ...real,
+        async loadRound(tourId, roundId) {
+          if (roundId === 'R0' && ++g.reads >= nth) {
+            if (g.reads === nth) {
+              reached();
+              await gate;
+            }
+            if (fail(g.reads)) throw new Error('EIO');
+          }
+          return real.loadRound(tourId, roundId);
+        },
+      };
+      return g;
+    }
+
+    it('a live position that appears while a deep Job reads its Round file runs first', async () => {
+      await store.saveRound(round('T1', 'R0', [board('z1', E4)]));
+      const g = gated(2); // 1: requestDeep's check
+      setup({ store, topN: 1, passesMs: [5, 10, 5000] });
+      await sched.startRound('T1', roundInfo('R1', ['g1']), null);
+      await poll(regularIdle);
+      expect(await sched.requestDeep('T1', 'R0', 'z1')).toBe('ok');
+      await g.reading;
+      src.push(upd('g1', ['e2e4'])); // live: its wake finds no Run to preempt
+      g.open();
+      await until(() => complete('g1', 1), 1500); // not after a 5000 ms deep search
+      expect(sched.deep[0].left).toBe(4);
+    });
+
+    it('a deep Pass turned off while a deep Job reads its Round file holds it', async () => {
+      await store.saveRound(round('T1', 'R0', [board('z1', E4)]));
+      const g = gated(2);
+      setup({ store, passesMs: [5, 10, 20] });
+      expect(await sched.requestDeep('T1', 'R0', 'z1')).toBe('ok');
+      await g.reading;
+      await sched.setPasses([5, 10, null]);
+      g.open();
+      await poll(() => !(sched as unknown as { busy: boolean }).busy);
+      expect(sched.running).toBeNull();
+      expect(sched.deep[0].left).toBe(4);
+      expect(await fileMs('T1', 'R0', 'z1')).toEqual([null, null, null, null]);
+    });
+
+    it('a release while a deep Job reads its Round file keeps the request', async () => {
+      await store.saveRound(round('T1', 'R0', [board('z1', E4)]));
+      const g = gated(2);
+      setup({ store, passesMs: [5, 10, 20] });
+      expect(await sched.requestDeep('T1', 'R0', 'z1')).toBe('ok');
+      await g.reading;
+      const released = site.release('T1', 'R0'); // the Follower's, outside the Scheduler
+      g.open();
+      await released;
+      await settled();
+      expect(await fileMs('T1', 'R0', 'z1')).toEqual([20, 20, 20, 20]);
+    });
+
+    it('retries a Round file read that failed, and ends the request after MAX_CRASHES failures', async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      await store.saveRound(round('T1', 'R0', [board('z1', E4)]));
+      let g = gated(2, (n) => n === 2); // fails once
+      setup({ store, passesMs: [5, 10, 20] });
+      g.open();
+      expect(await sched.requestDeep('T1', 'R0', 'z1')).toBe('ok');
+      await settled();
+      expect(await fileMs('T1', 'R0', 'z1')).toEqual([20, 20, 20, 20]);
+      await sched.stop();
+      store = dataStore(join(dir, 'data', 'state.json'));
+      g = gated(2, (n) => n >= 2); // fails for good
+      setup({ store, passesMs: [5, 10, 20] });
+      g.open();
+      expect(await sched.requestDeep('T1', 'R0', 'z1')).toBe('ok');
+      await settled();
+      expect(g.reads).toBe(1 + MAX_CRASHES);
+    });
+
+    it('drops malformed plies of a restored request instead of searching them forever', async () => {
+      await store.saveRound(round('T1', 'R0', [board('z1', E4)]));
+      const req = { tourId: 'T1', roundId: 'R0', boardId: 'z1', board: 1, at: 1, total: 4 };
+      const left = [-1, 1.5, 'x', 2] as unknown as number[];
+      setup({ store, passesMs: [5, 10, 20], init: { state: { ...persisted([]), deep: [{ ...req, left }] } } });
+      await sched.resume();
+      expect(sched.deep).toMatchObject([{ left: 1 }]);
+      await settled();
+      expect(await fileMs('T1', 'R0', 'z1')).toEqual([null, null, 20, null]);
+    });
+
+    it("a deep Job running on a Tracked ply does not keep that ply's regular Job out of the Queue", async () => {
+      setup({ store, topN: 1, passesMs: [5, null, 5000] });
+      await sched.startRound('T1', roundInfo('R1', ['g1']), null);
+      src.push(upd('g1', E4, '1-0'));
+      await poll(regularIdle);
+      expect(await sched.requestDeep('T1', 'R1', 'g1')).toBe('ok');
+      await until(() => deepSearch('g1', 0));
+      await sched.engine!.stop();
+      await until(() => deepSearch('g1', 1));
+      await sched.setPasses([5, 10, 5000]); // ply 1 now has a Pass 1 to reach, while its deep Job runs
+      await poll(() => evalOf('g1', 1)?.ms === 10, 1500);
+    });
+  });
 });

@@ -67,12 +67,15 @@ async function readJson(path: string): Promise<unknown | null> {
 /** A version 5 state file, or null when malformed. */
 function parseV5(data: Record<string, unknown>): PersistedState | null {
   const deep = data.deep;
+  const num = (x: unknown) => typeof x === 'number' && Number.isFinite(x);
   const ok = (d: unknown) =>
     isObj(d) &&
     typeof d.tourId === 'string' &&
     typeof d.roundId === 'string' &&
     typeof d.boardId === 'string' &&
-    Array.isArray(d.left);
+    [d.board, d.at, d.total].every(num) &&
+    Array.isArray(d.left) &&
+    d.left.every((p) => Number.isInteger(p) && (p as number) >= 0);
   if (!Array.isArray(deep) || !deep.every(ok)) return null;
   return parseV4(data) && (data as unknown as PersistedState);
 }

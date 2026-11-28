@@ -415,8 +415,8 @@ export class Scheduler {
     }
   }
 
-  /** Boot: queue each persisted deep request again, its plies clamped to its Board's; a request whose Round file or
-   *  Board is gone is dropped. true = some request is left. */
+  /** Boot: queue each persisted deep request again, its plies clamped to its Board's (a malformed ply is dropped); a
+   *  request whose Round file or Board is gone is dropped. true = some request is left. */
   private async restoreDeep(): Promise<boolean> {
     for (const req of [...this.site.deep]) {
       const b = await this.deepBoard(req.tourId, req.roundId, req.boardId).catch((err: unknown) => {
@@ -428,7 +428,8 @@ export class Scheduler {
         this.site.cancelDeep(req.boardId);
         continue;
       }
-      for (const ply of req.left) if (ply >= b.plies.length) this.site.deepDone(req.boardId, ply);
+      const bad = (ply: number) => !Number.isInteger(ply) || ply < 0 || ply >= b.plies.length;
+      for (const ply of req.left) if (bad(ply)) this.site.deepDone(req.boardId, ply);
       const left = this.site.deepRequest(req.boardId)?.left ?? [];
       if (left.length) this.queue.addDeep(req.tourId, req.roundId, req.boardId, req.board, left, req.at);
     }
@@ -510,7 +511,7 @@ export class Scheduler {
     const passOf = (i: number) => nextPass(b.plies[i].eval, i, passes);
     const pass = noLegalMoves(b) ? null : passOf(latest);
     const running = this.run?.job; // already out of the Queue
-    const runs = (i: number) => running?.boardId === b.id && running.ply === i;
+    const runs = (i: number) => !running?.deep && running?.boardId === b.id && running.ply === i; // a deep Job: other map
     this.queue.setLatest(tourId, b.id, b.board, latest, this.now, pass === null, pass ?? 0);
     // Same latest ply (setLatest did nothing): it may have a Pass left that is not queued yet (the Passes changed).
     if (pass !== null && !runs(latest)) {
@@ -567,9 +568,9 @@ export class Scheduler {
         if (this.halting || !engine || passes === null) return;
         const job = this.queue.next(this.maxPass);
         if (!job) return;
-        const ms = passes[job.pass] ?? passes[0];
-        if (job.deep) await this.runDeep(engine, job, ms);
-        else await this.runJob(engine, this.copies.multi.engine, job, ms);
+        // A deep Job reads its search time itself, after its Round file.
+        if (job.deep) await this.runDeep(engine, job);
+        else await this.runJob(engine, this.copies.multi.engine, job, passes[job.pass] ?? passes[0]);
         this.site.setSearch(null, null);
       }
     } catch (err) {
@@ -718,31 +719,41 @@ export class Scheduler {
    * of the deep map while its request still wants the ply; a Complete eval always replaces the ply's eval (forced: no
    * keep-the-longer rule). Never the Dead-letter queue, the evict path or a next Pass.
    */
-  private async runDeep(engine: Engine, job: Job, ms: number): Promise<void> {
+  private async runDeep(engine: Engine, job: Job): Promise<void> {
     const { boardId, ply } = job;
     const labels = { tier: job.tier, pass: String(job.pass) };
+    let read: 'held' | 'missing' | 'failed' = 'held';
     if (!this.deepTarget(job)) {
       this.opening = job;
-      await this.site.archive
-        .open(job.tourId, job.roundId!)
-        .catch((err: unknown) => console.error(`scheduler: deep ${boardId}:`, err));
+      try {
+        read = (await this.site.archive.open(job.tourId, job.roundId!)) ? 'held' : 'missing';
+      } catch (err) {
+        console.error(`scheduler: deep ${boardId}:`, err);
+        read = 'failed';
+      }
       this.opening = null;
     }
     if (this.halting || this.copies.main.engine !== engine) return void this.requeueDeep(job);
     if (!this.wants(job)) return void jobs.inc({ ...labels, outcome: 'dropped' }); // cancelled while its Round was read
+    // A wake() while the Round was read found no Run to preempt: a regular Job waits now, or the deep Pass is gated.
+    if (this.queue.preempt(job, 0, Infinity, this.maxPass)) return void this.requeueDeep(job);
+    if (read === 'failed') {
+      // An unreadable Round file counts as a crash of the ply: after MAX_CRASHES the request ends (no hot loop).
+      if (this.queue.crashedDeep(job)) return;
+      return this.endDeep(job, `its Round file is unreadable`);
+    }
+    if (read === 'missing') return this.endDeep(job, 'its Round file is gone');
     const target = this.deepTarget(job);
-    const b = target?.board(boardId);
-    if (!target || !b || ply >= b.plies.length) {
-      // Its Round file or Board is gone: the request ends. Or a correction took the ply away: that ply is done.
-      console.warn(`scheduler: deep ${boardId}:${ply} dropped: ${b ? 'no such ply' : 'its Board is gone'}`);
-      if (b) this.site.deepDone(boardId, ply);
-      else {
-        this.queue.cancelDeep(boardId);
-        this.site.cancelDeep(boardId);
-      }
+    if (!target) return void this.requeueDeep(job); // read, but released meanwhile (about to become current)
+    const b = target.board(boardId);
+    if (!b) return this.endDeep(job, 'its Board is gone');
+    if (ply >= b.plies.length) {
+      console.warn(`scheduler: deep ${boardId}:${ply} dropped: no such ply`); // a correction took it away
+      this.site.deepDone(boardId, ply);
       jobs.inc({ ...labels, outcome: 'dropped' });
       return this.idleWhenDone();
     }
+    const ms = this.site.settings.passesMs![DEEP_PASS]!; // not gated (preempt above): the deep Pass is on
     const moves = b.plies.slice(1, ply + 1).map((p) => p.move!.uci);
     const multi = this.copies.multi.engine;
     const { run, r, mr, ended, evicted } = await this.search(engine, multi, job, ms, moves, target.epoch(boardId));
@@ -773,13 +784,26 @@ export class Scheduler {
       return this.idleWhenDone();
     }
     const record = { ...e, ms: run.ms };
-    if (!this.deepTarget(job)?.setEval(boardId, ply, record, run.epoch)) {
-      this.requeueDeep(job); // stale: a correction, or its Round moved between an Event and the Archive
-      return void jobs.inc({ ...labels, outcome: 'discarded' });
+    const now = this.deepTarget(job);
+    if (!now?.setEval(boardId, ply, record, run.epoch)) {
+      jobs.inc({ ...labels, outcome: 'discarded' });
+      const n = now?.board(boardId)?.plies.length;
+      if (n === undefined || ply < n) return void this.requeueDeep(job); // stale: a correction, or its Round moved
+      this.site.deepDone(boardId, ply); // a correction took the ply away
+      return this.idleWhenDone();
     }
     jobs.inc({ ...labels, outcome: 'recorded' });
     this.recordJob(job, this.now - run.startedAt, 'complete', record, run);
     this.site.deepDone(boardId, ply);
+    this.idleWhenDone();
+  }
+
+  /** The deep request of the Job's Board ends: its Round file or Board is gone. */
+  private endDeep(job: Job, why: string): void {
+    console.warn(`scheduler: deep request for ${job.boardId} dropped: ${why}`);
+    this.queue.cancelDeep(job.boardId);
+    this.site.cancelDeep(job.boardId);
+    jobs.inc({ tier: job.tier, pass: String(job.pass), outcome: 'dropped' });
     this.idleWhenDone();
   }
 

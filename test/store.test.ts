@@ -123,6 +123,10 @@ describe('dataStore', () => {
     for (const bad of [
       { ...state, deep: null },
       { ...state, deep: [{ ...deep[0], left: null }] },
+      { ...state, deep: [{ ...deep[0], left: [-1] }] },
+      { ...state, deep: [{ ...deep[0], left: [1.5] }] },
+      { ...state, deep: [{ ...deep[0], board: '2' }] },
+      { ...state, deep: [{ ...deep[0], total: undefined }] },
       { ...v4, version: 5 },
     ]) {
       writeFileSync(path, JSON.stringify(bad));

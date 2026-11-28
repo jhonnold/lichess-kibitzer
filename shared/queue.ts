@@ -172,7 +172,7 @@ export class Queue {
     return 'dead';
   }
 
-  /** Deep analysis of a Board of Round roundId: a deep Job per ply (ascending), behind every other request. Replaces
+  /** Deep analysis of a Board of Round roundId: a deep Job per distinct ply (ascending), behind every other request. Replaces
    *  that Board's waiting deep Jobs and crash counts (a repeat request restarts it). */
   addDeep(
     tourId: string,
@@ -183,7 +183,7 @@ export class Queue {
     since: number,
   ): void {
     this.cancelDeep(boardId);
-    for (const ply of [...plies].sort((a, b) => a - b)) {
+    for (const ply of [...new Set(plies)].sort((a, b) => a - b)) {
       this.deepJobs.push({
         tourId,
         roundId,
