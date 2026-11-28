@@ -11,7 +11,7 @@ export type SiteEvents = {
   primary: [tourId: string | null];
 };
 
-export const EMPTY_QUEUE: T.QueueView = { current: [], backfill: 0, deferred: [] };
+export const EMPTY_QUEUE: T.QueueView = { current: [], backfill: 0, deferred: [], deep: [] };
 
 /** In-memory site state: the site settings, one RoundState per registered Event, the Primary, the deep analysis
  *  requests and the archived Rounds they work on, and the transient search/queue. The only emitter: RoundState events

@@ -4,6 +4,7 @@
   import type { AdminStatus } from '$lib/admin-api';
   import { boardIndex, formatJobTime, formatPasses } from '$shared/admin-form';
   import { formatLine } from '$lib/format';
+  import { archiveHash, boardHash } from '$shared/route';
 
   type Props = {
     status: AdminStatus;
@@ -11,8 +12,9 @@
     now: number;
     busy: boolean;
     onDead: (action: 'requeue' | 'discard', d: DeadJob) => void;
+    onCancelDeep: (boardId: string) => void;
   };
-  const { status, snap, now, busy, onDead }: Props = $props();
+  const { status, snap, now, busy, onDead, onCancelDeep }: Props = $props();
 
   const COPIES = [
     ['main', 'Main line'],
@@ -56,6 +58,23 @@
     ].join(' · '),
   );
   const progress = $derived(elapsed === null || !jobMs ? null : Math.min(100, (100 * elapsed) / jobMs));
+  const held = $derived(
+    !status.deepHeld
+      ? null
+      : status.deepHeld.reason === 'live'
+        ? `held: ${status.deepHeld.name} live`
+        : status.deepHeld.reason === 'pass 3 off'
+          ? 'held: Pass 3 off'
+          : 'waiting for regular Jobs',
+  );
+  /** The Board in the Viewer: live while its Round is its Event's Current Round, else in the Archive. */
+  const deepHref = (d: AdminStatus['deep'][number]) => {
+    const current = status.events.some((e) => e.round?.tourId === d.tourId && e.round.roundId === d.roundId);
+    return current ? boardHash(d.board, undefined, d.tourId) : archiveHash(d.tourId, d.roundId, d.board);
+  };
+  const roundName = (d: AdminStatus['deep'][number]) =>
+    status.events.find((e) => e.round?.tourId === d.tourId && e.round.roundId === d.roundId)?.round?.name ??
+    `Round ${d.roundId}`;
 </script>
 
 <!-- Cards in the Admin status grid (the parent lays them out). Depth and elapsed time come from the stream's Event
@@ -77,8 +96,8 @@
   <h2>Queue</h2>
   {#if status.running}
     <div class="run">
-      <span class="big"><i class="busy"></i>Board {boardNo(status.running.boardId)} · ply {status.running.ply}</span>
-      <span class="chip">{status.running.tier}</span>
+      <span class="big"><i class="busy"></i>Board {status.running.board} · ply {status.running.ply}</span>
+      <span class="chip">{status.running.deep ? 'deep' : status.running.tier}</span>
       <span class="chip">Pass {status.running.pass + 1}</span>
       <span class="muted">
         {runLabel}
@@ -174,6 +193,38 @@
     </ul>
   {:else}
     <p class="muted">Empty. Failed Jobs land here with Requeue and Discard.</p>
+  {/if}
+</article>
+
+<article>
+  <h2>Deep analysis</h2>
+  {#if status.deep.length}
+    {#if held}<p class="muted">{held}</p>{/if}
+    <ul>
+      {#each status.deep as d (d.boardId)}
+        {@const done = d.total - d.left}
+        <li class="deep">
+          <span>
+            <a href={deepHref(d)}><b>Board {d.board}</b></a> · {done}/{d.total} plies<br /><small>
+              {eventName(d.tourId)} · {roundName(d)}
+            </small>
+          </span>
+          <button disabled={busy} onclick={() => onCancelDeep(d.boardId)}>Cancel</button>
+          <div
+            class="bar"
+            role="progressbar"
+            aria-label="Deep analysis of Board {d.board}"
+            aria-valuemin="0"
+            aria-valuemax={d.total}
+            aria-valuenow={done}
+          >
+            <div style:width="{d.total ? (100 * done) / d.total : 0}%"></div>
+          </div>
+        </li>
+      {/each}
+    </ul>
+  {:else}
+    <p class="muted">None. An Admin starts one from a Board's Viewer (Deep analysis).</p>
   {/if}
 </article>
 
@@ -288,6 +339,15 @@
   }
   li.job {
     display: list-item;
+  }
+  li.deep .bar {
+    flex-basis: 100%;
+  }
+  li.deep .bar div {
+    background: var(--deep);
+  }
+  a {
+    color: inherit;
   }
   small {
     color: var(--muted);

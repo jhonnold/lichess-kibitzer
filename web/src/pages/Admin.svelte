@@ -4,6 +4,7 @@
   import { COPY_OPTIONS, DEFAULT_COPY, DEFAULT_MULTI_PV, MAX_MULTI_PV } from '$shared/engine-config';
   import type { EngineConfig } from '$shared/types';
   import { adminApi, ApiError, getStatus, type AdminStatus, type Probe } from '$lib/admin-api';
+  import { session } from '$lib/admin.svelte';
   import StatusPanel from '../components/StatusPanel.svelte';
   import type { LiveStore } from '$lib/live.svelte';
   import type { DeadJob } from '$shared/queue';
@@ -53,6 +54,7 @@
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) {
         authed = false;
+        session.set(false);
         errors.login = section === 'login' ? 'Wrong password' : 'Logged out (server restarted?). Log in again.';
       } else errors[section] = e instanceof Error ? e.message : String(e);
     } finally {
@@ -82,7 +84,10 @@
       status = s;
       ({ topN, checked, rounds } = mergeForms({ topN, checked, rounds }, s.events)); // seeds new Events
     } catch (e) {
-      if (e instanceof ApiError && e.status === 401) authed = false; // the login form shows
+      if (e instanceof ApiError && e.status === 401) {
+        authed = false; // the login form shows
+        session.set(false);
+      }
     }
   }
   const onDead = (action: 'requeue' | 'discard', d: DeadJob) =>
@@ -90,9 +95,15 @@
       await adminApi('POST', `/dead/${action}`, { boardId: d.boardId, ply: d.ply });
       await poll();
     });
+  const onCancelDeep = (boardId: string) =>
+    run('status', async () => {
+      await adminApi('DELETE', `/deep/${boardId}`);
+      await poll();
+    });
   async function loadStatus(): Promise<void> {
     const s = await refresh();
     authed = true;
+    session.set(true); // the Viewer's Admin controls show from now on
     ({ path, options: config } = s.engine);
     passFields(s.passesMs).forEach((v, k) => (passSeconds[k] = v));
     copies = { main: { ...s.engine.main }, multi: { ...s.engine.multi } };
@@ -256,7 +267,7 @@
                 <b>{store.connected ? 'connected' : 'reconnecting…'}</b>
               </p>
             </article>
-            {#if status}<StatusPanel {status} {snap} {now} {busy} {onDead} />{/if}
+            {#if status}<StatusPanel {status} {snap} {now} {busy} {onDead} {onCancelDeep} />{/if}
           </div>
           {#if errors.status}<p class="error">{errors.status}</p>{/if}
         </section>

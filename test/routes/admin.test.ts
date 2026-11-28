@@ -6,7 +6,7 @@ import { probeEngine, type Engine } from '../../src/engine/engine.js';
 import type { FollowStatus } from '../../src/follower.js';
 import { LichessError, type RoundInfo } from '../../src/lichess/api.js';
 import { SiteState } from '../../src/site-state.js';
-import type { EngineState } from '../../src/scheduler.js';
+import type { DeepHeld, DeepProgress, DeepResult, EngineState } from '../../src/scheduler.js';
 import type { JobTiming } from '../../shared/timing.js';
 import { DEFAULT_PASSES_MS, type EngineRole } from '../../shared/types.js';
 import { engineConfig } from '../../shared/engine-config.js';
@@ -47,6 +47,12 @@ function setup(adminPassword = 'pw') {
     timing: [] as JobTiming[],
     passCounts: [] as number[],
     evictions: [],
+    requestDeep: vi.fn(async (_t: string, _r: string, boardId: string): Promise<DeepResult> =>
+      boardId === 'gameNone' ? 'unknown board' : boardId === 'gameOffP' ? 'pass 3 off' : 'ok',
+    ),
+    cancelDeep: vi.fn(async (boardId: string) => boardId === 'gameDeep'),
+    deep: [] as DeepProgress[],
+    deepHeld: null as DeepHeld | null,
   };
   const status: FollowStatus = { next: null, swapAt: null, polledAt: 5, error: null };
   const other: FollowStatus = { ...status, polledAt: 9 };
@@ -109,6 +115,9 @@ describe('admin auth', () => {
       ['put', '/passes', { ms: [50, null, null] }],
       ['post', '/dead/requeue', { boardId: 'a', ply: 1 }],
       ['post', '/dead/discard', { boardId: 'a', ply: 1 }],
+      ['post', '/deep', { tourId: 'tourAAAA', roundId: 'roundAAA', boardId: 'gameDeep' }],
+      ['delete', '/deep/gameDeep'],
+      ['get', '/session'],
     ];
     for (const [method, path, body] of calls) {
       const res = await request(app)[method](`/api/admin${path}`).send(body);
@@ -310,6 +319,50 @@ describe('admin routes', () => {
     }
   });
 
+  it('GET /session: 200 {} with the cookie (401 without: above)', async () => {
+    const { agent } = setup();
+    expect((await agent.get('/api/admin/session')).status).toBe(401);
+    await login(agent);
+    const res = await agent.get('/api/admin/session');
+    expect([res.status, res.body]).toEqual([200, {}]);
+  });
+
+  it('POST /deep: 204 through the Scheduler; 400 for bad ids, 404 for an unknown Board, 409 with Pass 3 off', async () => {
+    const { agent, scheduler } = setup();
+    await login(agent);
+    const ids = { tourId: 'tourAAAA', roundId: 'roundAAA', boardId: 'gameDeep' };
+    expect((await agent.post('/api/admin/deep').send(ids)).status).toBe(204);
+    expect(scheduler.requestDeep).toHaveBeenCalledWith('tourAAAA', 'roundAAA', 'gameDeep');
+    for (const bad of [{}, { ...ids, tourId: '../state' }, { ...ids, roundId: 7 }, { ...ids, boardId: 'short' }]) {
+      const res = await agent.post('/api/admin/deep').send(bad);
+      expect([res.status, typeof res.body.error]).toEqual([400, 'string']);
+    }
+    expect(scheduler.requestDeep).toHaveBeenCalledTimes(1);
+    const unknown = await agent.post('/api/admin/deep').send({ ...ids, boardId: 'gameNone' });
+    expect([unknown.status, unknown.body]).toEqual([404, { error: 'unknown board' }]);
+    const off = await agent.post('/api/admin/deep').send({ ...ids, boardId: 'gameOffP' });
+    expect([off.status, off.body]).toEqual([409, { error: 'pass 3 off' }]);
+  });
+
+  it('DELETE /deep/:boardId: 204, 404 with no request, 400 for a bad id', async () => {
+    const { agent, scheduler } = setup();
+    await login(agent);
+    expect((await agent.delete('/api/admin/deep/gameDeep')).status).toBe(204);
+    expect(scheduler.cancelDeep).toHaveBeenCalledWith('gameDeep');
+    expect((await agent.delete('/api/admin/deep/gameNone')).status).toBe(404);
+    expect((await agent.delete('/api/admin/deep/a.b')).status).toBe(400);
+    expect(scheduler.cancelDeep).toHaveBeenCalledTimes(2);
+  });
+
+  it('reports the deep requests and why they wait in the status', async () => {
+    const { agent, scheduler } = setup();
+    await login(agent);
+    scheduler.deep = [{ tourId: 'tourAAAA', roundId: 'roundAAA', boardId: 'gameDeep', board: 3, left: 4, total: 9 }];
+    scheduler.deepHeld = { reason: 'live', tourId: 'tourBBBB', name: 'B' };
+    const body = (await agent.get('/api/admin/status')).body;
+    expect([body.deep, body.deepHeld]).toEqual([scheduler.deep, scheduler.deepHeld]);
+  });
+
   it('reports the Scheduler timing in the status', async () => {
     const { agent, scheduler } = setup();
     await login(agent);
@@ -327,12 +380,14 @@ describe('admin routes', () => {
       timing: [],
       passesMs: DEFAULT_PASSES_MS,
       running: null,
-      queue: { current: [], backfill: 0, deferred: [] },
+      queue: { current: [], backfill: 0, deferred: [], deep: [] },
       passCounts: [],
       evictions: [],
       tracked: 0,
       primary: null,
       events: [],
+      deep: [],
+      deepHeld: null,
     };
     expect((await agent.get('/api/admin/status')).body).toEqual(idle);
     const t = state.addEvent({ tourId: 't', name: 'Event', link: 'ok' }, 2);

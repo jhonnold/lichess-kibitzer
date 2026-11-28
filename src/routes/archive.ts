@@ -6,7 +6,7 @@ import type { DataStore } from '../store.js';
 
 export interface ArchiveDeps {
   store: Pick<DataStore, 'listRounds' | 'loadRound'>;
-  state: Pick<SiteState, 'currents'>;
+  state: Pick<SiteState, 'currents'> & { archive: Pick<SiteState['archive'], 'saved'> };
 }
 
 const notFound = (res: Response) => res.status(404).json({ error: 'not found' });
@@ -39,6 +39,7 @@ export function archiveRouter({ store, state }: ArchiveDeps): Router {
       return;
     }
     try {
+      await state.archive.saved(); // a deep eval just recorded (its request may have just ended) is in the file
       const round = await store.loadRound(tourId, roundId);
       archiveReads.inc({ outcome: 'ok' });
       if (!round) {

@@ -127,12 +127,14 @@ export interface SearchInfo {
   ms: number; // its search time
 }
 
-/** Queue as Viewers need it: current-tier Jobs in run order (position = index + 1), backfill count, and the latest
- *  plies waiting in backfill for a full search after an eviction. Transient. */
+/** Queue as Viewers need it: current-tier Jobs in run order (position = index + 1), backfill count, the latest
+ *  plies waiting in backfill for a full search after an eviction, and the deep requests (site-wide, any Round), oldest
+ *  first: left of total plies still to search. Transient. */
 export interface QueueView {
   current: { boardId: string; ply: number }[];
   backfill: number;
   deferred: { boardId: string; ply: number }[];
+  deep: { boardId: string; left: number; total: number }[];
 }
 
 /** One registered Event as the Viewers list it. */

@@ -71,7 +71,7 @@ describe('RoundState', () => {
       event,
       round: null,
       search: null,
-      queue: { current: [], backfill: 0, deferred: [] },
+      queue: { current: [], backfill: 0, deferred: [], deep: [] },
       stream: null,
     });
   });

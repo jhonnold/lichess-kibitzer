@@ -13,6 +13,7 @@ import type {
 import type { DeadJob, EvictedJob, Job } from '../../shared/queue.js';
 import type { JobTiming } from '../../shared/timing.js';
 import { COPY_OPTIONS, MAX_MULTI_PV } from '../../shared/engine-config.js';
+import { isLichessId } from '../../shared/archive.js';
 import { passesError } from '../../shared/passes.js';
 import { probeEngine } from '../engine/engine.js';
 import type { UciOption } from '../engine/uci-parser.js';
@@ -21,7 +22,7 @@ import type { Site } from '../site.js';
 import { LichessError } from '../lichess/api.js';
 import { register } from '../metrics.js';
 import type { SiteState } from '../site-state.js';
-import type { EngineState, Scheduler } from '../scheduler.js';
+import type { DeepHeld, DeepProgress, EngineState, Scheduler } from '../scheduler.js';
 
 export const COOKIE = 'kibitzer_admin';
 const MAX_AGE_MS = 7 * 24 * 3600_000;
@@ -44,6 +45,10 @@ export interface AdminDeps {
     | 'timing'
     | 'evictions'
     | 'passCounts'
+    | 'requestDeep'
+    | 'cancelDeep'
+    | 'deep'
+    | 'deepHeld'
   >;
   site: Pick<Site, 'add' | 'remove' | 'status' | 'setPrimary'>;
   defaultEngine: EngineConfig; // shown (and used) while no config is saved
@@ -81,6 +86,8 @@ export interface AdminStatus {
   tracked: number; // Tracked boards of every Event's Current Round
   primary: string | null;
   events: AdminEventStatus[];
+  deep: DeepProgress[]; // deep analysis requests, oldest first
+  deepHeld: DeepHeld | null; // why they wait; null: none, or they may run
 }
 
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null;
@@ -145,6 +152,8 @@ export function adminRouter(deps: AdminDeps): Router {
     res.sendStatus(401);
   });
 
+  /** 200 while the cookie is valid (the Viewer's Admin controls); the check above answers 401. */
+  r.get('/session', (_req, res) => void res.json({}));
   r.post('/engine/probe', (req, res) => {
     probe(String(req.body?.path ?? '')).then((p) => res.json(p), fail(res));
   });
@@ -240,6 +249,30 @@ export function adminRouter(deps: AdminDeps): Router {
       );
     });
   }
+  /** Deep analysis of one Board of any Round (current or archived): 204; a repeat request restarts it. */
+  r.post('/deep', (req, res) => {
+    const { tourId, roundId, boardId }: Record<string, unknown> = req.body ?? {};
+    const ids = [tourId, roundId, boardId];
+    if (!ids.every((x) => typeof x === 'string' && isLichessId(x)))
+      return void res.status(400).json({ error: 'expected { tourId, roundId, boardId }: Lichess ids' });
+    scheduler
+      .requestDeep(tourId as string, roundId as string, boardId as string)
+      .then(
+        (why) =>
+          why === 'ok' ? res.sendStatus(204) : res.status(why === 'unknown board' ? 404 : 409).json({ error: why }),
+        fail(res),
+      );
+  });
+  r.delete('/deep/:boardId', (req, res) => {
+    const { boardId } = req.params;
+    if (!isLichessId(boardId)) return void res.status(400).json({ error: 'expected a Lichess game id' });
+    scheduler
+      .cancelDeep(boardId)
+      .then(
+        (ok) => (ok ? res.sendStatus(204) : res.status(404).json({ error: 'no deep request for that Board' })),
+        fail(res),
+      );
+  });
   r.get('/status', (_req, res) => {
     const primary = state.primary;
     const events = state.events.map((rs): AdminEventStatus => {
@@ -282,6 +315,8 @@ export function adminRouter(deps: AdminDeps): Router {
       tracked: events.reduce((n, e) => n + (e.round?.boards.filter((b) => b.tracked).length ?? 0), 0),
       primary,
       events,
+      deep: scheduler.deep,
+      deepHeld: scheduler.deepHeld,
     };
     res.json(body);
   });

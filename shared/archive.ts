@@ -1,4 +1,5 @@
-import type { Board, Round, Snapshot } from './types.js';
+import { DEEP_PASS } from './passes.js';
+import type { Board, QueueView, Round, Snapshot } from './types.js';
 
 /** Lichess game, round and tournament ids. Checked before an id from a URL reaches a file path. */
 export const LICHESS_ID = /^[A-Za-z0-9]{8}$/;
@@ -85,7 +86,24 @@ export function archiveSnapshot(r: Round): Snapshot {
     event: { tourId: r.tourId, name: r.eventName || r.tourId, link: '' },
     round: r,
     search: null,
-    queue: { current: [], backfill: 0, deferred: [] },
+    queue: { current: [], backfill: 0, deferred: [], deep: [] },
     stream: null,
   };
+}
+
+/** Some deep request is for a Board of the Round: the archived Round on screen is being written, so it is fetched
+ *  again (Board ids are globally unique). */
+export function deepInRound(deep: QueueView['deep'] | undefined, round: Round | null | undefined): boolean {
+  return !!round && !!deep?.length && round.boards.some((b) => deep.some((d) => d.boardId === b.id));
+}
+
+/** An archived Round's Snapshot with what the live stream (`live`) says of its deep analysis: the deep requests of its
+ *  Boards, and the running search while it is a deep Job of one of them. The same object when there is neither. */
+export function withDeep(snap: Snapshot, live: Snapshot | null): Snapshot {
+  const ids = new Set(snap.round?.boards.map((b) => b.id));
+  const deep = live?.queue.deep.filter((d) => ids.has(d.boardId)) ?? [];
+  const s = live?.search ?? null;
+  const search = s && s.pass === DEEP_PASS && ids.has(s.boardId) ? s : null;
+  if (!deep.length && !search && !snap.queue.deep.length && !snap.search) return snap;
+  return { ...snap, search, queue: { ...snap.queue, deep } };
 }

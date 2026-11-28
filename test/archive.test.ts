@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { archiveIndex, archiveSnapshot, isLichessId, roundMeta, type RoundMeta } from '../shared/archive.js';
-import type { Board, Round } from '../shared/types.js';
+import {
+  archiveIndex,
+  archiveSnapshot,
+  deepInRound,
+  isLichessId,
+  roundMeta,
+  withDeep,
+  type RoundMeta,
+} from '../shared/archive.js';
+import type { Board, Round, SearchInfo, Snapshot } from '../shared/types.js';
 import { archivedResult, viewerMessage } from '../shared/viewer.js';
 
 describe('isLichessId', () => {
@@ -129,7 +137,7 @@ describe('archiveSnapshot', () => {
       event: { tourId: 'T', name: 'Event', link: '' },
       round: r,
       search: null,
-      queue: { current: [], backfill: 0, deferred: [] },
+      queue: { current: [], backfill: 0, deferred: [], deep: [] },
       stream: null,
     });
     expect(archiveSnapshot({ ...r, eventName: '' }).event?.name).toBe('T');
@@ -144,5 +152,33 @@ describe('archiveSnapshot', () => {
     expect(archivedResult(b('1/2-1/2', 30))).toBe('½-½');
     expect(archivedResult(b('*', 12))).toBe('unfinished');
     expect(archivedResult(b('*', 0))).toBe('not played');
+  });
+});
+
+describe('deep analysis of an archived Round', () => {
+  const round = { tourId: 'T', roundId: 'R', boards: [{ id: 'a' }, { id: 'b' }] } as Round;
+  const EMPTY = { current: [], backfill: 0, deferred: [], deep: [] };
+  const deep = (...ids: string[]) => ids.map((boardId) => ({ boardId, left: 2, total: 5 }));
+  const search = (boardId: string, pass: number) => ({ boardId, ply: 3, pass, depth: 20 }) as SearchInfo;
+  const live = (d = deep('b', 'x'), s: SearchInfo | null = null) =>
+    ({ ...archiveSnapshot({ ...round, boards: [] }), search: s, queue: { ...EMPTY, deep: d } }) as Snapshot;
+
+  it('deepInRound: a deep request is for one of its Boards (refetch while so)', () => {
+    expect(deepInRound(deep('x', 'b'), round)).toBe(true);
+    expect(deepInRound(deep('x'), round)).toBe(false);
+    expect(deepInRound([], round)).toBe(false);
+    expect(deepInRound(undefined, round)).toBe(false);
+    expect(deepInRound(deep('a'), null)).toBe(false); // not loaded yet
+  });
+
+  it("withDeep: its Boards' deep requests and a deep Job's search of one of them; else the same object", () => {
+    const snap = archiveSnapshot(round);
+    expect(withDeep(snap, null)).toBe(snap);
+    expect(withDeep(snap, live(deep('x'), search('a', 0)))).toBe(snap); // a regular Job's search is not shown
+    expect(withDeep(snap, live())).toEqual({ ...snap, queue: { ...EMPTY, deep: deep('b') } });
+    expect(withDeep(snap, live(deep('x'), search('a', 2))).search).toEqual(search('a', 2));
+    expect(withDeep(snap, live(deep('x'), search('x', 2))).search).toBeNull(); // another Round's Board
+    const merged = withDeep(snap, live());
+    expect(withDeep(merged, live([]))).toEqual(snap); // the request ended: back to none
   });
 });

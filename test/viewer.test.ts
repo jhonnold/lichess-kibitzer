@@ -1,6 +1,7 @@
 import { DEFAULT_POSITION } from 'chess.js';
 import { describe, expect, it } from 'vitest';
 import { winPercent } from '../shared/accuracy.js';
+import { DEEP_PASS } from '../shared/passes.js';
 import type { Board, Eval, Ply, QueueView, Result, SearchInfo, Snapshot } from '../shared/types.js';
 import {
   barScore,
@@ -279,10 +280,16 @@ describe('statusLine', () => {
   const srch = (boardId: string, ply: number, depth: number, tier: SearchInfo['tier'] = 'current') =>
     ({ boardId, ply, depth, tier }) as SearchInfo;
   const pairs = (js: [string, number][]) => js.map(([boardId, ply]) => ({ boardId, ply }));
-  const q = (current: [string, number][] = [], backfill = 0, deferred: [string, number][] = []): QueueView => ({
+  const q = (
+    current: [string, number][] = [],
+    backfill = 0,
+    deferred: [string, number][] = [],
+    deep: QueueView['deep'] = [],
+  ): QueueView => ({
     current: pairs(current),
     backfill,
     deferred: pairs(deferred),
+    deep,
   });
 
   it('a Complete eval is Done, even while a search names the same ply', () => {
@@ -297,10 +304,36 @@ describe('statusLine', () => {
     expect(statusLine(withEval(mk(1, 3), 2, { ...e, ms: 6420 }), 2, null, q()).text).toBe('Done · depth 24 · 6.4 s');
   });
   it('a deepening search of the ply is Deepening, at the deeper of its depth and the eval', () => {
-    const deep = (depth: number) => ({ ...srch('g1', 2, depth), pass: 2, ms: 100_000 }) as SearchInfo;
-    const b = withEval(mk(1, 3), 2, { ...ev('complete', 24), ms: 10_000 });
-    expect(statusLine(b, 2, deep(18), q())).toEqual({ state: 'searching', text: 'Deepening · depth 24 · 100 s' });
-    expect(statusLine(b, 2, deep(27), q()).text).toBe('Deepening · depth 27 · 100 s');
+    const deeper = (depth: number) => ({ ...srch('g1', 2, depth), pass: 1, ms: 10_000 }) as SearchInfo;
+    const b = withEval(mk(1, 3), 2, { ...ev('complete', 24), ms: 1000 });
+    expect(statusLine(b, 2, deeper(18), q())).toEqual({ state: 'searching', text: 'Deepening · depth 24 · 10 s' });
+    expect(statusLine(b, 2, deeper(27), q()).text).toBe('Deepening · depth 27 · 10 s');
+  });
+  describe('deep analysis', () => {
+    const req = (left: number, total = 4) => [{ boardId: 'g1', left, total }];
+    const deepJob = (ply: number, depth: number) =>
+      ({ ...srch('g1', ply, depth, 'backfill'), pass: DEEP_PASS, ms: 100_000 }) as SearchInfo;
+    it('a pending request is Deep · k/n (k done of n), over Not analysed, Waiting, Done and backfill', () => {
+      const deep = { state: 'deep', text: 'Deep · 1/4' };
+      expect(statusLine(mk(1, 3, '1-0', false), 2, null, q([], 0, [], req(3)))).toEqual(deep);
+      expect(statusLine(mk(1, 3), 2, null, q([], 0, [], req(3)))).toEqual(deep);
+      expect(statusLine(withEval(mk(1, 3), 1, ev('complete', 20)), 1, null, q([], 0, [], req(3)))).toEqual(deep);
+      expect(statusLine(mk(1, 3), 1, null, q([], 5, [], req(3)))).toEqual(deep);
+      expect(statusLine(mk(1, 3), 2, null, q([], 0, [], [{ boardId: 'g2', left: 1, total: 4 }])).text).toBe('Waiting'); // another Board's request
+    });
+    it('its running deep Job adds the depth on its ply only; depth 0 has none', () => {
+      const b = withEval(mk(1, 3), 1, { ...ev('complete', 24), ms: 10_000 });
+      expect(statusLine(b, 1, deepJob(1, 31), q([], 0, [], req(2)))).toEqual({
+        state: 'deep',
+        text: 'Deep · 2/4 · depth 31',
+      }); // not Deepening
+      expect(statusLine(b, 1, deepJob(1, 0), q([], 0, [], req(2))).text).toBe('Deep · 2/4');
+      expect(statusLine(b, 2, deepJob(1, 31), q([], 0, [], req(2))).text).toBe('Deep · 2/4');
+      expect(statusLine(b, 1, deepJob(1, 31), q()).text).toBe('Deep · depth 31'); // its request just ended
+    });
+    it('a regular search of the ply still shows as Searching', () => {
+      expect(statusLine(mk(1, 3), 2, srch('g1', 2, 9), q([], 0, [], req(4))).text).toBe('Searching · depth 9');
+    });
   });
   it('the running search is Searching; depth 0 has no depth', () => {
     expect(statusLine(mk(1, 3), 2, srch('g1', 2, 21), q())).toEqual({
@@ -409,7 +442,7 @@ describe('viewerMessage', () => {
     event: e,
     round: r,
     search: null,
-    queue: { current: [], backfill: 0, deferred: [] },
+    queue: { current: [], backfill: 0, deferred: [], deep: [] },
     stream: null,
   });
   it('explains why there is nothing to show', () => {

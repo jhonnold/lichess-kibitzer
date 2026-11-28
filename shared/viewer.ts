@@ -2,6 +2,7 @@ import { Chess, DEFAULT_POSITION } from 'chess.js';
 import { winPercent, type Color, type Score } from './accuracy.js';
 import { multiOf } from './analysis.js';
 import { outcomeOf } from './archive.js';
+import { DEEP_PASS } from './passes.js';
 import type { Board, PvLine, Ply, QueueView, Result, SearchInfo, Snapshot } from './types.js';
 
 /** A board position as the Viewer draws it. lastMove = [from, to] of the move into it. */
@@ -172,8 +173,9 @@ export function ordinal(n: number): string {
   return `${n}${suffix}`;
 }
 
-/** off: an untracked Board's ply with no eval (never queued). */
-export type JobState = 'queued' | 'searching' | 'done' | 'none' | 'off';
+/** off: an untracked Board's ply with no eval (never queued); deep: the Board has a deep analysis request, or its deep
+ *  Job runs on this ply. */
+export type JobState = 'queued' | 'searching' | 'done' | 'none' | 'off' | 'deep';
 /** 1000 → '1', 6420 → '6.4'. */
 const secs = (ms: number) => String(Math.round(ms / 100) / 10);
 export interface StatusLine {
@@ -186,16 +188,23 @@ export function statusLine(board: Board, ply: number, search: SearchInfo | null,
   const latest = board.plies.length - 1;
   const e = board.plies[ply]?.eval ?? null;
   const here = search?.boardId === board.id && search.ply === ply;
+  // k of n plies done; the running ply counts once recorded.
+  const req = queue.deep.find((d) => d.boardId === board.id);
+  const deep = ['Deep', ...(req ? [`${req.total - req.left}/${req.total}`] : [])];
+  if (here && search.pass === DEEP_PASS) {
+    return { state: 'deep', text: [...deep, ...(search.depth ? [`depth ${search.depth}`] : [])].join(' · ') };
+  }
   if (here && search.pass > 0 && e) {
     const text = `Deepening · depth ${Math.max(e.depth, search.depth)}`;
     return { state: 'searching', text: `${text} · ${secs(search.ms)} s` };
   }
-  if (e?.kind === 'complete') {
-    return { state: 'done', text: `Done · depth ${e.depth}${e.ms ? ` · ${secs(e.ms)} s` : ''}` };
-  }
-  if (here) {
+  if (here && e?.kind !== 'complete') {
     const what = search.tier === 'backfill' ? 'Backfill' : 'Searching';
     return { state: 'searching', text: search.depth ? `${what} · depth ${search.depth}` : what };
+  }
+  if (req) return { state: 'deep', text: deep.join(' · ') };
+  if (e?.kind === 'complete') {
+    return { state: 'done', text: `Done · depth ${e.depth}${e.ms ? ` · ${secs(e.ms)} s` : ''}` };
   }
   if (!board.tracked && !e) return { state: 'off', text: 'Not analysed' };
   const i = queue.current.findIndex((j) => j.boardId === board.id && j.ply === ply);

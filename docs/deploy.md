@@ -91,6 +91,8 @@ the Admin cookie; with no `ADMIN_PASSWORD` it always answers 401.
 - `kibitzer_queue_depth{tier}`: Pass 0 Jobs waiting, `current` and `backfill`. `kibitzer_queue_pass_depth{pass}`: Jobs
   waiting per Pass (`0`, `1`, `2`), deepening Jobs included
 - `kibitzer_dead_letter_queue_size`: Jobs in the Dead-letter queue (every Event's)
+- `kibitzer_deep_plies_left`: plies still to search over every deep analysis request (the `pass="2"` series of the Job
+  metrics are deep Jobs)
 - `kibitzer_engine_state{role,state}`: per engine copy (`role` `main` or `multi`), 1 for the current state (`up`,
   `restarting`, or `idle` with no Round and no deep request), 0 for the others. `kibitzer_engine_up{role}`: 1 while up (0 both while
   restarting and when idle); `kibitzer_engine_restarts_total{role}`: restarts since boot
