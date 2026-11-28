@@ -28,19 +28,26 @@ export function isDue(r: RoundRef, now: number): boolean {
 /**
  * Which Round is current, and which comes next. Array order is Lichess order. Never goes backwards from currentId;
  * a currentId missing from `rounds` keeps it (all null).
+ * Without a currentId (an Event just added, or one waiting for its first Round) only Rounds after the last finished
+ * one can be current: the last due of them, else none (current null, next the Round after the last finished one) until
+ * one is due. Every Round finished: all null.
  */
 export function rollover<R extends RoundRef>(rounds: readonly R[], currentId: string | null, now: number): Rollover<R> {
   const lastDue = (from: number) => rounds.findLastIndex((r, i) => i > from && isDue(r, now));
   let i: number;
   if (currentId === null) {
-    const due = lastDue(-1);
-    i = due >= 0 ? due : rounds.length ? 0 : -1;
+    const lastFinished = rounds.findLastIndex((r) => r.finished);
+    i = lastDue(lastFinished);
+    if (i < 0) {
+      const next = rounds[lastFinished + 1] ?? null;
+      return { current: null, next, swapAt: next && swapAt(next) };
+    }
   } else {
     const at = rounds.findIndex((r) => r.id === currentId);
     if (at < 0) return { current: null, next: null, swapAt: null };
     const due = lastDue(at);
     i = due > at ? due : at;
   }
-  const next = i >= 0 ? (rounds[i + 1] ?? null) : null;
-  return { current: rounds[i] ?? null, next, swapAt: next && swapAt(next) };
+  const next = rounds[i + 1] ?? null;
+  return { current: rounds[i], next, swapAt: next && swapAt(next) };
 }

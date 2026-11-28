@@ -3,7 +3,14 @@ import { describe, expect, it, vi } from 'vitest';
 import { val } from './helpers/metric.js';
 import { ReplaySource } from './helpers/replay-source.js';
 import { rateLimited, streamConnected, streamReconnects } from '../src/metrics.js';
-import { parseGame, pgnSplitter, RoundStream, type GameUpdate, type StreamStatus } from '../src/lichess/stream.js';
+import {
+  parseGame,
+  parsePgn,
+  pgnSplitter,
+  RoundStream,
+  type GameUpdate,
+  type StreamStatus,
+} from '../src/lichess/stream.js';
 import { type Fetch, USER_AGENT } from '../src/lichess/api.js';
 
 const FIX = 'test/fixtures/lichess/';
@@ -53,6 +60,17 @@ describe('pgnSplitter', () => {
     const split = pgnSplitter();
     expect(split(ALL[0])).toEqual([]);
     expect(split('\n\n')).toEqual([ALL[0]]);
+  });
+});
+
+describe('parsePgn', () => {
+  it('parses a whole Round body, its last game too when the body ends right after the movetext', () => {
+    const body = PGN.trimEnd();
+    expect(pgnSplitter()(body)).toHaveLength(6); // the splitter alone holds the last game back
+    const games = parsePgn(body);
+    expect(games).toHaveLength(7);
+    expect(games.at(-1)).toEqual(parseGame(ALL[6]));
+    expect(parsePgn(PGN)).toEqual(games);
   });
 });
 

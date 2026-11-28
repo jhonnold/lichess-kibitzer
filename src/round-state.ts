@@ -14,7 +14,8 @@ export interface RoundHost {
   summaries(): T.EventSummary[]; // every registered Event
 }
 
-const newBoard = (b: RoundInfo['boards'][number], i: number, tracked: boolean): T.Board => ({
+/** Board `i` (0-based) of a fetched Round, with no moves yet. */
+export const newBoard = (b: RoundInfo['boards'][number], i: number, tracked: boolean): T.Board => ({
   id: b.id,
   board: i + 1,
   white: b.white,

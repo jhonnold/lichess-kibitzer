@@ -42,6 +42,14 @@ export function pgnSplitter() {
   };
 }
 
+/** Every game of a whole PGN body (a Round's .pgn), skipping the ones parseGame rejects. The body gets a trailing blank
+ *  line so its last game is not dropped. */
+export function parsePgn(body: string): GameUpdate[] {
+  return pgnSplitter()(`${body}\n\n`)
+    .map(parseGame)
+    .filter((u): u is GameUpdate => u !== null);
+}
+
 const RESULTS = new Set(['1-0', '0-1', '1/2-1/2', '*']);
 const tag = (pgn: string, k: string) => pgn.match(new RegExp(`^\\[${k} "(.*)"\\]$`, 'm'))?.[1];
 const clk = (c: string) => {

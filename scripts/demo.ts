@@ -3,7 +3,7 @@
  * from test/fixtures/lichess/round-stream.pgn. Never contacts lichess.org.
  *   npm run build && npm run demo -- [--port 18457] [--boards 10] [--top 8] [--passes 300,1500,6000] [--interval 1500]
  *                                    [--data DIR] [--password demo] [--rounds 1] [--swap-in 20] [--poll 2000]
- *                                    [--crash-board N] [--events 1]
+ *                                    [--crash-board N] [--events 1] [--past 0]
  * --passes: the three Passes' search times in ms (Pass 0, free time, no Event live); `-` turns Pass 2 or 3 off.
  * One move per --interval ms, round-robin over Boards with moves left (0 = frozen at the initial state).
  * --rounds 0: an Event with no Rounds yet; 2: adds Round 2 (all Boards Upcoming, colours swapped), which the follower
@@ -13,6 +13,9 @@
  * lockstep; the first is the Primary. More can be added from Admin: link `demo3`..`demo9`. All ids are 8 chars.
  * --crash-board N: the fake engine crashes on Board N's position at boot (2..boards, not the Upcoming --top Board), so
  * that Job lands in the Dead-letter queue after 3 crashes. Boards sharing its base game and position dead-letter too.
+ * --past N (0-9): N finished Rounds `Past 1`..`Past N` (demoPst<n> / dem<k>Pst<n>, games dmp<n>0001.. / d<k>p<n>0001..,
+ * a day apart, ending yesterday) before Round 1, served as PGN for the Follower's import into the Archive. With
+ * --rounds 0 every Round is finished: the Event has no Current Round.
  * Archived Rounds land in <data>/rounds/demoEvnt/demoRnd1.json (Event id 8 chars: the Archive route validates ids).
  * stdin: a line `n` releases one move on Board n; an empty line, the next round-robin move.
  */
@@ -46,9 +49,10 @@ const { values: v } = parseArgs({
     poll: { type: 'string', default: '2000' },
     'crash-board': { type: 'string' },
     events: { type: 'string', default: '1' },
+    past: { type: 'string', default: '0' },
   },
 });
-const [port, count, top, interval, rounds, swapIn, pollMs, events] = [
+const [port, count, top, interval, rounds, swapIn, pollMs, events, past] = [
   v.port!,
   v.boards!,
   v.top!,
@@ -57,6 +61,7 @@ const [port, count, top, interval, rounds, swapIn, pollMs, events] = [
   v['swap-in']!,
   v.poll!,
   v.events!,
+  v.past!,
 ].map(Number);
 const passes = v.passes!.split(',').map((x) => (x === '-' ? null : Number(x))) as PassesMs;
 if (passesError(passes, 3600_000)) {
@@ -65,6 +70,10 @@ if (passesError(passes, 3600_000)) {
 }
 if (!(events >= 1 && events <= 9)) {
   console.error('--events must be 1..9');
+  process.exit(1);
+}
+if (!(past >= 0 && past <= 9)) {
+  console.error('--past must be 0..9');
   process.exit(1);
 }
 const crashBoard = v['crash-board'] === undefined ? null : Number(v['crash-board']);
@@ -102,6 +111,14 @@ const parseRound = (id: string) => {
   const m = /^(?:demoRnd|dem([2-9])Rnd)([12])$/.exec(id);
   return m ? { k: Number(m[1] ?? 1), n: Number(m[2]) } : null;
 };
+/** `dem3Pst2` -> { k: 3, n: 2 }. */
+const parsePast = (id: string) => {
+  const m = /^(?:demoPst|dem([2-9])Pst)([1-9])$/.exec(id);
+  return m ? { k: Number(m[1] ?? 1), n: Number(m[2]) } : null;
+};
+const pastOf = (k: number, n: number) => (k === 1 ? `demoPst${n}` : `dem${k}Pst${n}`);
+const pastGameId = (i: number, k: number, n: number) =>
+  `${k === 1 ? 'dmp' : `d${k}p`}${n}${String(i).padStart(4, '0')}`;
 const result = (i: number) => (shown[i - 1] === base(i).uci.length ? base(i).result : '*');
 
 function update(i: number, ev = 1): GameUpdate {
@@ -130,6 +147,45 @@ const board = (u: GameUpdate): Board => ({
   black: u.black,
   result: u.result,
 });
+// Past Round n: every Board's whole base game, finished (a live base game is drawn), colours swapped on even n.
+const DAY = 24 * 3600_000;
+const pastStartsAt = (n: number) => Date.now() - (past - n + 1) * DAY;
+const pastGames = (k: number, n: number): GameUpdate[] =>
+  Array.from({ length: count }, (_, j) => {
+    const g = base(j + 1);
+    const [white, black] = n % 2 ? [g.white, g.black] : [g.black, g.white];
+    const tag = k === 1 ? `${j + 1}` : `${j + 1}/${k}`;
+    const result = g.result === '*' ? '1/2-1/2' : g.result;
+    return {
+      ...g,
+      gameId: pastGameId(j + 1, k, n),
+      white: { ...white, name: suffix(white.name, `${tag} P${n}`) },
+      black: { ...black, name: suffix(black.name, `${tag} P${n}`) },
+      result,
+      status: 'finished',
+    };
+  });
+const clk = (ms: number) => {
+  const s = Math.round(ms / 1000);
+  return `${Math.floor(s / 3600)}:${String(Math.floor(s / 60) % 60).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+};
+const pgnOf = (roundId: string, u: GameUpdate) =>
+  [
+    `[White "${u.white.name}"]`,
+    `[Black "${u.black.name}"]`,
+    `[Result "${u.result}"]`,
+    ...(u.opening ? [`[Opening "${u.opening}"]`] : []),
+    `[GameURL "https://lichess.org/broadcast/demo/past/${roundId}/${u.gameId}"]`,
+    '',
+    [
+      ...u.san.map((san, p) => {
+        const c = u.clocks[p];
+        return `${p % 2 ? `${(p + 1) / 2}...` : `${p / 2 + 1}.`} ${san}${c === null ? '' : ` { [%clk ${clk(c)}] }`}`;
+      }),
+      u.result,
+    ].join(' '),
+  ].join('\n');
+
 const lichess = {
   fetchEvent: async (link: string): Promise<EventInfo> => {
     const k = eventOfLink(link);
@@ -138,13 +194,24 @@ const lichess = {
       id: tourOf(k),
       name: k === 1 ? 'Demo Event' : `Demo Event ${k}`,
       rounds: [
-        { id: roundOf(k, 1), name: 'Round 1', ongoing: true, finished: false },
-        { id: roundOf(k, 2), name: 'Round 2', ongoing: false, finished: false, startsAt: startsAt2 },
-      ].slice(0, rounds),
+        ...Array.from({ length: past }, (_, j) => ({
+          id: pastOf(k, j + 1),
+          name: `Past ${j + 1}`,
+          ongoing: false,
+          finished: true,
+          startsAt: pastStartsAt(j + 1),
+        })),
+        ...[
+          { id: roundOf(k, 1), name: 'Round 1', ongoing: true, finished: false },
+          { id: roundOf(k, 2), name: 'Round 2', ongoing: false, finished: false, startsAt: startsAt2 },
+        ].slice(0, rounds),
+      ],
       defaultRoundId: roundOf(k, 1),
     };
   },
   fetchRound: async (id: string): Promise<RoundInfo> => {
+    const p = parsePast(id);
+    if (p) return { id, name: `Past ${p.n}`, tourId: tourOf(p.k), boards: pastGames(p.k, p.n).map(board) };
     const { k, n } = parseRound(id)!;
     return {
       id,
@@ -156,6 +223,13 @@ const lichess = {
         return board({ ...u, gameId: game2Id(j + 1, k), white: u.black, black: u.white, result: '*' });
       }),
     };
+  },
+  fetchRoundPgn: async (id: string): Promise<string> => {
+    const p = parsePast(id);
+    if (!p) throw new Error(`demo: no PGN for ${id}`);
+    return pastGames(p.k, p.n)
+      .map((u) => pgnOf(id, u))
+      .join('\n\n\n');
   },
 };
 
