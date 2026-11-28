@@ -25,7 +25,19 @@
     return () => clearInterval(tick);
   });
 
-  /** "6 live · 1 finished": how many Boards are in each state, zero counts left out. */
+  // Tracked boards first, then the others (shown, not analysed automatically); each part in board order.
+  const tracked = $derived(snap?.round?.boards.filter((b) => b.tracked) ?? []);
+  const others = $derived(snap?.round?.boards.filter((b) => !b.tracked) ?? []);
+  const sections = $derived(
+    tracked.length && others.length
+      ? [
+          { title: 'Tracked', boards: tracked },
+          { title: 'Other boards', boards: others },
+        ]
+      : [{ title: null, boards: tracked.length ? tracked : others }],
+  );
+
+  /** "6 live · 1 finished": how many Boards (every one) are in each state, zero counts left out. */
   const summary = $derived.by(() => {
     const boards = snap?.round?.boards ?? [];
     const count = (names: string[], of: (b: (typeof boards)[number]) => string) =>
@@ -52,24 +64,29 @@
           <h1>{snap.round.name}</h1>
         </div>
         <p class="summary">
-          <span>{snap.round.boards.length} {ctx ? 'boards' : 'tracked boards'}</span>
+          <span>{snap.round.boards.length} {snap.round.boards.length === 1 ? 'board' : 'boards'}</span>
+          {#if !ctx || tracked.length}<span>{tracked.length} tracked</span>{/if}
           {#each summary as part (part.text)}<span class:live={part.live}>{part.text}</span>{/each}
-          {#if ctx}<span>analysis as of the swap</span>{/if}
+          {#if ctx && tracked.length}<span>analysis as of the swap</span>{/if}
         </p>
         {#if !ctx}
           <p class="legend">
             <span><i class="searching"></i>Analysing</span>
             <span><i class="queued"></i>Queued</span>
             <span><i></i>Up to date</span>
+            {#if others.length}<span><i class="off"></i>Not analysed</span>{/if}
           </p>
         {/if}
       </header>
     {/if}
-    <div class="grid">
-      {#each snap.round.boards as b (b.id)}
-        <BoardTile board={b} search={snap.search} queue={snap.queue} {href} archived={!!ctx} now={now - store.skew} />
-      {/each}
-    </div>
+    {#each sections as sec (sec.title)}
+      {#if sec.title}<h2>{sec.title} <span>{sec.boards.length}</span></h2>{/if}
+      <div class="grid">
+        {#each sec.boards as b (b.id)}
+          <BoardTile board={b} search={snap.search} queue={snap.queue} {href} archived={!!ctx} now={now - store.skew} />
+        {/each}
+      </div>
+    {/each}
   </main>
 {/if}
 
@@ -140,6 +157,27 @@
   }
   i.queued {
     background: var(--warn);
+  }
+  i.off {
+    background: transparent;
+    box-shadow: inset 0 0 0 1px var(--muted);
+  }
+  h2 {
+    max-width: 1440px;
+    margin: 0 auto 10px;
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  h2 span {
+    margin-left: 6px;
+    font-family: var(--fontMono);
+    letter-spacing: 0;
+  }
+  .grid + h2 {
+    margin-top: 28px;
   }
   .grid {
     display: grid;

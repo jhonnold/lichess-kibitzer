@@ -12,7 +12,7 @@ describe('isLichessId', () => {
 });
 
 describe('roundMeta', () => {
-  it('counts Tracked boards only, split by outcome', () => {
+  it('counts every Board, Tracked or not, split by outcome', () => {
     const r = {
       tourId: 'T',
       roundId: 'R',
@@ -32,8 +32,8 @@ describe('roundMeta', () => {
       name: 'Round 1',
       eventName: 'E',
       startsAt: 3,
-      boards: 3,
-      outcomes: { finished: 1, unfinished: 1, notPlayed: 1 },
+      boards: 4,
+      outcomes: { finished: 1, unfinished: 1, notPlayed: 2 },
     });
   });
 });

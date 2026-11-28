@@ -4,7 +4,7 @@ import type { Board, Round, Snapshot } from './types.js';
 export const LICHESS_ID = /^[A-Za-z0-9]{8}$/;
 export const isLichessId = (s: string): boolean => LICHESS_ID.test(s);
 
-/** How a Tracked Board ended up in the Archive: a result, moves but no result, or no moves. */
+/** How a Board ended up in the Archive: a result, moves but no result, or no moves. */
 export interface Outcomes {
   finished: number;
   unfinished: number;
@@ -13,7 +13,7 @@ export interface Outcomes {
 export const outcomeOf = (b: Pick<Board, 'result' | 'plies'>): keyof Outcomes =>
   b.result !== '*' ? 'finished' : b.plies.length > 1 ? 'unfinished' : 'notPlayed';
 
-/** One archived Round, without its Boards. boards = Tracked board count; outcomes split them. */
+/** One archived Round, without its Boards. boards = Board count; outcomes split them. */
 export interface ArchiveRound {
   tourId: string;
   roundId: string;
@@ -30,16 +30,15 @@ export interface ArchiveEvent {
 export type RoundMeta = ArchiveRound & { eventName: string };
 
 export function roundMeta(r: Round): RoundMeta {
-  const tracked = r.boards.filter((b) => b.tracked);
   const outcomes: Outcomes = { finished: 0, unfinished: 0, notPlayed: 0 };
-  for (const b of tracked) outcomes[outcomeOf(b)]++;
+  for (const b of r.boards) outcomes[outcomeOf(b)]++;
   return {
     tourId: r.tourId,
     roundId: r.roundId,
     name: r.name,
     eventName: r.eventName,
     startsAt: r.startsAt,
-    boards: tracked.length,
+    boards: r.boards.length,
     outcomes,
   };
 }
@@ -79,7 +78,7 @@ export interface ArchiveCtx {
   roundId: string;
 }
 
-/** A Snapshot for the Viewer/overview from an archived Round (Tracked boards only, as the API serves it). */
+/** A Snapshot for the Viewer/overview from an archived Round (every Board, as the API serves it). */
 export function archiveSnapshot(r: Round): Snapshot {
   return {
     events: [],

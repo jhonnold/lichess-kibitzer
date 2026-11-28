@@ -64,7 +64,8 @@
   const snap = $derived(store.snap);
   const boards = $derived(snap?.round?.boards ?? []);
   const game = $derived(selectedBoard(boards, board));
-  const notTracked = $derived(board !== null && !!game && game.board !== board);
+  // Any Board of the Round can be shown; a number the Round lacks falls back to the default Board.
+  const missing = $derived(board !== null && !!game && game.board !== board);
   const analysis = $derived(game && analyse(game.plies));
   const bState = $derived(game && boardState(game));
   const upcoming = $derived(bState === 'upcoming');
@@ -92,7 +93,7 @@
     if (ply !== null) cursor = jump(liveCursor(game.id), ply, game.plies.length - 1);
   });
   // The URL follows the Cursor (replaceState: no history entries, no hashchange). Live = no ply. The route's Board
-  // number is kept (`#/` stays the default Board, an untracked n stays n).
+  // number is kept (`#/` stays the default Board, a missing n stays n).
   $effect(() => {
     if (!game || !view || applied !== `${game.id}/${ply}`) return;
     const p = view.live ? undefined : view.ply;
@@ -329,9 +330,9 @@
           {/if}
         </div>
       </div>
-      {#if notTracked || (!ctx && (upcoming || !store.connected || snap.stream === 'reconnecting'))}
+      {#if missing || (!ctx && (upcoming || !store.connected || snap.stream === 'reconnecting'))}
         <div class="banners">
-          {#if notTracked}<div class="banner warn">Board {board} is not tracked · showing board {game.board}</div>{/if}
+          {#if missing}<div class="banner warn">No board {board} in this Round · showing board {game.board}</div>{/if}
           {#if !ctx}
             {#if upcoming}<div class="banner">
                 Upcoming · {snap.round?.name} · {startsIn(snap.round?.startsAt ?? null)}
@@ -615,9 +616,13 @@
   .pill.queued i {
     background: var(--warn);
   }
-  .pill.none i {
+  .pill.none i,
+  .pill.off i {
     background: transparent;
     box-shadow: inset 0 0 0 1px var(--muted);
+  }
+  .pill.off {
+    color: var(--muted);
   }
   .opening {
     flex-basis: 100%;

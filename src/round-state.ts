@@ -26,14 +26,22 @@ export const newBoard = (b: RoundInfo['boards'][number], i: number, tracked: boo
   clocks: { white: b.whiteClockMs ?? null, black: b.blackClockMs ?? null },
   plies: [{ move: null, at: null, eval: null }],
 });
-/** One Event's in-memory state: its Current Round (every Board), Dead-letter queue and stream status. Events go to
- *  the host for Tracked boards only; persisted parts are saved (via the host) on every change. */
+/** What the Follower last saw of the Event's schedule (transient): the Round after the Current Round (with none:
+ *  the Round it waits for), and whether every Round is finished. */
+export interface Schedule {
+  next: { name: string; startsAt: number | null } | null;
+  finished: boolean;
+}
+
+/** One Event's in-memory state: its Current Round (every Board), Dead-letter queue, stream status and the Follower's
+ *  Schedule. Events go to the host for every Board; persisted parts are saved (via the host) on every change. */
 export class RoundState {
   readonly event: T.RegisteredEvent;
   #topN: number;
   #round: T.Round | null;
   #dead: T.DeadJob[];
   #stream: T.StreamStatus | null = null;
+  #schedule: Schedule | null = null; // null until the Follower's first poll
   #epochs = new Map<string, number>();
   #synced = new Set<string>(); // Boards synced since construction/startRound
   #unknown = false; // the source sent a game the Round lacks (a Board added on Lichess after the Round was fetched)
@@ -65,6 +73,9 @@ export class RoundState {
   get dead(): readonly T.DeadJob[] {
     return this.#dead;
   }
+  get schedule(): Readonly<Schedule> | null {
+    return this.#schedule;
+  }
   board(boardId: string): Readonly<T.Board> | undefined {
     return this.#round?.boards.find((b) => b.id === boardId);
   }
@@ -80,11 +91,10 @@ export class RoundState {
   }
 
   snapshot(): T.Snapshot {
-    const round = this.#round && { ...this.#round, boards: this.#round.boards.filter((b) => b.tracked) };
     return structuredClone({
       events: this.host.summaries(),
       event: this.event,
-      round,
+      round: this.#round,
       search: this.host.search(),
       queue: this.host.queue(),
       stream: this.#stream,
@@ -142,20 +152,23 @@ export class RoundState {
     return this.#unknown;
   }
 
-  /** Append the Boards Lichess lists that the Round lacks, untracked, in Lichess order. Clears hasUnknownBoards. */
+  /** Append the Boards Lichess lists that the Round lacks, untracked, in Lichess order: a 'board' event each. Clears
+   *  hasUnknownBoards. */
   addBoards(boards: RoundInfo['boards']): void {
     this.#unknown = false;
     const r = this.#round;
     if (!r) return;
     const add = boards.filter((b) => !r.boards.some((x) => x.id === b.id));
     for (const b of add) {
-      r.boards.push(newBoard(b, r.boards.length, false));
+      const board = newBoard(b, r.boards.length, false);
+      r.boards.push(board);
       this.#epochs.set(b.id, this.host.nextEpoch());
+      this.host.emit({ type: 'board', board: structuredClone(board) });
     }
     if (add.length) this.saveRound();
   }
 
-  /** Exact tracked set; unknown ids ignored. Lasts this Round only. */
+  /** Exact tracked set; unknown ids ignored: a 'board' event per changed Board. Lasts this Round only. */
   setTracked(boardIds: readonly string[]): void {
     if (!this.#round) return;
     const want = new Set(boardIds);
@@ -164,10 +177,7 @@ export class RoundState {
       if (b.tracked === want.has(b.id)) continue;
       b.tracked = !b.tracked;
       changed = true;
-      this.host.emit(
-        b.tracked ? { type: 'board', board: structuredClone(b) } : { type: 'untrack', boardId: b.id },
-        false,
-      );
+      this.host.emit({ type: 'board', board: structuredClone(b) }, false);
     }
     if (changed) {
       this.host.changed(); // one summaries frame for the whole toggle
@@ -196,8 +206,8 @@ export class RoundState {
     for (const move of moves.slice(kept)) b.plies.push({ move, at, eval: null });
     if (retracted) {
       this.#epochs.set(boardId, this.host.nextEpoch());
-      if (b.tracked) this.host.emit({ type: 'board', board: structuredClone(b) });
-    } else if (b.tracked) {
+      this.host.emit({ type: 'board', board: structuredClone(b) });
+    } else {
       for (let i = kept + 1; i < b.plies.length; i++) {
         this.host.emit({ type: 'ply', boardId, index: i, ply: b.plies[i] });
       }
@@ -206,12 +216,12 @@ export class RoundState {
     return kept;
   }
 
-  /** Unknown Board, null or an unchanged name: no-op (a name is never cleared). Else set, save, 'board' event (Tracked). */
+  /** Unknown Board, null or an unchanged name: no-op (a name is never cleared). Else set, save, 'board' event. */
   setOpening(boardId: string, opening: string | null): void {
     const b = this.board(boardId) as T.Board | undefined;
     if (!b || !opening || b.opening === opening) return;
     b.opening = opening;
-    if (b.tracked) this.host.emit({ type: 'board', board: structuredClone(b) });
+    this.host.emit({ type: 'board', board: structuredClone(b) });
     this.saveRound();
   }
 
@@ -223,7 +233,7 @@ export class RoundState {
     }
     if (e.kind === 'provisional' && b.plies[index].eval?.kind === 'complete') return false;
     const ply = (b.plies[index] = { ...b.plies[index], eval: e }); // replace, never mutate: emitted objects stay valid
-    if (b.tracked) this.host.emit({ type: 'ply', boardId, index, ply });
+    this.host.emit({ type: 'ply', boardId, index, ply });
     this.saveRound();
     return true;
   }
@@ -233,7 +243,7 @@ export class RoundState {
     const b = this.board(boardId) as T.Board | undefined;
     if (!b || b.result === result) return;
     b.result = result;
-    if (b.tracked) this.host.emit({ type: 'result', boardId, result });
+    this.host.emit({ type: 'result', boardId, result });
     this.saveRound();
   }
 
@@ -241,6 +251,13 @@ export class RoundState {
     if (status === this.#stream) return;
     this.#stream = status;
     this.host.emit({ type: 'stream-status', status });
+  }
+
+  /** The Follower's poll. The summaries change only when it differs. */
+  setSchedule(schedule: Schedule): void {
+    if (JSON.stringify(schedule) === JSON.stringify(this.#schedule)) return;
+    this.#schedule = schedule;
+    this.host.changed();
   }
 
   /** The next Round's default only; the current tracked set is unchanged. */

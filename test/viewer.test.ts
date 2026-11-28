@@ -202,20 +202,30 @@ describe('panelInfo', () => {
   });
 });
 
-const mk = (n: number, plies: number, result: Result = '*'): Board =>
+const mk = (n: number, plies: number, result: Result = '*', tracked = true): Board =>
   ({
     id: `g${n}`,
     board: n,
     result,
+    tracked,
     plies: Array.from({ length: plies }, () => ({ move: null, at: null, eval: null })),
   }) as unknown as Board;
 
 describe('selectedBoard', () => {
   const boards = [mk(5, 1), mk(2, 1), mk(9, 1)];
-  it('finds the Tracked board by number', () => expect(selectedBoard(boards, 9)?.id).toBe('g9'));
+  it('finds the board by number, untracked too', () => {
+    expect(selectedBoard(boards, 9)?.id).toBe('g9');
+    expect(selectedBoard([mk(1, 1, '*', false), mk(2, 1)], 1)?.id).toBe('g1');
+  });
   it('falls back to the lowest-numbered board, whatever the order', () => {
     expect(selectedBoard(boards, 3)?.id).toBe('g2');
     expect(selectedBoard(boards, null)?.id).toBe('g2');
+  });
+  it('falls back to the lowest-numbered Tracked board first, else the lowest of all', () => {
+    const some = [mk(1, 1, '*', false), mk(4, 1), mk(3, 1)];
+    expect(selectedBoard(some, null)?.id).toBe('g3');
+    expect(selectedBoard(some, 7)?.id).toBe('g3');
+    expect(selectedBoard([mk(6, 1, '*', false), mk(2, 1, '*', false)], null)?.id).toBe('g2');
   });
   it('is null with no boards', () => expect(selectedBoard([], 1)).toBeNull());
 });
@@ -336,6 +346,16 @@ describe('statusLine', () => {
     });
     expect(statusLine(mk(1, 3), 2, null, q()).text).toBe('Waiting');
   });
+  it('an untracked Board with no eval at the ply is Not analysed, whatever the backfill; with one, as usual', () => {
+    const off = { state: 'off', text: 'Not analysed' };
+    expect(statusLine(mk(1, 3, '*', false), 2, null, q())).toEqual(off);
+    expect(statusLine(mk(1, 3, '*', false), 1, null, q([], 5))).toEqual(off);
+    expect(statusLine(mk(1, 3, '1-0', false), 2, null, q())).toEqual(off);
+    expect(statusLine(mk(1, 3, '*', false), 2, srch('g1', 2, 9), q()).state).toBe('searching'); // just untracked
+    const b = withEval(withEval(mk(1, 3, '*', false), 1, ev('complete', 20)), 2, ev('provisional', 8));
+    expect(statusLine(b, 1, null, q()).text).toBe('Done · depth 20');
+    expect(statusLine(b, 2, null, q()).text).toBe('Provisional · depth 8');
+  });
   it('an Upcoming Board queued at ply 0', () => {
     expect(
       statusLine(
@@ -384,7 +404,8 @@ describe('viewerMessage', () => {
     startsAt: null,
     boards,
   });
-  const snap = (e: Snapshot['event'], r: Snapshot['round']): Snapshot => ({
+  const snap = (e: Snapshot['event'], r: Snapshot['round'], events: Snapshot['events'] = []): Snapshot => ({
+    events,
     event: e,
     round: r,
     search: null,
@@ -395,6 +416,15 @@ describe('viewerMessage', () => {
     expect(viewerMessage(snap(null, null))).toBe('Nothing live right now');
     expect(viewerMessage(snap(event, null))).toBe('Event · waiting for the first Round');
     expect(viewerMessage(snap(event, round([])))).toBe('Event · Round 2 · no pairings yet');
+  });
+  it("with no Current Round, says what the Event's summary knows: the next Round, or every Round finished", () => {
+    const sum = { tourId: 't', name: 'Event', primary: true, round: null, live: false, tracked: 0 };
+    const next = { name: 'Round 5', startsAt: 1 };
+    expect(viewerMessage(snap(event, null, [{ ...sum, next, finished: false }]))).toBe('Event · next: Round 5');
+    expect(viewerMessage(snap(event, null, [{ ...sum, next: null, finished: true }]))).toBe(
+      'Event · every Round finished',
+    );
+    expect(viewerMessage(snap(event, null, [sum]))).toBe('Event · waiting for the first Round');
   });
   it('is null while a Board can be shown', () => {
     expect(viewerMessage(snap(event, round([mk(1, 0)])))).toBeNull();

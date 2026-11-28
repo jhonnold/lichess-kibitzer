@@ -309,6 +309,26 @@ describe('SiteState', () => {
     expect(count()).toBe(8);
   });
 
+  it("summaries carry the Follower's Schedule once pushed; a repeat push publishes nothing", () => {
+    const { site, log } = setup();
+    const a = site.addEvent(ev(1), 2);
+    expect(site.summaries()[0]).not.toHaveProperty('next'); // not polled yet: neither Next nor Finished
+    const count = () => log.filter(([, e]) => e.type === 'events').length;
+    const before = count();
+    a.setSchedule({ next: { name: 'Round 3', startsAt: 500 }, finished: false });
+    expect(site.summaries()[0]).toMatchObject({
+      round: null,
+      next: { name: 'Round 3', startsAt: 500 },
+      finished: false,
+    });
+    expect(count()).toBe(before + 1);
+    a.setSchedule({ next: { name: 'Round 3', startsAt: 500 }, finished: false });
+    expect(count()).toBe(before + 1);
+    a.setSchedule({ next: null, finished: true });
+    expect(site.summaries()[0]).toMatchObject({ next: null, finished: true });
+    expect(count()).toBe(before + 2);
+  });
+
   it("setTracked publishes one 'events' frame with the final summary", () => {
     const { site, log } = setup();
     const a = site.addEvent(ev(1), 2);

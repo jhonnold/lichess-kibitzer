@@ -81,7 +81,7 @@ export interface Board {
   white: Player;
   black: Player;
   result: Result;
-  tracked: boolean;
+  tracked: boolean; // analysed automatically (topN, or the Admin's set); every Board is shown either way
   opening: string | null;
   clocks: { white: number | null; black: number | null }; // ms, from fetchRound at startRound
   plies: Ply[]; // recorded for every Board of the Round, tracked or not
@@ -143,9 +143,13 @@ export interface EventSummary {
   round: { roundId: string; name: string; startsAt: number | null } | null; // Current Round
   live: boolean; // a Tracked Board of the Current Round is being played (boardState 'live'); false = upcoming, over, or no Round
   tracked: number; // Tracked boards of the Current Round
+  // The Follower's last poll; both absent until its first one. next: the Round after the Current Round (with none:
+  // the Round it waits for); finished: every Round of the Event is finished.
+  next?: { name: string; startsAt: number | null } | null;
+  finished?: boolean;
 }
 
-/** Round in a Snapshot carries only Tracked boards. */
+/** Round in a Snapshot carries every Board, Tracked or not. */
 export interface Snapshot {
   events: EventSummary[]; // every registered Event, in registration order
   event: RegisteredEvent | null;
@@ -155,11 +159,10 @@ export interface Snapshot {
   stream: StreamStatus | null;
 }
 
-/** Per-board events carry boardId and are sent only for Tracked boards. */
+/** Per-board events carry boardId and are sent for every Board of the Current Round. */
 export type SseEvent =
   | { type: 'snapshot'; snapshot: Snapshot; now?: number } // event change, startRound; now = server ms, first frame only
-  | { type: 'board'; board: Board } // upsert one Tracked board (newly tracked, or retract)
-  | { type: 'untrack'; boardId: string }
+  | { type: 'board'; board: Board } // upsert one Board (tracked flag changed, retract, opening, added on Lichess)
   | { type: 'ply'; boardId: string; index: number; ply: Ply } // append (index = plies.length) or eval upsert
   | { type: 'result'; boardId: string; result: Result }
   | { type: 'search'; search: SearchInfo | null }

@@ -158,11 +158,12 @@ export function shortName(name: string): string {
 export const lichessUrl = (roundId: string, gameId: string): string =>
   `https://lichess.org/broadcast/-/-/${roundId}/${gameId}`;
 
-/** The Tracked board with Lichess number n, else the lowest-numbered one; null when none. */
+const lowest = (boards: readonly Board[]) =>
+  boards.reduce<Board | null>((a, b) => (!a || b.board < a.board ? b : a), null);
+/** The Board with Lichess number n, else the lowest-numbered Tracked board, else the lowest-numbered one; null when
+ *  none. n null: the Round's default Board. */
 export function selectedBoard(boards: readonly Board[], n: number | null): Board | null {
-  return (
-    boards.find((b) => b.board === n) ?? boards.reduce<Board | null>((a, b) => (!a || b.board < a.board ? b : a), null)
-  );
+  return boards.find((b) => b.board === n) ?? lowest(boards.filter((b) => b.tracked)) ?? lowest(boards);
 }
 
 export function ordinal(n: number): string {
@@ -171,7 +172,8 @@ export function ordinal(n: number): string {
   return `${n}${suffix}`;
 }
 
-export type JobState = 'queued' | 'searching' | 'done' | 'none';
+/** off: an untracked Board's ply with no eval (never queued). */
+export type JobState = 'queued' | 'searching' | 'done' | 'none' | 'off';
 /** 1000 → '1', 6420 → '6.4'. */
 const secs = (ms: number) => String(Math.round(ms / 100) / 10);
 export interface StatusLine {
@@ -195,6 +197,7 @@ export function statusLine(board: Board, ply: number, search: SearchInfo | null,
     const what = search.tier === 'backfill' ? 'Backfill' : 'Searching';
     return { state: 'searching', text: search.depth ? `${what} · depth ${search.depth}` : what };
   }
+  if (!board.tracked && !e) return { state: 'off', text: 'Not analysed' };
   const i = queue.current.findIndex((j) => j.boardId === board.id && j.ply === ply);
   if (i >= 0) return { state: 'queued', text: `Queued · ${ordinal(i + 1)}` };
   if (queue.deferred.some((j) => j.boardId === board.id && j.ply === ply))
@@ -224,7 +227,11 @@ export function countdown(startsAt: number | null, now: number): string | null {
 export function viewerMessage(snap: Snapshot): string | null {
   const { event, round } = snap;
   if (!event) return 'Nothing live right now';
-  if (!round) return `${event.name} · waiting for the first Round`;
+  if (!round) {
+    const s = snap.events.find((e) => e.tourId === event.tourId);
+    if (s?.next) return `${event.name} · next: ${s.next.name}`;
+    return `${event.name} · ${s?.finished ? 'every Round finished' : 'waiting for the first Round'}`;
+  }
   return round.boards.length ? null : `${event.name} · ${round.name} · no pairings yet`;
 }
 

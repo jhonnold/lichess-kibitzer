@@ -544,7 +544,9 @@ describe('Follower import', () => {
     expect(state().round).toBeNull();
     expect(status()).toMatchObject({ next: null, swapAt: null, error: null });
     expect(site.snapshot('T1')).toMatchObject({ event: { tourId: 'T1' }, round: null });
-    expect(site.summaries()).toEqual([expect.objectContaining({ tourId: 'T1', round: null, tracked: 0 })]);
+    expect(site.summaries()).toEqual([
+      expect.objectContaining({ tourId: 'T1', round: null, tracked: 0, next: null, finished: true }),
+    ]);
     expect(sourceIds).toEqual([]);
     expect(sched.engine).toBeNull();
     expect(await fileIds()).toEqual(['R1', 'R2']);
@@ -562,6 +564,11 @@ describe('Follower import', () => {
     await follower().imported();
     expect(state().round).toBeNull();
     expect(status()).toMatchObject({ next: { roundId: 'R3', startsAt: start }, swapAt: start - 600_000 });
+    expect(site.summaries()[0]).toMatchObject({
+      round: null,
+      next: { name: 'Round 3', startsAt: start },
+      finished: false,
+    });
     expect(await fileIds()).toEqual(['P1', 'P2']);
     t = start - 600_001;
     await follower().tick();

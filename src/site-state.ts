@@ -111,6 +111,7 @@ export class SiteState extends EventEmitter<SiteEvents> {
         round: round && { roundId: round.roundId, name: round.name, startsAt: round.startsAt },
         live: tracked.some((b) => boardState(b) === 'live'),
         tracked: tracked.length,
+        ...rs.schedule,
       };
     });
   }

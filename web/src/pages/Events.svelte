@@ -13,6 +13,17 @@
     const left = countdown(startsAt, now - store.skew);
     return left === null ? 'Upcoming' : left === 'starting' ? left : `starts in ${left}`;
   };
+  // No Current Round: what the card says instead of the Round's name.
+  const when = (at: number | null) =>
+    at === null ? '' : ` · ${new Date(at).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}`;
+  const noRound = (c: (typeof cards)[number]) =>
+    c.next
+      ? `Next: ${c.next.name}${when(c.next.startsAt)}`
+      : c.state === 'finished'
+        ? 'Finished'
+        : c.polled
+          ? 'No Rounds yet'
+          : 'Waiting for the first Round';
   let now = $state(Date.now());
   onMount(() => {
     const tick = setInterval(() => (now = Date.now()), 1000);
@@ -38,14 +49,18 @@
                 Primary
               </span>{/if}
           </p>
-          <p class="round">{c.round ?? 'Waiting for the first Round'}</p>
+          <p class="round">{c.round ?? noRound(c)}</p>
           <p class="meta">
             {#if c.state === 'live'}
               <span class="live"><span></span>LIVE</span>
             {:else if c.state === 'upcoming'}
               <span>{startsIn(c.startsAt)}</span>
             {/if}
-            {#if c.state !== 'idle'}<span>{c.tracked} tracked {c.tracked === 1 ? 'board' : 'boards'}</span>{/if}
+            {#if c.state === 'live' || c.state === 'upcoming'}
+              <span>{c.tracked} tracked {c.tracked === 1 ? 'board' : 'boards'}</span>
+            {:else if c.state === 'next' || c.state === 'finished'}
+              <span class="archive">Past Rounds in the Archive →</span>
+            {/if}
           </p>
         </a>
       {/each}
@@ -140,6 +155,9 @@
     margin-top: 6px;
     color: var(--muted);
     font-size: 13px;
+  }
+  .archive {
+    color: var(--accent);
   }
   .live {
     display: inline-flex;
