@@ -60,10 +60,35 @@ const eventOf = (id: string, round: string): EventInfo => ({
   name: `Event ${id}`,
   rounds: [{ id: round, name: 'Round 1', ongoing: true, finished: false }],
 });
-const EVENTS: Record<string, EventInfo> = { A: eventOf(TOUR_A, ROUND_A), B: eventOf(TOUR_B, ROUND_B) }; // by link
+// A finished Event (link F): two past Rounds of two games each, served as PGN for the import into the Archive.
+const TOUR_F = 'tourFFFF';
+const PAST: Record<string, string[]> = { pastRnd1: ['pastG101', 'pastG102'], pastRnd2: ['pastG201', 'pastG202'] };
+const FINISHED: EventInfo = {
+  id: TOUR_F,
+  name: 'Finished',
+  rounds: Object.keys(PAST).map((id, i) => ({
+    id,
+    name: `Past ${i + 1}`,
+    ongoing: false,
+    finished: true,
+    startsAt: Date.UTC(2026, 0, 1 + i),
+  })),
+};
+/** Each game: 1. e4 e5 2. Nf3 Nc6, White wins (5 positions, every one with a move to play). */
+const pgnOf = (roundId: string) =>
+  (PAST[roundId] ?? [])
+    .map(
+      (g) =>
+        `[White "W ${g}"]\n[Black "B ${g}"]\n[Result "1-0"]\n[GameURL "https://lichess.org/broadcast/f/p/${roundId}/${g}"]\n\n` +
+        '1. e4 { [%clk 1:30:00] } 1... e5 { [%clk 1:29:59] } 2. Nf3 { [%clk 1:29:00] } 2... Nc6 { [%clk 1:28:00] } 1-0',
+    )
+    .join('\n\n\n');
+
+const EVENTS: Record<string, EventInfo> = { A: eventOf(TOUR_A, ROUND_A), B: eventOf(TOUR_B, ROUND_B), F: FINISHED }; // by link
 const ROUNDS: Record<string, RoundInfo> = {
   [ROUND_A]: roundOf(TOUR_A, ROUND_A, IDS),
   [ROUND_B]: roundOf(TOUR_B, ROUND_B, IDS_B),
+  ...Object.fromEntries(Object.entries(PAST).map(([id, games]) => [id, roundOf(TOUR_F, id, games)])),
 };
 
 const fetchEvent = vi.fn(async (link: string) => EVENTS[link] ?? EVENT);
@@ -91,7 +116,11 @@ const boot = async () => {
       },
     },
     app: { sse: { throttleMs: 20 } },
-    lichess: { fetchEvent, fetchRound: async (id: string) => ROUNDS[id] ?? ROUND_INFO, fetchRoundPgn: async () => '' },
+    lichess: {
+      fetchEvent,
+      fetchRound: async (id: string) => ROUNDS[id] ?? ROUND_INFO,
+      fetchRoundPgn: async (id: string) => pgnOf(id),
+    },
   });
 };
 async function login() {
@@ -326,6 +355,45 @@ describe('live analysis over SSE', () => {
       expect(rebuild(b.events)?.events.map((e) => [e.tourId, e.primary])).toEqual([[TOUR_B, true]]);
       expect(boardIds(rebuild(b.events))).toEqual(IDS_B);
       for (const c of [a, b, primary]) await c.close();
+    },
+    TEST_TIMEOUT,
+  );
+
+  it(
+    'imports a finished Event into the Archive, every Board; an Admin deep-analyses an archived Board',
+    async () => {
+      const c = await sse(`http://127.0.0.1:${srv.port}/api/events`);
+      await admin('PUT', '/passes', { ms: [5, null, 20] });
+      await admin('POST', '/event', { link: 'F' });
+      type Listed = { tourId: string; rounds: { roundId: string; boards: number }[] }[];
+      const listed = async () =>
+        ((await (await get('/api/archive')).json()) as Listed).find((e) => e.tourId === TOUR_F);
+      await vi.waitFor(async () => expect((await listed())?.rounds.length).toBe(2), WAIT);
+      expect((await listed())?.rounds.map((r) => [r.roundId, r.boards])).toEqual([
+        ['pastRnd1', 2],
+        ['pastRnd2', 2],
+      ]);
+      expect(srv.state.event(TOUR_F)?.round).toBeNull(); // every Round finished: no Current Round
+      const archived = async () => (await (await get(`/api/archive/${TOUR_F}/pastRnd1`)).json()) as { boards: Board[] };
+      const before = await archived();
+      expect(before.boards.map((b) => [b.id, b.plies.length, b.plies.some((p) => p.eval)])).toEqual([
+        ['pastG101', 5, false],
+        ['pastG102', 5, false],
+      ]); // imported, not analysed
+      expect(srv.scheduler.engine).toBeNull();
+
+      await admin('POST', '/deep', { tourId: TOUR_F, roundId: 'pastRnd1', boardId: 'pastG102' });
+      await vi.waitFor(async () => {
+        const st = (await (await get('/api/admin/status')).json()) as { deep: unknown[]; deepHeld: unknown };
+        expect([st.deep, st.deepHeld]).toEqual([[], null]);
+      }, WAIT);
+      const after = await archived();
+      expect(after.boards[1].plies.map((p) => [p.eval?.kind, p.eval?.ms])).toEqual(Array(5).fill(['complete', 20]));
+      expect(after.boards[0].plies.every((p) => p.eval === null)).toBe(true); // only that Board
+      const deepFrames = c.events.flatMap((e) => (e.type === 'queue' ? [e.queue.deep] : []));
+      expect(deepFrames).toContainEqual([{ boardId: 'pastG102', left: 5, total: 5 }]); // site-wide, on every stream
+      expect(deepFrames.at(-1)).toEqual([]);
+      await c.close();
     },
     TEST_TIMEOUT,
   );

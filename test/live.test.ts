@@ -26,7 +26,7 @@ const snap = (): Snapshot => ({
     boards: [board('a', 1, [ply(), ply('e2e4')]), board('c', 3)],
   },
   search: null,
-  queue: { current: [], backfill: 0, deferred: [] },
+  queue: { current: [], backfill: 0, deferred: [], deep: [] },
   stream: null,
 });
 const idle = (): Snapshot => ({ ...snap(), round: null });
@@ -96,7 +96,8 @@ describe('applyEvent', () => {
   it('search, queue and stream-status are set as sent', () => {
     expect(applyEvent(snap(), { type: 'search', search })?.search).toBe(search);
     expect(
-      applyEvent(snap(), { type: 'queue', queue: { current: [], backfill: 4, deferred: [] } })?.queue.backfill,
+      applyEvent(snap(), { type: 'queue', queue: { current: [], backfill: 4, deferred: [], deep: [] } })?.queue
+        .backfill,
     ).toBe(4);
     expect(applyEvent(snap(), { type: 'stream-status', status: 'reconnecting' })?.stream).toBe('reconnecting');
   });

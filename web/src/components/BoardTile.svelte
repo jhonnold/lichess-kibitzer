@@ -8,7 +8,7 @@
   import EvalBar from './EvalBar.svelte';
 
   // now: server ms (the clock of the side to move of a Live Board ticks).
-  // href: where a tile links; archived: no Queue dot, no "to move", Boards without a result read unfinished/not played.
+  // href: where a tile links; archived: no Queue dot (but Deep), no "to move", Boards without a result read unfinished/not played.
   type Props = {
     board: BoardData;
     search: SearchInfo | null;
@@ -30,6 +30,7 @@
     done: 'Up to date',
     none: '',
     off: 'Not analysed',
+    deep: 'Deep',
   };
   const state = $derived(
     archived ? archivedResult(board) : t.state === 'live' ? 'LIVE' : t.state === 'upcoming' ? 'UPCOMING' : t.result,
@@ -53,7 +54,7 @@
     <span class="n">{t.board}</span>
     {#if state}<span class="state" class:live={!archived && t.state === 'live'}>{state}</span>{/if}
     {#if t.mark}<span class="mark {t.mark}" title={t.mark}>{MARK_GLYPH[t.mark]}</span>{/if}
-    {#if !archived && QUEUE[dot.state]}
+    {#if (!archived || dot.state === 'deep') && QUEUE[dot.state]}
       <span class="queue" title={dot.text}><i class={dot.state}></i>{QUEUE[dot.state]}</span>
     {/if}
   </div>
@@ -134,6 +135,9 @@
   i.off {
     background: transparent;
     box-shadow: inset 0 0 0 1px var(--muted);
+  }
+  i.deep {
+    background: var(--deep);
   }
   .mid {
     display: flex;

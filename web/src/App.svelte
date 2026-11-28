@@ -9,6 +9,7 @@
   import TabBar from './components/TabBar.svelte';
   import { ArchiveStore } from '$lib/archive.svelte';
   import { LiveStore } from '$lib/live.svelte';
+  import { deepInRound } from '$shared/archive';
   import { unknownTour } from '$shared/events';
   import {
     ARCHIVE_HASH,
@@ -26,6 +27,8 @@
   } from '$shared/route';
   import type { Board } from '$shared/types';
   import { boardState, selectedBoard } from '$shared/viewer';
+
+  const DEEP_REFETCH_MS = 15_000;
 
   // Hash router: see shared/route.ts. One LiveStore (one EventSource) for every page, bound to the stream tour.
   let hash = $state(location.hash);
@@ -49,7 +52,7 @@
   $effect(() => {
     document.documentElement.classList.toggle('transparent', layout.transparent);
   });
-  const archive = new ArchiveStore();
+  const archive = new ArchiveStore(() => store.snap); // the stream's Queue is site-wide: it has every deep request
 
   // The stream's Event: the tourId of the last Event-scoped route (sticky across Admin/Archive). Computed with the
   // route, not in an effect, so the Viewer never rewrites the new Event's hash with the old Event's. null = the Primary.
@@ -81,6 +84,17 @@
     if (route.page !== 'archive-round') return;
     archive.load(route.tourId, route.roundId);
     if (route.board !== null) lastArchiveBoard = route.board;
+  });
+  // While deep analysis writes the Round on screen, fetch it again every 15 s, and once more when its requests end. A
+  // boolean, so the Queue frames of every Job start don't restart the timer.
+  const deepHere = $derived(route.page === 'archive-round' && deepInRound(store.snap?.queue.deep, archive.snap?.round));
+  $effect(() => {
+    if (!deepHere) return;
+    const timer = setInterval(() => archive.refresh(), DEEP_REFETCH_MS);
+    return () => {
+      clearInterval(timer);
+      if (route.page === 'archive-round') archive.refresh(); // its last plies; a no-op while another Round loads
+    };
   });
   const archiveBack = $derived(
     route.page === 'archive-round'

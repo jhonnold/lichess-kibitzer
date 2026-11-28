@@ -530,7 +530,7 @@ describe('Scheduler', () => {
     expect([seen[0].search, seen[0].stream, seen[0].queue]).toEqual([
       null,
       null,
-      { current: [], backfill: 0, deferred: [] },
+      { current: [], backfill: 0, deferred: [], deep: [] },
     ]);
   });
 
@@ -540,7 +540,7 @@ describe('Scheduler', () => {
     src.push(upd('g1', E4.slice(0, 1)));
     src.push(upd('g2', D4));
     await sched.setTracked('T1', ['g1']);
-    expect(queueView()).toEqual({ current: [{ boardId: 'g1', ply: 1 }], backfill: 1, deferred: [] });
+    expect(queueView()).toEqual({ current: [{ boardId: 'g1', ply: 1 }], backfill: 1, deferred: [], deep: [] });
     await sched.setPasses(one(15));
     await idle();
     expect(complete('g1', 1)).toBe(true);
@@ -579,7 +579,7 @@ describe('Scheduler', () => {
     setup({ jobTimeMs: null, init: { state: persisted([]), rounds: new Map([['T1', round]]) } });
     await sched.resume();
     expect(sourceIds).toEqual(['R1']);
-    expect(queueView()).toEqual({ current: [{ boardId: 'g1', ply: 2 }], backfill: 1, deferred: [] });
+    expect(queueView()).toEqual({ current: [{ boardId: 'g1', ply: 2 }], backfill: 1, deferred: [], deep: [] });
     await sched.setPasses(one(15));
     await idle();
     expect(complete('g1', 1) && complete('g1', 2)).toBe(true);
@@ -704,7 +704,7 @@ describe('Scheduler', () => {
       const dead = [{ tourId: 'T1', boardId: 'g1', board: 1, ply: 1, at: 5 }];
       setup({ jobTimeMs: null, init: { state: persisted(dead), rounds: new Map([['T1', round]]) } });
       await sched.resume();
-      expect(queueView()).toEqual({ current: [], backfill: 1, deferred: [] });
+      expect(queueView()).toEqual({ current: [], backfill: 1, deferred: [], deep: [] });
       expect(state.dead).toEqual(dead);
       await sched.setPasses(one(15));
       await idle();
@@ -892,7 +892,7 @@ describe('Scheduler', () => {
       state2 = site.event('T2')!;
       await sched.resume();
       expect(sourceIds).toEqual(['R1', 'S1']);
-      expect(queueView()).toEqual({ current: [{ boardId: 'a1', ply: 1 }], backfill: 0, deferred: [] });
+      expect(queueView()).toEqual({ current: [{ boardId: 'a1', ply: 1 }], backfill: 0, deferred: [], deep: [] });
       await sched.setTracked('T1', ['a1']); // persists the Dead-letter queue per Event
       expect([state.dead, state2.dead]).toEqual([[], dead]);
       await sched.setPasses(one(15));
@@ -1196,6 +1196,36 @@ describe('Scheduler deep analysis', () => {
     expect(await fileMs('T9', 'R0', 'z1')).toEqual([20, 20, 20, 20]);
   });
 
+  it("publishes each request's progress in the Queue view: request, every recorded ply, its end, cancel, boot", async () => {
+    await store.saveRound(round('T1', 'R0', [board('z1', E4), board('z2', E4, { board: 2 })]));
+    setup({ store, passesMs: [5, 10, 20] });
+    const seen: string[] = [];
+    site.on('event', (_t, e) => {
+      if (e.type !== 'queue') return;
+      const s = JSON.stringify(e.queue.deep);
+      if (seen.at(-1) !== s) seen.push(s);
+    });
+    expect(await sched.requestDeep('T1', 'R0', 'z1')).toBe('ok');
+    await settled();
+    expect(seen.map((x) => JSON.parse(x))).toEqual([
+      ...[4, 3, 2, 1].map((left) => [{ boardId: 'z1', left, total: 4 }]),
+      [], // the last ply: no next Job publishes it
+    ]);
+    expect(queueView().deep).toEqual([]);
+
+    await sched.setPasses([5, 10, 5000]);
+    expect(await sched.requestDeep('T1', 'R0', 'z2')).toBe('ok');
+    await until(() => deepSearch('z2', 0));
+    expect(queueView().deep).toEqual([{ boardId: 'z2', left: 4, total: 4 }]);
+    await sched.stop();
+    await site.saved();
+    setup({ store, passesMs: [5, 10, 5000], init: { state: await store.load() } });
+    await sched.resume();
+    expect(queueView().deep).toEqual([{ boardId: 'z2', left: 4, total: 4 }]); // restored at boot
+    expect(await sched.cancelDeep('z2')).toBe(true);
+    expect(queueView().deep).toEqual([]);
+  });
+
   it('refuses a request while the deep Pass is off', async () => {
     await store.saveRound(round('T1', 'R0', [board('z1', E4)]));
     setup({ store, passesMs: [5, 10, null] });
@@ -1241,8 +1271,10 @@ describe('Scheduler deep analysis', () => {
     setup({ store, topN: 1, passesMs: [5, 10, 5000] });
     await sched.startRound('T1', roundInfo('R1', ['g1']), null);
     await poll(regularIdle);
+    expect(sched.deepHeld).toBeNull(); // no request
     expect(await sched.requestDeep('T1', 'R0', 'z1')).toBe('ok');
     await until(() => deepSearch('z1', 0));
+    expect(sched.deepHeld).toBeNull(); // running
     src.push(upd('g1', ['e2e4'])); // g1 is live
     await poll(() => sched.evictions[0]?.boardId === 'z1');
     expect(sched.evictions[0]).toMatchObject({ boardId: 'z1', ply: 0, reason: 'upgrade', depth: null });
@@ -1250,10 +1282,13 @@ describe('Scheduler deep analysis', () => {
     await poll(() => regularIdle() && complete('g1', 1));
     await new Promise((r) => setTimeout(r, 50));
     expect(sched.running).toBeNull(); // held
+    expect(sched.deepHeld).toEqual({ reason: 'live', tourId: 'T1', name: 'E' });
     expect(deepQueue().map((j) => j.ply)).toEqual([0, 1, 2, 3]);
     expect(sched.deep[0].left).toBe(4);
     src.push(upd('g1', ['e2e4'], '1-0')); // over: nothing is live
     await until(() => deepSearch('z1', 0));
+    await sched.setPasses([5, 10, null]);
+    expect(sched.deepHeld).toEqual({ reason: 'pass 3 off' });
   });
 
   it('a Round swap of its Event while a deep Job of an archived Round runs loses no ply', async () => {

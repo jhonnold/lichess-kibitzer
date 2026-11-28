@@ -1,13 +1,13 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import type { SnapSource } from '$lib/live.svelte';
-  import { outcomeOf, type ArchiveCtx } from '$shared/archive';
+  import { deepInRound, outcomeOf, type ArchiveCtx } from '$shared/archive';
   import type { Layout } from '$shared/route';
   import { archiveHash, boardHash } from '$shared/route';
   import { boardState, viewerMessage } from '$shared/viewer';
   import BoardTile from '../components/BoardTile.svelte';
 
-  // ctx: an archived Round (no Queue dots, links stay in the Archive).
+  // ctx: an archived Round (no Queue dots but Deep, links stay in the Archive).
   const {
     store,
     layout,
@@ -75,6 +75,7 @@
             <span><i class="queued"></i>Queued</span>
             <span><i></i>Up to date</span>
             {#if others.length}<span><i class="off"></i>Not analysed</span>{/if}
+            {#if deepInRound(snap.queue.deep, snap.round)}<span><i class="deep"></i>Deep analysis</span>{/if}
           </p>
         {/if}
       </header>
@@ -161,6 +162,9 @@
   i.off {
     background: transparent;
     box-shadow: inset 0 0 0 1px var(--muted);
+  }
+  i.deep {
+    background: var(--deep);
   }
   h2 {
     max-width: 1440px;

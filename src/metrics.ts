@@ -12,7 +12,7 @@ collectDefaultMetrics({ register, prefix: 'kibitzer_' });
 
 /** What the scrape-time metrics read. Set by createApp; before that they report nothing. */
 export interface MetricSources {
-  state: Pick<SiteState, 'settings' | 'queue' | 'events'>;
+  state: Pick<SiteState, 'settings' | 'queue' | 'events' | 'deep'>;
   scheduler: Pick<Scheduler, 'copyState' | 'copyRestarts' | 'passCounts'>;
   site: Pick<Site, 'status'>;
   defaultEngine: EngineConfig;
@@ -81,6 +81,16 @@ export const deadLetterSize = new Gauge({
   collect() {
     this.reset();
     if (src) this.set(src.state.events.reduce((n, rs) => n + rs.dead.length, 0));
+  },
+});
+/** Plies still to search over every deep analysis request (each one's `left`), read at scrape time. */
+export const deepPliesLeft = new Gauge({
+  name: 'kibitzer_deep_plies_left',
+  help: 'Plies still to search at the deep Pass, over every deep analysis request',
+  registers: [register],
+  collect() {
+    this.reset();
+    if (src) this.set(src.state.deep.reduce((n, d) => n + d.left.length, 0));
   },
 });
 /** `role`: the engine copy, main (MultiPV 1) or multi (MultiPV N). */

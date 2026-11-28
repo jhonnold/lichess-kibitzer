@@ -28,6 +28,9 @@ export const ROLES: readonly T.EngineRole[] = ['main', 'multi'];
 
 /** requestDeep: ok, the Board is in neither its Event's Current Round nor a Round file, or the deep Pass is off. */
 export type DeepResult = 'ok' | 'unknown board' | 'pass 3 off';
+/** Why deep Jobs can't run now (null: they can, or there are none): the deep Pass is off, a Tracked Board of that
+ *  Event is live, or regular Jobs wait or run (they go first). */
+export type DeepHeld = { reason: 'pass 3 off' } | { reason: 'live'; tourId: string; name: string } | { reason: 'busy' };
 /** A deep request and its progress: left of total plies still to search. */
 export interface DeepProgress {
   tourId: string;
@@ -210,6 +213,19 @@ export class Scheduler {
       left: left.length,
       total,
     }));
+  }
+
+  /** Why the deep requests wait; null when there are none or they may run (as maxPass and Queue.next decide). */
+  get deepHeld(): DeepHeld | null {
+    if (!this.site.deep.length) return null;
+    if (this.site.settings.passesMs?.[DEEP_PASS] == null) return { reason: 'pass 3 off' };
+    const live = this.liveEvent;
+    if (live) return { reason: 'live', tourId: live.event.tourId, name: live.event.name };
+    const waiting = this.queue
+      .passCounts()
+      .slice(0, DEEP_PASS)
+      .some((n) => n > 0);
+    return waiting || (this.run && !this.run.job.deep) ? { reason: 'busy' } : null;
   }
 
   /** Replace that Event's Current Round (also its first one): drop its running Job and Queue entries, follow the new
@@ -528,9 +544,14 @@ export class Scheduler {
   /** The highest Pass a Job may run at now: the top one only while no Tracked Board of any Event is being played, and
    *  never one that is off (a running Job of a Pass just turned off is evicted). */
   private get maxPass(): number {
-    const live = this.site.events.some((rs) => rs.round?.boards.some((b) => b.tracked && boardState(b) === 'live'));
+    const live = !!this.liveEvent;
     const on = this.site.settings.passesMs?.findLastIndex((ms) => ms !== null) ?? 0;
     return Math.min(maxPass(live), on);
+  }
+
+  /** The first Event with a Tracked Board being played. */
+  private get liveEvent(): RoundState | undefined {
+    return this.site.events.find((rs) => rs.round?.boards.some((b) => b.tracked && boardState(b) === 'live'));
   }
 
   /** After every Queue change: publish it, then evict the running Job if the Queue says so, or start the loop. */
@@ -551,6 +572,7 @@ export class Scheduler {
       current: this.queue.current().map(({ boardId, ply }) => ({ boardId, ply })),
       backfill: this.queue.backfillCount(),
       deferred: this.queue.deferred().map(({ boardId, ply }) => ({ boardId, ply })),
+      deep: this.deep.map(({ boardId, left, total }) => ({ boardId, left, total })),
     });
   }
 
@@ -569,8 +591,10 @@ export class Scheduler {
         const job = this.queue.next(this.maxPass);
         if (!job) return;
         // A deep Job reads its search time itself, after its Round file.
-        if (job.deep) await this.runDeep(engine, job);
-        else await this.runJob(engine, this.copies.multi.engine, job, passes[job.pass] ?? passes[0]);
+        if (job.deep) {
+          await this.runDeep(engine, job);
+          this.publishQueue(); // its request's progress (left), also when it ended: no next Job publishes it
+        } else await this.runJob(engine, this.copies.multi.engine, job, passes[job.pass] ?? passes[0]);
         this.site.setSearch(null, null);
       }
     } catch (err) {

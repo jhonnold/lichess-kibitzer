@@ -38,7 +38,7 @@ const search: T.SearchInfo = {
   startedAt: 1,
   tier: 'current',
 };
-const queue: T.QueueView = { current: [], backfill: 3, deferred: [] };
+const queue: T.QueueView = { current: [], backfill: 3, deferred: [], deep: [] };
 
 const persisted = (primary: string | null, ...ns: number[]): T.PersistedState => ({
   version: 5,

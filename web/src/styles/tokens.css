@@ -27,6 +27,7 @@
   --liveText: #f08a8a;
   --warn: #e0a030;
   --warnBg: rgba(224, 160, 48, 0.14);
+  --deep: #b39ddb; /* deep analysis (Pass 3 on demand) */
   --evalW: #f0f0f0;
   --evalB: #3a3835;
   --onLight: #1b1a18; /* text on --evalW */

@@ -46,7 +46,10 @@ const setup = (current: Round | null = round('current1')) => {
     listRounds: vi.fn(async () => [...stored.values()].map(roundMeta)),
     loadRound: vi.fn(async (_t: string, r: string) => stored.get(r) ?? null),
   };
-  const state = { currents: current ? [{ tourId: current.tourId, roundId: current.roundId }] : [] };
+  const state = {
+    currents: current ? [{ tourId: current.tourId, roundId: current.roundId }] : [],
+    archive: { saved: async () => {} },
+  };
   return { store, app: express().use(archiveRouter({ store, state })) };
 };
 

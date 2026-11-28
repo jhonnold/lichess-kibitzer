@@ -113,13 +113,24 @@ describe('GET /api/admin/metrics', () => {
       expect(res.text).toContain(name);
   });
 
+  it('reports the plies left over every deep request at scrape time', async () => {
+    const { app, state } = setup();
+    expect((await scrape(app, basic('admin:pw'))).text).toContain('kibitzer_deep_plies_left 0');
+    const req = { tourId: 'T', roundId: 'R', board: 1, at: 0, total: 5 };
+    state.setDeep({ ...req, boardId: 'a', left: [1, 2, 3] });
+    state.setDeep({ ...req, boardId: 'b', left: [0, 4] });
+    expect((await scrape(app, basic('admin:pw'))).text).toContain('kibitzer_deep_plies_left 5');
+    state.deepDone('a', 2);
+    expect((await scrape(app, basic('admin:pw'))).text).toContain('kibitzer_deep_plies_left 4');
+  });
+
   it('accepts a password containing a colon', async () => {
     expect((await scrape(setup('a:b').app, basic('admin:a:b'))).status).toBe(200);
   });
 
   it('reports the Queue, Dead-letter queue and engine at scrape time', async () => {
     const { app, state, scheduler } = setup();
-    state.setQueue({ current: [{ boardId: 'a', ply: 3 }], backfill: 4, deferred: [] });
+    state.setQueue({ current: [{ boardId: 'a', ply: 3 }], backfill: 4, deferred: [], deep: [] });
     state.addEvent({ tourId: 'T', name: 'E', link: 'x' }, 2).setDead([{ boardId: 'a', board: 1, ply: 2, at: 1 }]);
     const body = (await scrape(app, basic('admin:pw'))).text;
     expect(body).toContain('kibitzer_queue_depth{tier="current"} 1');

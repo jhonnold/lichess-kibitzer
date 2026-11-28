@@ -12,6 +12,8 @@
   import { arrows } from '$shared/arrows';
   import { archiveHash, boardHash, homeHash, type Layout } from '$shared/route';
   import type { SnapSource } from '$lib/live.svelte';
+  import { session } from '$lib/admin.svelte';
+  import { adminApi, ApiError } from '$lib/admin-api';
   import type { ArchiveCtx } from '$shared/archive';
   import { clockOf } from '$lib/position';
   import type { Color } from '$shared/accuracy';
@@ -57,6 +59,7 @@
 
   let now = $state(Date.now());
   onMount(() => {
+    session.check(); // the Admin's controls (deep analysis)
     const tick = setInterval(() => (now = Date.now()), 1000);
     return () => clearInterval(tick);
   });
@@ -114,6 +117,40 @@
         : statusLine(game, view.evalPly, snap.search, snap.queue)
       : null,
   );
+  // Admin: deep analysis of this Board (any Round: live, or this archived one). The Queue's deep requests are
+  // site-wide; the button shows Cancel while one is pending for this Board.
+  const deepReq = $derived(game && snap ? (snap.queue.deep.find((d) => d.boardId === game.id) ?? null) : null);
+  let deepBusy = $state(false);
+  let deepError = $state<string | null>(null);
+  let deepErrorTimer: ReturnType<typeof setTimeout> | undefined;
+  async function toggleDeep() {
+    const round = snap?.round;
+    if (!game || !round || deepBusy) return;
+    const cancel = !!deepReq;
+    deepBusy = true;
+    deepError = null;
+    try {
+      if (cancel) await adminApi('DELETE', `/deep/${game.id}`);
+      else await adminApi('POST', '/deep', { tourId: round.tourId, roundId: round.roundId, boardId: game.id });
+    } catch (e) {
+      const code = e instanceof ApiError ? e.status : 0;
+      if (code === 401) session.set(false); // the controls go
+      deepError =
+        code === 409
+          ? 'Pass 3 is off'
+          : code === 404
+            ? cancel
+              ? 'No deep request for this Board'
+              : 'Board not found'
+            : e instanceof Error
+              ? e.message
+              : String(e);
+      clearTimeout(deepErrorTimer);
+      deepErrorTimer = setTimeout(() => (deepError = null), 5000);
+    } finally {
+      deepBusy = false;
+    }
+  }
   const panel = $derived(
     game && view && view.evalPly !== null ? panelInfo(game, view.evalPly, snap?.search ?? null) : null,
   );
@@ -389,8 +426,14 @@
                   {formatResult(game.result)}
                 </span>{/if}
             </div>
-            {#if status && !ctx}
+            {#if status && (!ctx || status.state === 'deep')}
               <span class="pill {status.state}"><i></i>{status.text}</span>
+            {/if}
+            {#if session.admin && layout.chrome && snap.round}
+              <button type="button" class="tool deepBtn" disabled={deepBusy} onclick={toggleDeep}>
+                {deepReq ? 'Cancel deep' : 'Deep analysis'}
+              </button>
+              {#if deepError}<span class="deepError" role="alert">{deepError}</span>{/if}
             {/if}
             {#if game.opening}<p class="opening" title={game.opening}>{game.opening}</p>{/if}
           </section>
@@ -623,6 +666,24 @@
   }
   .pill.off {
     color: var(--muted);
+  }
+  .pill.deep {
+    color: var(--deep);
+  }
+  .pill.deep i {
+    background: var(--deep);
+  }
+  .deepBtn {
+    min-height: 26px;
+    font-size: 12px;
+  }
+  .deepBtn:disabled {
+    opacity: 0.6;
+    cursor: wait;
+  }
+  .deepError {
+    color: var(--warn);
+    font-size: 12px;
   }
   .opening {
     flex-basis: 100%;

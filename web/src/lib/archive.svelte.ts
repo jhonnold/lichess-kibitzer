@@ -1,15 +1,22 @@
-import { archiveSnapshot, type ArchiveEvent } from '$shared/archive';
+import { archiveSnapshot, withDeep, type ArchiveEvent } from '$shared/archive';
 import type { Round, Snapshot } from '$shared/types';
 import type { SnapSource } from './live.svelte';
 
-/** One archived Round, fetched once per Round change. */
+/** One archived Round, fetched once per Round change (and again by refresh() while deep analysis writes it). `snap`
+ *  adds what the live stream says of its deep analysis (`live`: the LiveStore's Snapshot). */
 export class ArchiveStore implements SnapSource {
-  snap = $state.raw<Snapshot | null>(null);
+  readonly #live: () => Snapshot | null;
+  #round = $state.raw<Snapshot | null>(null);
+  snap = $derived.by(() => this.#round && withDeep(this.#round, this.#live()));
   readonly skew = 0;
   readonly connected = true; // "Loading…" while snap is null, never a reconnect banner
   error = $state<string | null>(null);
   #key = '';
   #failed = false; // plain field: reading it inside the route effect must not make the effect re-run
+
+  constructor(live: () => Snapshot | null) {
+    this.#live = live;
+  }
 
   /** No-op for the loaded or loading ids (a failed load is retried: the Round may have been archived since); else snap = null, fetch, then the Snapshot or `error`. A reply for older ids is dropped. */
   load(tourId: string, roundId: string): void {
@@ -17,7 +24,7 @@ export class ArchiveStore implements SnapSource {
     if (key === this.#key && !this.#failed) return;
     this.#key = key;
     this.#failed = false;
-    this.snap = null;
+    this.#round = null;
     this.error = null;
     fetch(`/api/archive/${key}`)
       .then(async (res) => {
@@ -31,7 +38,20 @@ export class ArchiveStore implements SnapSource {
         if (typeof r === 'string') {
           this.#failed = true;
           this.error = r;
-        } else this.snap = r;
+        } else this.#round = r;
+      });
+  }
+
+  /** Fetch the loaded Round again and swap it in, keeping the screen (no "Loading…": the Viewer keeps its Cursor). A
+   *  failed fetch keeps the old one; a reply for older ids is dropped. No-op while nothing is loaded. */
+  refresh(): void {
+    const key = this.#key;
+    if (!this.#round || this.#failed) return;
+    fetch(`/api/archive/${key}`)
+      .then(async (res) => (res.ok ? archiveSnapshot((await res.json()) as Round) : null))
+      .catch(() => null)
+      .then((r) => {
+        if (r && this.#key === key) this.#round = r;
       });
   }
 }
