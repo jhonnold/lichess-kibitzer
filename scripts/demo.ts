@@ -4,7 +4,7 @@
  *   npm run build && npm run demo -- [--port 18457] [--boards 10] [--top 8] [--passes 300,1500,6000] [--interval 1500]
  *                                    [--data DIR] [--password demo] [--rounds 1] [--swap-in 20] [--poll 2000]
  *                                    [--crash-board N] [--events 1] [--past 0]
- * --passes: the three Passes' search times in ms (Pass 0, free time, no Event live); `-` turns Pass 2 or 3 off.
+ * --passes: the three Passes' search times in ms (Pass 0, free time, deep analysis on demand); `-` turns Pass 2 or 3 off.
  * One move per --interval ms, round-robin over Boards with moves left (0 = frozen at the initial state).
  * --rounds 0: an Event with no Rounds yet; 2: adds Round 2 (all Boards Upcoming, colours swapped), which the follower
  * swaps in --swap-in seconds after boot (its start is 10 min later); --poll is the follower's poll interval in ms.

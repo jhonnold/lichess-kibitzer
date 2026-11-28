@@ -106,7 +106,7 @@ export interface RegisteredEvent {
 
 export const DEFAULT_TOP_N = 8;
 
-/** Search time of each Pass, ms: [0] right away, [1] in free time, [2] only while no Event is live. A null slot is
+/** Search time of each Pass, ms: [0] right away, [1] in free time, [2] deep analysis, on demand only (run while no Event is live). A null slot is
  *  skipped; non-null values are strictly ascending. */
 export type PassesMs = [number, number | null, number | null];
 /** Passes of a fresh state file (and of a state file that had a job time). See docs/jobtime.md. */

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { maxPass, nextPass, passesError, QUIET_PASS } from '../shared/passes.js';
+import { DEEP_PASS, maxPass, nextPass, passesError } from '../shared/passes.js';
 import type { Eval } from '../shared/types.js';
 
 const ev = (kind: Eval['kind'], ms?: number): Eval => ({
@@ -13,12 +13,12 @@ const ev = (kind: Eval['kind'], ms?: number): Eval => ({
 
 describe('nextPass', () => {
   const passes = [1000, 10_000, 100_000] as const;
-  it('is Pass 0 until a Complete eval, then the first Pass it searched less than', () => {
+  it('is Pass 0 until a Complete eval, then the first automatic Pass it searched less than', () => {
     expect(nextPass(null, 4, [...passes])).toBe(0);
     expect(nextPass(ev('provisional', 50_000), 4, [...passes])).toBe(0);
     expect(nextPass(ev('complete', 1000), 4, [...passes])).toBe(1);
     expect(nextPass(ev('complete', 9999), 4, [...passes])).toBe(1);
-    expect(nextPass(ev('complete', 10_000), 4, [...passes])).toBe(2);
+    expect(nextPass(ev('complete', 10_000), 4, [...passes])).toBeNull(); // the deep Pass is on demand only
     expect(nextPass(ev('complete', 100_000), 4, [...passes])).toBeNull();
   });
 
@@ -27,7 +27,7 @@ describe('nextPass', () => {
   });
 
   it('skips a Pass that is off', () => {
-    expect(nextPass(ev('complete', 1000), 4, [1000, null, 100_000])).toBe(2);
+    expect(nextPass(ev('complete', 1000), 4, [1000, null, 100_000])).toBeNull();
     expect(nextPass(ev('complete', 1000), 4, [1000, null, null])).toBeNull();
   });
 
@@ -41,7 +41,7 @@ describe('nextPass', () => {
 
 describe('maxPass', () => {
   it('allows the top Pass only while no Event is live', () => {
-    expect([maxPass(false), maxPass(true)]).toEqual([QUIET_PASS, QUIET_PASS - 1]);
+    expect([maxPass(false), maxPass(true)]).toEqual([DEEP_PASS, DEEP_PASS - 1]);
   });
 });
 

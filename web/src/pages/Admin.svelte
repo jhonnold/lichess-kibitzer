@@ -308,11 +308,12 @@
           <section id="admin-passes" class="card">
             <h2 class="title">Search passes</h2>
             <p class="muted">
-              Now <b>{formatPasses(status.passesMs)}</b>. Pass 1 runs right away, Pass 2 in free time, Pass 3 only while
-              no Event is live. Leave Pass 2 or 3 blank to skip it.
+              Now <b>{formatPasses(status.passesMs)}</b>. Pass 1 runs right away, Pass 2 in free time. Pass 3 is deep
+              analysis: only for a Board an Admin asks for, and only while no Event is live. Leave Pass 2 or 3 blank to
+              skip it.
             </p>
             <form class="inline" onsubmit={(e) => (e.preventDefault(), setPasses())}>
-              {#each ['Pass 1', 'Pass 2', 'Pass 3'] as label, k (label)}
+              {#each ['Pass 1', 'Pass 2', 'Pass 3 (deep, on demand)'] as label, k (label)}
                 <label class="field">
                   <span>{label}</span>
                   <input type="number" min="0.1" step="0.1" placeholder="Seconds" bind:value={passSeconds[k]} />
